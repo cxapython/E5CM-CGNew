@@ -53,6 +53,89 @@ def _创建显示窗口(
             return pygame.display.set_mode(尺寸, flags)
 
 
+def _切换英文输入法():
+    """自动切换系统输入法为英文（仅 Windows）"""
+    if sys.platform != "win32":
+        print("[输入法] 非 Windows 系统，跳过输入法切换")
+        return
+
+    print("[输入法] 开始尝试切换到英文输入法...")
+    
+    try:
+        import ctypes
+        import time
+        
+        # 方法 1: 直接使用 ctypes 调用 Windows ActivateKeyboardLayout API
+        print("[输入法] 方法 1: 尝试 ActivateKeyboardLayout API...")
+        try:
+            User32 = ctypes.windll.user32
+            # 英文（美国）= 0x04090409
+            english_layout = 0x04090409
+            result = User32.ActivateKeyboardLayout(english_layout, 0)
+            time.sleep(0.3)
+            if result:
+                print("[输入法] ✓ 方法 1 成功：已切换到英文输入法")
+                return
+        except Exception as e:
+            print(f"[输入法] 方法 1 失败: {type(e).__name__}: {e}")
+
+        # 方法 2: 使用 PostMessage 发送输入法切换消息到当前窗口
+        print("[输入法] 方法 2: 尝试 PostMessage 消息...")
+        try:
+            User32 = ctypes.windll.user32
+            hwnd = User32.GetForegroundWindow()
+            WM_INPUTLANGCHANGEREQUEST = 0x0050
+            english_layout = 0x04090409
+            User32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, english_layout)
+            time.sleep(0.3)
+            print("[输入法] ✓ 方法 2 成功：已发送输入法切换消息")
+            return
+        except Exception as e:
+            print(f"[输入法] 方法 2 失败: {type(e).__name__}: {e}")
+
+        # 方法 3: 使用 subprocess 调用 VBScript 进行切换
+        print("[输入法] 方法 3: 尝试 VBScript...")
+        try:
+            import subprocess
+            import tempfile
+            import os
+            
+            vbs_script = '''Set objWShell = CreateObject("WScript.Shell")
+objWShell.SendKeys "%({SPACE})"
+WScript.Sleep 500
+For i = 1 To 10
+    objWShell.SendKeys chr(38) & "E"
+    WScript.Sleep 50
+Next
+'''
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.vbs', delete=False) as f:
+                f.write(vbs_script)
+                script_path = f.name
+            
+            subprocess.Popen(
+                ["cscript", script_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000 if sys.platform == "win32" else 0
+            )
+            
+            # 异步删除脚本，不等待
+            try:
+                os.unlink(script_path)
+            except:
+                pass
+                
+            print("[输入法] ✓ 方法 3 成功：已执行 VBScript 切换")
+            return
+        except Exception as e:
+            print(f"[输入法] 方法 3 失败: {type(e).__name__}: {e}")
+
+        print("[输入法] ⚠ 所有切换方法均失败，请手动切换输入法或按 Alt+Shift")
+            
+    except Exception as e:
+        print(f"[输入法] 异常: {type(e).__name__}: {e}")
+
+
 def 主函数():
     def _安全进入场景(场景对象, 载荷):
         try:
@@ -227,6 +310,9 @@ def 主函数():
             pass
         pygame.quit()
         sys.exit(0)
+
+    # ✅ 启动时自动切换为英文输入法
+    _切换英文输入法()
 
     pygame.init()
     pygame.display.set_caption("e舞成名 - 主流程（Pygame）")
@@ -638,7 +724,13 @@ def 主函数():
                 底色 = (26, 34, 54) if 选中 else (18, 24, 40)
                 边色 = (120, 238, 255) if 选中 else (76, 96, 136)
                 pygame.draw.rect(屏幕面, 底色, 行rect, border_radius=14)
-                pygame.draw.rect(屏幕面, edge_color:=边色, 行rect, width=2 if 选中 else 1, border_radius=14)
+                pygame.draw.rect(
+                    屏幕面,
+                    edge_color := 边色,
+                    行rect,
+                    width=2 if 选中 else 1,
+                    border_radius=14,
+                )
                 if 选中:
                     高亮 = pygame.Surface((行rect.w, 行rect.h), pygame.SRCALPHA)
                     pygame.draw.rect(
@@ -680,9 +772,7 @@ def 主函数():
                 f"{str(状态.get('投币快捷键显示', 投币快捷键显示))}投币   ESC关闭",
                 "鼠标点击 / 小键盘1-3切换 / 5确认",
             ]
-            提示y = int(
-                选项起y + len(菜单项) * (按钮高 + 按钮间距) + 12
-            )
+            提示y = int(选项起y + len(菜单项) * (按钮高 + 按钮间距) + 12)
             for 文本 in 提示行:
                 行面 = 小字.render(文本, True, (132, 148, 178))
                 try:
@@ -694,9 +784,7 @@ def 主函数():
             if bool(非游戏菜单等待投币键):
                 提示 = "等待按键输入：按任意键设为投币键（ESC取消）"
                 提示面 = 小字.render(提示, True, (255, 240, 140))
-                屏幕面.blit(
-                    提示面, (面板.x + 24, int(面板.y + 58))
-                )
+                屏幕面.blit(提示面, (面板.x + 24, int(面板.y + 58)))
         except Exception:
             pass
 

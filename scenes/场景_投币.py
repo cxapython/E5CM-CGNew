@@ -234,7 +234,7 @@ class 场景_投币:
             提示2 = "请窗口最大化以后再点击F11全屏"
             提示面2 = 提示字体2.render(提示2, True, (220, 220, 220))
             提示rect2 = 提示面2.get_rect()
-            提示rect2.topright = (w - 20, int(提示rect.bottom + 6))
+            提示rect2.midtop = (w // 2, 18)
             屏幕.blit(提示面2, 提示rect2.topleft)
         except Exception:
             pass

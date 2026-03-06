@@ -73,6 +73,29 @@ class 场景_子模式(场景基类):
             None  # 缓存最后一帧2段图（避免每帧重算）
         )
 
+    def _取项目根目录(self) -> str:
+        try:
+            资源 = self.上下文.get("资源", {})
+        except Exception:
+            资源 = {}
+        根 = str(资源.get("根", "") or "").strip()
+        if 根:
+            try:
+                return os.path.abspath(根)
+            except Exception:
+                pass
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    def _资源路径(self, *片段: str) -> str:
+        if len(片段) == 1:
+            路径 = str(片段[0] or "").strip()
+            if not 路径:
+                return ""
+            if os.path.isabs(路径):
+                return 路径
+            return os.path.abspath(os.path.join(self._取项目根目录(), 路径))
+        return os.path.abspath(os.path.join(self._取项目根目录(), *片段))
+
     # -------------------------
     # 工具：动画
     # -------------------------
@@ -183,38 +206,39 @@ class 场景_子模式(场景基类):
     def _构建模式列表(self) -> list[tuple[str, str, str]]:
         状态 = self.上下文["状态"]
         大模式 = 状态.get("大模式", "")
+        资源路径 = self._资源路径
 
         if 大模式 == "花式":
             return [
                 (
                     "学习",
-                    "UI-img/玩法选择界面/按钮/学习模式按钮.png",
-                    "UI-img/玩法选择界面/学习模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/学习模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/学习模式.png"),
                 ),
                 (
                     "表演",
-                    "UI-img/玩法选择界面/按钮/表演模式按钮.png",
-                    "UI-img/玩法选择界面/表演模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/表演模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/表演模式.png"),
                 ),
                 (
                     "疯狂",
-                    "UI-img/玩法选择界面/按钮/疯狂模式按钮.png",
-                    "UI-img/玩法选择界面/疯狂模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/疯狂模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/疯狂模式.png"),
                 ),
                 (
                     "club",
-                    "UI-img/玩法选择界面/按钮/club模式按钮.png",
-                    "UI-img/玩法选择界面/双踏板模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/club模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/双踏板模式.png"),
                 ),
                 (
                     "情侣",
-                    "UI-img/玩法选择界面/按钮/情侣模式按钮.png",
-                    "UI-img/玩法选择界面/情侣模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/情侣模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/情侣模式.png"),
                 ),
                 (
                     "混音",
-                    "UI-img/玩法选择界面/按钮/混音模式按钮.png",
-                    "UI-img/玩法选择界面/混音模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/混音模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/混音模式.png"),
                 ),
             ]
 
@@ -222,23 +246,23 @@ class 场景_子模式(场景基类):
             return [
                 (
                     "疯狂",
-                    "UI-img/玩法选择界面/按钮/疯狂模式按钮.png",
-                    "UI-img/玩法选择界面/疯狂模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/疯狂模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/疯狂模式.png"),
                 ),
                 (
                     "club",
-                    "UI-img/玩法选择界面/按钮/club模式按钮.png",
-                    "UI-img/玩法选择界面/双踏板模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/club模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/双踏板模式.png"),
                 ),
                 (
                     "情侣",
-                    "UI-img/玩法选择界面/按钮/情侣模式按钮.png",
-                    "UI-img/玩法选择界面/情侣模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/情侣模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/情侣模式.png"),
                 ),
                 (
                     "混音",
-                    "UI-img/玩法选择界面/按钮/混音模式按钮.png",
-                    "UI-img/玩法选择界面/混音模式.png",
+                    资源路径("UI-img/玩法选择界面/按钮/混音模式按钮.png"),
+                    资源路径("UI-img/玩法选择界面/混音模式.png"),
                 ),
             ]
 

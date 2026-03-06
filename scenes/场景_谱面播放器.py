@@ -1072,6 +1072,10 @@ class 场景_谱面播放器(场景基类):
         self._暂停菜单打开前播放中: bool = False
         self._暂停菜单项矩形: List[pygame.Rect] = []
         self._暂停菜单关闭按钮: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._退场黑屏开启: bool = False
+        self._退场黑屏开始秒: float = 0.0
+        self._退场黑屏时长秒: float = 1.0
+        self._退场黑屏结果: Optional[dict] = None
         self._联网原图: Optional[pygame.Surface] = None
         self._双踏板左轨道中心列表: List[int] = []
         self._双踏板右轨道中心列表: List[int] = []
@@ -2401,6 +2405,17 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             pass
 
+        if bool(self._退场黑屏开启):
+            if (
+                (现在系统秒 - float(self._退场黑屏开始秒))
+                >= float(self._退场黑屏时长秒)
+            ):
+                结果 = dict(self._退场黑屏结果 or {})
+                self._退场黑屏开启 = False
+                self._退场黑屏结果 = None
+                return 结果 if 结果 else None
+            return None
+
         if self._显示准备动画 and (not self._准备动画已完成):
             准备经过秒 = float(现在系统秒 - float(self._准备动画开始秒 or 0.0))
             if not bool(self._准备音效已播放):
@@ -2505,22 +2520,14 @@ class 场景_谱面播放器(场景基类):
                 try:
                     if not pygame.mixer.music.get_busy():
                         if (time.perf_counter() - float(self._音频开始系统秒)) > 0.6:
-                            return {
-                                "切换到": "结算",
-                                "载荷": self._构建结算载荷(失败=False),
-                                "禁用黑屏过渡": True,
-                            }
+                            return self._开始退场到结算(失败=False)
                 except Exception:
                     pass
         else:
             if self._谱面总时长秒 > 0 and self._当前谱面秒 >= (
                 self._谱面总时长秒 + 2.0
             ):
-                return {
-                    "切换到": "结算",
-                    "载荷": self._构建结算载荷(失败=False),
-                    "禁用黑屏过渡": True,
-                }
+                return self._开始退场到结算(失败=False)
 
         return None
 
@@ -2876,6 +2883,23 @@ class 场景_谱面播放器(场景基类):
                         self._准备动画基础场景图 = None
             self._绘制准备动画(屏幕)
             self._绘制暂停菜单(屏幕)
+            if bool(self._退场黑屏开启):
+                try:
+                    经过秒 = float(time.perf_counter() - float(self._退场黑屏开始秒))
+                    比率 = float(
+                        max(
+                            0.0,
+                            min(
+                                1.0,
+                                经过秒 / max(0.001, float(self._退场黑屏时长秒)),
+                            ),
+                        )
+                    )
+                    黑幕 = pygame.Surface(屏幕.get_size(), pygame.SRCALPHA)
+                    黑幕.fill((0, 0, 0, int(255 * 比率)))
+                    屏幕.blit(黑幕, (0, 0))
+                except Exception:
+                    pass
 
         except Exception as 异常:
             try:
@@ -2932,17 +2956,15 @@ class 场景_谱面播放器(场景基类):
         背景状态 = "图片" if bool(self._视频背景关闭) else "视频"
         性能状态 = "已开启" if bool(self._性能模式) else "已关闭"
         调速文本 = f"X{float(getattr(self, '_卷轴速度倍率', 4.0) or 4.0):.1f}"
-        击中特效显示 = "特效2" if ("2" in str(getattr(self, "_击中特效方案", ""))) else "特效1"
+        背景亮度文本 = self._取背景亮度菜单文本()
         return [
             f"调速（{调速文本}）",
             f"背景（{背景状态}）",
-            f"谱面（{str(getattr(self, '_谱面设置', '正常') or '正常')}）",
             f"隐藏（{str(getattr(self, '_隐藏模式', '关闭') or '关闭')}）",
             f"轨迹（{str(getattr(self, '_轨迹模式', '正常') or '正常')}）",
             f"方向（{str(getattr(self, '_方向模式', '关闭') or '关闭')}）",
             f"大小（{self._取当前大小选项文本()}）",
-            f"击中特效（{击中特效显示}）",
-            "切换背景亮度",
+            f"切换背景亮度（{背景亮度文本}）",
             f"极简性能模式（{性能状态}）",
             "退出本局",
             "退出到桌面",
@@ -3014,43 +3036,31 @@ class 场景_谱面播放器(场景基类):
             return None
 
         if 选项索引 == 2:
-            self._菜单切换谱面()
-            self._设置操作反馈(f"谱面模式：{self._谱面设置}")
-            return None
-
-        if 选项索引 == 3:
             self._菜单切换隐藏()
             self._设置操作反馈(f"隐藏模式：{self._隐藏模式}")
             return None
 
-        if 选项索引 == 4:
+        if 选项索引 == 3:
             self._菜单切换轨迹()
             self._设置操作反馈(f"轨迹模式：{self._轨迹模式}")
             return None
 
-        if 选项索引 == 5:
+        if 选项索引 == 4:
             self._菜单切换方向()
             self._设置操作反馈(f"方向模式：{self._方向模式}")
             return None
 
-        if 选项索引 == 6:
+        if 选项索引 == 5:
             self._菜单切换大小()
             self._设置操作反馈(f"大小模式：{self._取当前大小选项文本()}")
             return None
 
-        if 选项索引 == 7:
-            self._菜单切换击中特效()
-            self._设置操作反馈(
-                f"兜底击中特效：{'特效2' if '2' in str(self._击中特效方案) else '特效1'}"
-            )
-            return None
-
-        if 选项索引 == 8:
+        if 选项索引 == 6:
             self._切换背景亮度档位()
-            self._设置操作反馈("背景亮度已切换")
+            self._设置操作反馈(f"背景亮度：{self._取背景亮度菜单文本()}")
             return None
 
-        if 选项索引 == 9:
+        if 选项索引 == 7:
             self._性能模式 = not bool(self._性能模式)
             self._载荷["性能模式"] = bool(self._性能模式)
             self._应用背景视频状态()
@@ -3071,11 +3081,7 @@ class 场景_谱面播放器(场景基类):
             )
             return None
 
-        if 选项索引 == 10:
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
+        if 选项索引 == 8:
             self._暂停菜单开启 = False
             return {"切换到": "选歌", "禁用黑屏过渡": True}
 
@@ -3122,15 +3128,38 @@ class 场景_谱面播放器(场景基类):
         return bool(self._总血量HP <= 0)
 
     def _立即失败结束(self):
+        return self._开始退场到结算(失败=True)
+
+    def _开始退场到结算(self, 失败: bool = False):
         try:
             pygame.mixer.music.stop()
         except Exception:
             pass
-        return {
+        self._播放中 = False
+        self._音频暂停中 = True
+        self._暂停菜单开启 = False
+        self._退场黑屏开启 = True
+        self._退场黑屏开始秒 = float(time.perf_counter())
+        self._退场黑屏结果 = {
             "切换到": "结算",
-            "载荷": self._构建结算载荷(失败=True),
+            "载荷": self._构建结算载荷(失败=bool(失败)),
             "禁用黑屏过渡": True,
         }
+        return None
+
+    def _取背景亮度菜单文本(self) -> str:
+        档位 = list(self._背景亮度档位alpha())
+        if not 档位:
+            return "默认"
+        try:
+            当前 = int(max(0, min(255, int(getattr(self, "_背景暗层alpha", 0) or 0))))
+            索引 = min(range(len(档位)), key=lambda i: abs(int(档位[i]) - 当前))
+        except Exception:
+            索引 = 0
+        标签 = ["默认", "较亮", "明亮", "最亮", "关闭"]
+        if 0 <= int(索引) < len(标签):
+            return str(标签[int(索引)])
+        return "默认"
 
     def _记录判定统计(self, 回报列表):
         if not 回报列表:
@@ -3406,76 +3435,131 @@ class 场景_谱面播放器(场景基类):
             项列表 = self._取暂停菜单项文本()
             项数量 = max(1, len(项列表))
             遮罩 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
-            遮罩.fill((0, 0, 0, 178))
+            遮罩.fill((0, 0, 0, 188))
             屏幕.blit(遮罩, (0, 0))
 
-            面板宽 = int(max(760, min(1180, 屏宽 * 0.78)))
-            面板高 = int(max(340, min(int(屏高 * 0.86), 210 + 项数量 * 42)))
+            面板宽 = int(max(820, min(1120, 屏宽 * 0.62)))
+            面板高 = int(max(520, min(int(屏高 * 0.88), 210 + 项数量 * 62)))
             面板 = pygame.Rect(
                 int((屏宽 - 面板宽) // 2),
                 int((屏高 - 面板高) // 2),
                 int(面板宽),
                 int(面板高),
             )
-            pygame.draw.rect(屏幕, (12, 18, 30), 面板, border_radius=16)
-            pygame.draw.rect(屏幕, (72, 116, 188), 面板, width=2, border_radius=16)
 
             标题字 = self._字体 if self._字体 is not None else self._小字体
             标题面 = 标题字.render("PAUSE MENU", True, (240, 246, 255)).convert_alpha()
-            屏幕.blit(标题面, (面板.x + 24, 面板.y + 18))
-            self._暂停菜单关闭按钮 = pygame.Rect(
-                int(面板.right - 46), int(面板.y + 14), 30, 30
-            )
-            pygame.draw.rect(
-                屏幕, (58, 68, 96), self._暂停菜单关闭按钮, border_radius=8
-            )
-            pygame.draw.rect(
-                屏幕,
-                (180, 200, 236),
-                self._暂停菜单关闭按钮,
-                width=1,
-                border_radius=8,
-            )
-            关字符 = 标题字.render("×", True, (240, 246, 255)).convert_alpha()
-            屏幕.blit(
-                关字符,
-                关字符.get_rect(center=self._暂停菜单关闭按钮.center).topleft,
-            )
+            屏幕.blit(标题面, (面板.x + 24, 面板.y + 2))
+            副标题面 = self._小字体.render(
+                "IN-GAME SYSTEM", True, (126, 164, 225)
+            ).convert_alpha()
+            try:
+                副标题面.set_alpha(170)
+            except Exception:
+                pass
+            屏幕.blit(副标题面, (面板.x + 26, 面板.y + 48))
+            self._暂停菜单关闭按钮 = pygame.Rect(0, 0, 0, 0)
 
             状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
             if not isinstance(状态, dict):
                 状态 = {}
             投币键显示 = str(状态.get("投币快捷键显示", "F1") or "F1").upper()
             提示行 = [
-                f"{投币键显示}投币",
-                "小键盘1/3左右选，5确认（提示）",
-                "鼠标点击选项，右上角×关闭",
+                f"{投币键显示}投币   ESC关闭",
+                "鼠标点击 / 小键盘1-3切换 / 5确认",
                 "游戏中小键盘1/3/5/7/9控制踏板",
             ]
-            y = int(面板.y + 68)
-            for 文本 in 提示行:
-                行面 = self._小字体.render(str(文本), True, (210, 224, 246)).convert_alpha()
-                屏幕.blit(行面, (面板.x + 24, y))
-                y += int(行面.get_height()) + 3
-
-            选项字 = self._字体 if self._字体 is not None else self._小字体
-            y = int(max(面板.y + 166, y + 8))
+            按钮高 = 52
+            按钮间距 = 10
+            选项字 = self._小字体
+            y = int(面板.y + 92)
+            双列项数 = min(6, len(项列表))
+            半宽间距 = 16
+            半宽按钮宽 = int((面板.w - 48 - 半宽间距) // 2)
+            半宽左x = int(面板.x + 24)
+            半宽右x = int(半宽左x + 半宽按钮宽 + 半宽间距)
             for idx, 项 in enumerate(项列表):
                 选中 = idx == int(self._暂停菜单索引)
-                前缀 = "▶ " if 选中 else "   "
-                颜色 = (255, 235, 128) if 选中 else (225, 233, 248)
-                项面 = 选项字.render(f"{前缀}{项}", True, 颜色).convert_alpha()
-                行rect = pygame.Rect(
-                    int(面板.x + 24),
-                    int(y - 4),
-                    int(max(280, 项面.get_width() + 22)),
-                    int(项面.get_height() + 8),
+                if idx < 双列项数:
+                    列 = int(idx % 2)
+                    行 = int(idx // 2)
+                    行rect = pygame.Rect(
+                        半宽左x if 列 == 0 else 半宽右x,
+                        int(y + 行 * (按钮高 + 按钮间距)),
+                        半宽按钮宽,
+                        int(按钮高),
+                    )
+                else:
+                    基准y = int(y + ((双列项数 + 1) // 2) * (按钮高 + 按钮间距) + 10)
+                    行rect = pygame.Rect(
+                        int(面板.x + 24),
+                        int(基准y + (idx - 双列项数) * (按钮高 + 按钮间距)),
+                        int(面板.w - 48),
+                        int(按钮高),
+                    )
+                pygame.draw.rect(
+                    屏幕,
+                    (22, 30, 48) if 选中 else (15, 22, 36),
+                    行rect,
+                    border_radius=14,
+                )
+                pygame.draw.rect(
+                    屏幕,
+                    (110, 240, 255) if 选中 else (74, 96, 134),
+                    行rect,
+                    width=2 if 选中 else 1,
+                    border_radius=14,
                 )
                 if 选中:
-                    pygame.draw.rect(屏幕, (42, 58, 90), 行rect, border_radius=8)
-                屏幕.blit(项面, (int(行rect.x + 8), int(行rect.y + 4)))
+                    高亮 = pygame.Surface((行rect.w, 行rect.h), pygame.SRCALPHA)
+                    pygame.draw.rect(
+                        高亮,
+                        (0, 239, 251, 30),
+                        pygame.Rect(0, 0, 行rect.w, 行rect.h),
+                        border_radius=14,
+                    )
+                    pygame.draw.rect(
+                        高亮,
+                        (255, 80, 164, 160),
+                        pygame.Rect(0, 10, 5, 行rect.h - 20),
+                        border_radius=3,
+                    )
+                    屏幕.blit(高亮, 行rect.topleft)
+                序号面 = self._小字体.render(f"{idx + 1:02d}", True, (114, 146, 196)).convert_alpha()
+                屏幕.blit(
+                    序号面,
+                    (
+                        int(行rect.x + 16),
+                        int(行rect.y + (行rect.h - 序号面.get_height()) // 2),
+                    ),
+                )
+                项面 = 选项字.render(
+                    str(项),
+                    True,
+                    (255, 245, 164) if 选中 else (225, 233, 248),
+                ).convert_alpha()
+                屏幕.blit(
+                    项面,
+                    (
+                        int(行rect.x + 64),
+                        int(行rect.y + (行rect.h - 项面.get_height()) // 2),
+                    ),
+                )
                 self._暂停菜单项矩形.append(行rect)
-                y += int(项面.get_height()) + 10
+
+            if 项列表:
+                最后rect = self._暂停菜单项矩形[-1]
+                提示y = int(最后rect.bottom + 16)
+            else:
+                提示y = int(y + 12)
+            for 文本 in 提示行:
+                行面 = self._小字体.render(str(文本), True, (132, 148, 178)).convert_alpha()
+                try:
+                    行面.set_alpha(145)
+                except Exception:
+                    pass
+                屏幕.blit(行面, (面板.x + 24, 提示y))
+                提示y += int(行面.get_height()) + 2
         except Exception:
             pass
 

@@ -509,9 +509,7 @@ def 主函数():
             pass
 
         _写入选歌设置(数据)
-        _显示调试提示(
-            f"兜底击中特效已切换：{'特效2' if '2' in 新值 else '特效1'}", 1.1
-        )
+        _显示调试提示(f"兜底击中特效已切换：{'特效2' if '2' in 新值 else '特效1'}", 1.1)
 
     def _全局投币一次():
         try:
@@ -571,11 +569,7 @@ def 主函数():
         恢复路径 = str(非游戏菜单背景音乐路径 or "").strip()
         if (not 恢复路径) or (not os.path.isfile(恢复路径)):
             恢复路径 = str(资源.get("音乐_UI", "") or "").strip()
-        if (
-            恢复路径
-            and os.path.isfile(恢复路径)
-            and (str(当前场景名 or "") != "选歌")
-        ):
+        if 恢复路径 and os.path.isfile(恢复路径) and (str(当前场景名 or "") != "选歌"):
             try:
                 音乐.播放循环(恢复路径)
             except Exception:
@@ -615,60 +609,99 @@ def 主函数():
             屏幕面 = 上下文["屏幕"]
             w, h = 屏幕面.get_size()
             遮罩 = pygame.Surface((w, h), pygame.SRCALPHA)
-            遮罩.fill((0, 0, 0, 165))
+            遮罩.fill((0, 0, 0, 178))
             屏幕面.blit(遮罩, (0, 0))
 
-            面板w = max(620, int(w * 0.56))
-            面板h = max(250, int(h * 0.34))
+            菜单项 = _取非游戏菜单项()
+            面板w = max(660, min(int(w * 0.46), 860))
+            面板h = max(320, min(int(h * 0.66), 200 + len(菜单项) * 72))
             面板 = pygame.Rect((w - 面板w) // 2, (h - 面板h) // 2, 面板w, 面板h)
-            pygame.draw.rect(屏幕面, (18, 22, 35), 面板, border_radius=18)
-            pygame.draw.rect(屏幕面, (140, 170, 235), 面板, width=2, border_radius=18)
 
             标题字 = 上下文["字体"]["中字"]
             小字 = 上下文["字体"]["小字"]
             标题面 = 标题字.render("系统菜单", True, (245, 248, 255))
-            屏幕面.blit(标题面, (面板.x + 24, 面板.y + 16))
-            非游戏菜单关闭按钮 = pygame.Rect(int(面板.right - 46), int(面板.y + 14), 30, 30)
-            pygame.draw.rect(屏幕面, (58, 68, 96), 非游戏菜单关闭按钮, border_radius=8)
-            pygame.draw.rect(
-                屏幕面, (180, 200, 236), 非游戏菜单关闭按钮, width=1, border_radius=8
-            )
-            关字符 = 标题字.render("×", True, (240, 246, 255))
-            屏幕面.blit(关字符, 关字符.get_rect(center=非游戏菜单关闭按钮.center).topleft)
+            屏幕面.blit(标题面, (面板.x + 24, 面板.y + 2))
+            副标题面 = 小字.render("ESC / SYSTEM", True, (140, 172, 225))
+            try:
+                副标题面.set_alpha(170)
+            except Exception:
+                pass
+            屏幕面.blit(副标题面, (面板.x + 26, 面板.y + 46))
+            非游戏菜单关闭按钮 = pygame.Rect(0, 0, 0, 0)
 
-            提示行 = [
-                f"{str(状态.get('投币快捷键显示', 投币快捷键显示))}投币",
-                "小键盘1/3左右选，5确认（提示）",
-                "鼠标点击选项，右上角×关闭",
-                "游戏中小键盘1/3/5/7/9控制踏板",
-            ]
-            y = 面板.y + 68
-            for 文本 in 提示行:
-                行面 = 小字.render(文本, True, (208, 220, 255))
-                屏幕面.blit(行面, (面板.x + 24, y))
-                y += 行面.get_height() + 4
-
-            菜单项 = _取非游戏菜单项()
-            选项起y = y + 10
+            按钮高 = 58
+            按钮间距 = 14
+            选项起y = int(面板.y + 86)
             for idx, 名称 in enumerate(菜单项):
                 选中 = idx == int(非游戏菜单索引)
-                颜色 = (255, 235, 120) if 选中 else (220, 228, 245)
-                前缀 = "▶ " if 选中 else "   "
-                项面 = 小字.render(f"{前缀}{名称}", True, 颜色)
                 行rect = pygame.Rect(
-                    int(面板.x + 18),
-                    int(选项起y + idx * (项面.get_height() + 12) - 4),
-                    int(max(220, 项面.get_width() + 20)),
-                    int(项面.get_height() + 8),
+                    int(面板.x + 22),
+                    int(选项起y + idx * (按钮高 + 按钮间距)),
+                    int(面板.w - 44),
+                    int(按钮高),
                 )
+                底色 = (26, 34, 54) if 选中 else (18, 24, 40)
+                边色 = (120, 238, 255) if 选中 else (76, 96, 136)
+                pygame.draw.rect(屏幕面, 底色, 行rect, border_radius=14)
+                pygame.draw.rect(屏幕面, edge_color:=边色, 行rect, width=2 if 选中 else 1, border_radius=14)
                 if 选中:
-                    pygame.draw.rect(屏幕面, (42, 58, 90), 行rect, border_radius=8)
-                屏幕面.blit(项面, (int(行rect.x + 8), int(行rect.y + 4)))
+                    高亮 = pygame.Surface((行rect.w, 行rect.h), pygame.SRCALPHA)
+                    pygame.draw.rect(
+                        高亮,
+                        (0, 239, 251, 34),
+                        pygame.Rect(0, 0, 行rect.w, 行rect.h),
+                        border_radius=14,
+                    )
+                    pygame.draw.rect(
+                        高亮,
+                        (255, 88, 170, 150),
+                        pygame.Rect(0, 10, 5, 行rect.h - 20),
+                        border_radius=3,
+                    )
+                    屏幕面.blit(高亮, 行rect.topleft)
+                序号面 = 小字.render(f"{idx + 1:02d}", True, (116, 146, 196))
+                屏幕面.blit(
+                    序号面,
+                    (
+                        int(行rect.x + 16),
+                        int(行rect.y + (行rect.h - 序号面.get_height()) // 2),
+                    ),
+                )
+                项面 = 小字.render(
+                    str(名称),
+                    True,
+                    (255, 245, 164) if 选中 else (226, 233, 246),
+                )
+                屏幕面.blit(
+                    项面,
+                    (
+                        int(行rect.x + 62),
+                        int(行rect.y + (行rect.h - 项面.get_height()) // 2),
+                    ),
+                )
                 非游戏菜单项矩形.append(行rect)
+
+            提示行 = [
+                f"{str(状态.get('投币快捷键显示', 投币快捷键显示))}投币   ESC关闭",
+                "鼠标点击 / 小键盘1-3切换 / 5确认",
+            ]
+            提示y = int(
+                选项起y + len(菜单项) * (按钮高 + 按钮间距) + 12
+            )
+            for 文本 in 提示行:
+                行面 = 小字.render(文本, True, (132, 148, 178))
+                try:
+                    行面.set_alpha(150)
+                except Exception:
+                    pass
+                屏幕面.blit(行面, (面板.x + 24, 提示y))
+                提示y += int(行面.get_height()) + 2
             if bool(非游戏菜单等待投币键):
                 提示 = "等待按键输入：按任意键设为投币键（ESC取消）"
                 提示面 = 小字.render(提示, True, (255, 240, 140))
-                屏幕面.blit(提示面, (面板.x + 24, int(面板.bottom - 提示面.get_height() - 18)))
+                屏幕面.blit(
+                    提示面, (面板.x + 24, int(面板.y + 58))
+                )
         except Exception:
             pass
 

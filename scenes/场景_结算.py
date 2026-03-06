@@ -70,6 +70,7 @@ class 场景_结算(场景基类):
         self._封面图: Optional[pygame.Surface] = None
         self._评级图: Optional[pygame.Surface] = None
         self._全连图: Optional[pygame.Surface] = None
+        self._失败图: Optional[pygame.Surface] = None
         self._新纪录图: Optional[pygame.Surface] = None
         self._等级窗背景图: Optional[pygame.Surface] = None
         self._等级窗底图: Optional[pygame.Surface] = None
@@ -206,12 +207,13 @@ class 场景_结算(场景基类):
             屏幕.blit(星图, (px(48), py(304)))
 
         歌名 = str(self._载荷.get("曲目名", "Unknown") or "Unknown")
-        self._绘制裁切文本(
+        self._绘制滚动文本(
             屏幕,
             文本=歌名,
             字体=self._歌名字体,
             颜色=(255, 255, 255),
             区域=pygame.Rect(px(46), py(332), px(214) - px(46), py(370) - py(332)),
+            滚动秒=float(经过秒),
         )
 
         数值t = _缓出三次方(_夹取(经过秒 / float(self._数值动画秒), 0.0, 1.0))
@@ -264,10 +266,17 @@ class 场景_结算(场景基类):
         右x: int,
         中心y: int,
         文本: str,
-        颜色: Tuple[int, int, int],
+        描边颜色: Tuple[int, int, int],
     ):
-        self._绘制纯色文本(
-            屏幕, 文本, self._数值字体, 颜色, (int(右x), int(中心y)), 右对齐=True
+        self._绘制描边文本(
+            屏幕=屏幕,
+            文本=文本,
+            字体=self._数值字体,
+            颜色=(255, 255, 255),
+            描边颜色=描边颜色,
+            中心=(int(右x), int(中心y)),
+            描边粗细=1,
+            对齐="right",
         )
 
     def _绘制纯色文本(
@@ -334,9 +343,8 @@ class 场景_结算(场景基类):
     def _绘制顶部状态动画(
         self, 屏幕: pygame.Surface, 面板矩形: pygame.Rect, 经过秒: float
     ):
-        if self._全连图 is None:
-            return
-        if not bool(self._载荷.get("是否全连", False)):
+        顶部图 = self._获取顶部状态图()
+        if 顶部图 is None:
             return
         开始秒 = self._数值动画秒 + self._评级砸入秒
         进度 = _夹取((经过秒 - 开始秒) / float(self._顶部砸入秒), 0.0, 1.0)
@@ -344,14 +352,12 @@ class 场景_结算(场景基类):
             return
 
         目标宽 = int(面板矩形.w * 0.72)
-        比例 = float(self._全连图.get_height()) / float(
-            max(1, self._全连图.get_width())
-        )
+        比例 = float(顶部图.get_height()) / float(max(1, 顶部图.get_width()))
         目标高 = int(目标宽 * 比例)
         缩放 = 1.0 + (1.30 - 1.0) * (1.0 - _回弹(进度))
         动画宽 = max(2, int(目标宽 * 缩放))
         动画高 = max(2, int(目标高 * 缩放))
-        图 = self._缩放图(self._全连图, (动画宽, 动画高))
+        图 = self._缩放图(顶部图, (动画宽, 动画高))
         if 图 is None:
             return
         try:
@@ -365,6 +371,16 @@ class 场景_结算(场景基类):
         当前中心y = int(起始中心y + (目标中心[1] - 起始中心y) * _回弹(进度))
         rr = 图.get_rect(center=(目标中心[0], 当前中心y))
         屏幕.blit(图, rr.topleft)
+
+    def _获取顶部状态图(self) -> Optional[pygame.Surface]:
+        评级 = str(self._载荷.get("评级", "") or "").strip().upper()
+        if bool(self._载荷.get("失败", False)) or 评级 == "F":
+            return self._失败图
+        if bool(self._载荷.get("是否全连", False)) or bool(
+            self._载荷.get("全连", False)
+        ):
+            return self._全连图
+        return None
 
     def _绘制新纪录提示(
         self, 屏幕: pygame.Surface, 面板矩形: pygame.Rect, 经过秒: float
@@ -643,6 +659,87 @@ class 场景_结算(场景基类):
         裁切.blit(图, (0, max(0, (区域.h - 图.get_height()) // 2)))
         屏幕.blit(裁切, 区域.topleft)
 
+    def _绘制滚动文本(
+        self,
+        屏幕: pygame.Surface,
+        文本: str,
+        字体: pygame.font.Font,
+        颜色: Tuple[int, int, int],
+        区域: pygame.Rect,
+        滚动秒: float,
+        速度: float = 72.0,
+        停留秒: float = 0.6,
+    ):
+        if not 文本:
+            return
+        try:
+            图 = 字体.render(str(文本), True, 颜色).convert_alpha()
+        except Exception:
+            return
+        if 图.get_width() <= 区域.w:
+            rr = 图.get_rect(center=区域.center)
+            屏幕.blit(图, rr.topleft)
+            return
+
+        最大偏移 = max(0, 图.get_width() - 区域.w)
+        if 最大偏移 <= 0:
+            rr = 图.get_rect(center=区域.center)
+            屏幕.blit(图, rr.topleft)
+            return
+
+        滚动时长 = float(最大偏移) / max(1.0, float(速度))
+        周期 = float(停留秒) * 2.0 + 滚动时长
+        局部秒 = float(滚动秒) % max(0.01, 周期)
+        if 局部秒 <= float(停留秒):
+            偏移 = 0.0
+        elif 局部秒 <= float(停留秒) + 滚动时长:
+            偏移 = (局部秒 - float(停留秒)) * float(速度)
+        else:
+            偏移 = float(最大偏移)
+
+        裁切 = pygame.Surface((区域.w, 区域.h), pygame.SRCALPHA)
+        裁切.blit(
+            图,
+            (-int(round(偏移)), max(0, (区域.h - 图.get_height()) // 2)),
+        )
+        屏幕.blit(裁切, 区域.topleft)
+
+    def _绘制描边文本(
+        self,
+        屏幕: pygame.Surface,
+        文本: str,
+        字体: pygame.font.Font,
+        颜色: Tuple[int, int, int],
+        描边颜色: Tuple[int, int, int],
+        中心: Tuple[int, int],
+        描边粗细: int = 1,
+        对齐: str = "center",
+    ):
+        if not 文本:
+            return
+        try:
+            主图 = 字体.render(str(文本), True, 颜色).convert_alpha()
+            描边图 = 字体.render(str(文本), True, 描边颜色).convert_alpha()
+        except Exception:
+            return
+
+        对齐 = str(对齐 or "center").lower()
+        if 对齐 == "right":
+            基准x = int(中心[0] - 主图.get_width())
+        elif 对齐 == "left":
+            基准x = int(中心[0])
+        else:
+            基准x = int(中心[0] - 主图.get_width() // 2)
+        基准y = int(中心[1] - 主图.get_height() // 2)
+
+        半径 = max(0, int(描边粗细))
+        for dx in range(-半径, 半径 + 1):
+            for dy in range(-半径, 半径 + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                屏幕.blit(描边图, (基准x + dx, 基准y + dy))
+        屏幕.blit(主图, (基准x, 基准y))
+
     def _绘制发光文本(
         self,
         屏幕: pygame.Surface,
@@ -804,6 +901,9 @@ class 场景_结算(场景基类):
         )
         self._全连图 = _安全载图(
             os.path.join(根目录, "UI-img", "游戏界面", "结算", "评价", "全连.png")
+        )
+        self._失败图 = _安全载图(
+            os.path.join(根目录, "UI-img", "游戏界面", "结算", "评价", "失败.png")
         )
         self._新纪录图 = _安全载图(
             os.path.join(根目录, "UI-img", "游戏界面", "结算", "新纪录.png")

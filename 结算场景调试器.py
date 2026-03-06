@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import pygame
+from ui.settlement_layout_shared import (
+    DESIGN_SIZE,
+    SettlementLayoutStore,
+    process_layer_ids,
+)
 
 
 Color = Tuple[int, int, int]
@@ -209,7 +214,9 @@ class SettlementLayoutDebugger:
         self.root = _project_root()
         self.layout_path = os.path.join(self.root, "json", "结算场景布局.json")
         self.settings_path = os.path.join(self.root, "json", "结算场景布局调试器_设置.json")
-        self.screen = pygame.display.set_mode((1600, 900), pygame.RESIZABLE)
+        self.design_size = (int(DESIGN_SIZE[0]), int(DESIGN_SIZE[1]))
+        self.screen = pygame.display.set_mode(self.design_size, pygame.RESIZABLE)
+        self.canvas = pygame.Surface(self.design_size).convert_alpha()
         self.clock = pygame.time.Clock()
         self.running = True
 
@@ -234,22 +241,23 @@ class SettlementLayoutDebugger:
         self.panel_drag_origin = (0, 0)
         self.panel_origin_rect = pygame.Rect(0, 0, 0, 0)
 
-        self.global_paused = True
-        self.numbers_paused = True
-        self.level_paused = True
-        self.global_time = 6.0
-        self.numbers_time = 2.5
-        self.level_time = 2.2
         self.numbers_duration = 2.5
         self.grade_duration = 0.2
         self.top_duration = 0.3
         self.reward_start = self.numbers_duration + self.grade_duration + self.top_duration + 0.25
         self.reward_duration = 0.32
         self.upgrade_duration = 0.9
+        self.prompt_duration = 0.45
+        self.selected_process = 1
+        self.process_playing = False
+        self.process_time = 0.0
+        self.global_time = 0.0
+        self.numbers_time = 0.0
+        self.level_time = 0.0
+        self.prompt_time = 0.0
 
         self.show_bounds = True
         self.show_names = True
-        self.show_reward_group = True
         self.show_help = True
 
         self.text_editor_open = False
@@ -258,19 +266,23 @@ class SettlementLayoutDebugger:
         self.active_text_field = ""
 
         self.assets: Dict[str, Optional[pygame.Surface]] = {}
+        self.prompt_assets: Dict[str, pygame.Surface] = {}
         self.scale_cache: Dict[Tuple[int, int, int], pygame.Surface] = {}
         self.placeholder_cache: Dict[Tuple[str, int, int], pygame.Surface] = {}
         self.payload = self._build_preview_payload()
         self.panels = self._create_panels()
         self._load_assets()
-        self.layers = self._load_or_create_layout()
+        self.layout_store = SettlementLayoutStore(self.layout_path)
+        self.layers = self.layout_store.layers
         self._restore_settings()
+        self._set_process(self.selected_process, replay=False)
 
     def _create_panels(self) -> Dict[str, DebugPanel]:
         screen_w, screen_h = self.screen.get_size()
         return {
             "visual": DebugPanel("visual", "视觉面板", pygame.Rect(18, 18, 280, 126)),
-            "function": DebugPanel("function", "功能面板", pygame.Rect(18, screen_h - 172, 320, 150)),
+            "badge": DebugPanel("badge", "顶部标面板", pygame.Rect(18, 152, 280, 126)),
+            "function": DebugPanel("function", "流程面板", pygame.Rect(18, screen_h - 172, 320, 150)),
             "layers": DebugPanel("layers", "图层面板", pygame.Rect(screen_w - 370, screen_h - 402, 352, 384)),
         }
 
@@ -306,6 +318,7 @@ class SettlementLayoutDebugger:
             "竞速经验": float(speed_progress.get("经验", 0.6) or 0.6),
             "段位路径": rank_path or os.path.join(self.root, "UI-img", "个人中心-个人资料", "等级", "1.png"),
             "显示升级": True,
+            "流程3提示": "下一把",
         }
 
     def _load_assets(self):
@@ -344,6 +357,12 @@ class SettlementLayoutDebugger:
         digits_dir = os.path.join(root, "UI-img", "游戏界面", "结算", "结算等级小窗", "经验数字")
         for name in ["+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]:
             self.assets[f"digit_{name}"] = _safe_load_image(os.path.join(digits_dir, f"{name}.png"))
+        self.prompt_assets = {}
+        prompt_dir = os.path.join(root, "UI-img", "游戏界面", "结算", "提示")
+        for name in ["下一把", "继续挑战", "是否续币", "游戏结束", "赠送一把"]:
+            image = _safe_load_image(os.path.join(prompt_dir, f"{name}.png"))
+            if image is not None:
+                self.prompt_assets[name] = image
 
     def _load_or_create_layout(self) -> Dict[str, Dict[str, Any]]:
         data = _read_json(self.layout_path)
@@ -608,16 +627,13 @@ class SettlementLayoutDebugger:
         return layers
 
     def _save_layout(self):
-        _write_json(
-            self.layout_path,
-            {"version": self.layout_version, "layers": self.layers},
-        )
+        self.layout_store.layers = self.layers
+        self.layout_store.save()
 
     def _restore_settings(self):
         data = _read_json(self.settings_path)
         self.show_bounds = bool(data.get("show_bounds", True))
         self.show_names = bool(data.get("show_names", True))
-        self.show_reward_group = bool(data.get("show_reward_group", True))
         self.show_help = bool(data.get("show_help", True))
         for key, panel in self.panels.items():
             entry = data.get("panels", {}).get(key, {}) if isinstance(data.get("panels"), dict) else {}
@@ -634,7 +650,6 @@ class SettlementLayoutDebugger:
             {
                 "show_bounds": self.show_bounds,
                 "show_names": self.show_names,
-                "show_reward_group": self.show_reward_group,
                 "show_help": self.show_help,
                 "panels": {
                     key: {
@@ -652,15 +667,86 @@ class SettlementLayoutDebugger:
         self.message_until = pygame.time.get_ticks() + int(seconds * 1000)
 
     def _reset_layout(self):
-        self.layers = self._default_layout()
+        self.layout_store.reset()
+        self.layers = self.layout_store.layers
         self.selection_mode = "layout"
         self.selected_ids.clear()
         self.active_layer_id = ""
-        self._save_layout()
         self._set_message("已重置结算布局")
 
     def _sorted_layers(self) -> List[Dict[str, Any]]:
         return sorted(self.layers.values(), key=lambda layer: (int(layer.get("z", 0)), str(layer.get("id", ""))))
+
+    def _process_duration(self, process_index: int) -> float:
+        if int(process_index) == 1:
+            return self.numbers_duration + self.grade_duration + self.top_duration + 0.35
+        if int(process_index) == 2:
+            return 0.15 + self.upgrade_duration
+        return self.prompt_duration
+
+    def _process_static_time(self, process_index: int) -> float:
+        return self._process_duration(process_index)
+
+    def _set_process(self, process_index: int, replay: bool = False):
+        self.selected_process = 1 if int(process_index) not in (1, 2, 3) else int(process_index)
+        self.process_playing = bool(replay)
+        self.process_time = 0.0 if replay else self._process_static_time(self.selected_process)
+        self._sync_preview_timeline()
+        self.selected_ids.clear()
+        self.active_layer_id = ""
+
+    def _sync_preview_timeline(self):
+        if self.selected_process == 1:
+            self.global_time = float(self.process_time)
+            self.numbers_time = min(float(self.process_time), float(self.numbers_duration))
+            self.level_time = 0.0
+            self.prompt_time = 0.0
+        elif self.selected_process == 2:
+            self.global_time = float(self._process_static_time(1))
+            self.numbers_time = float(self.numbers_duration)
+            self.level_time = float(self.process_time)
+            self.prompt_time = 0.0
+        else:
+            self.global_time = float(self._process_static_time(1))
+            self.numbers_time = float(self.numbers_duration)
+            self.level_time = float(self._process_static_time(2))
+            self.prompt_time = float(self.process_time)
+
+    def _process_layers(self, include_common: bool = True) -> List[Dict[str, Any]]:
+        allowed = process_layer_ids(self.selected_process, include_common=include_common)
+        return [layer for layer in self._sorted_layers() if str(layer.get("id", "")) in allowed]
+
+    def _current_prompt_surface(self) -> Optional[pygame.Surface]:
+        key = str(self.payload.get("流程3提示", "") or "下一把")
+        return self.prompt_assets.get(key) or next(iter(self.prompt_assets.values()), None)
+
+    def _preview_rect(self) -> pygame.Rect:
+        screen_w, screen_h = self.screen.get_size()
+        design_w, design_h = self.design_size
+        scale = min(screen_w / float(design_w), screen_h / float(design_h))
+        width = max(1, int(round(design_w * scale)))
+        height = max(1, int(round(design_h * scale)))
+        return pygame.Rect((screen_w - width) // 2, (screen_h - height) // 2, width, height)
+
+    def _screen_to_canvas_pos(
+        self, pos: Tuple[int, int], clamp_to_viewport: bool = False
+    ) -> Optional[Tuple[int, int]]:
+        viewport = self._preview_rect()
+        if clamp_to_viewport:
+            px = min(max(int(pos[0]), viewport.left), viewport.right - 1)
+            py = min(max(int(pos[1]), viewport.top), viewport.bottom - 1)
+        else:
+            px, py = int(pos[0]), int(pos[1])
+            if not viewport.collidepoint(px, py):
+                return None
+        rel_x = (px - viewport.x) / float(max(1, viewport.w))
+        rel_y = (py - viewport.y) / float(max(1, viewport.h))
+        canvas_x = int(round(rel_x * self.design_size[0]))
+        canvas_y = int(round(rel_y * self.design_size[1]))
+        return (
+            max(0, min(self.design_size[0] - 1, canvas_x)),
+            max(0, min(self.design_size[1] - 1, canvas_y)),
+        )
 
     def _layer_by_id(self, layer_id: str) -> Optional[Dict[str, Any]]:
         layer = self.layers.get(str(layer_id))
@@ -743,6 +829,8 @@ class SettlementLayoutDebugger:
             return self.assets.get("cover")
         if asset_name == "digits":
             return None
+        if asset_name == "flow3_prompt":
+            return self._current_prompt_surface()
         if layer.get("id") == "top_badge":
             top_key = str(self.payload.get("顶标", "全连") or "全连")
             if top_key == "失败":
@@ -844,16 +932,13 @@ class SettlementLayoutDebugger:
         rect = self._layer_rect(layer).copy()
         layer_id = str(layer.get("id", "") or "")
         if layer_id in {"background", "dimmer"}:
-            screen_w, screen_h = self.screen.get_size()
+            screen_w, screen_h = self.design_size
             rect.size = (screen_w, screen_h)
             rect.topleft = (0, 0)
             return rect
         if layer.get("group") == "reward":
-            if not self.show_reward_group:
-                rect.x = -100000
-                return rect
             t = self._reward_progress()
-            hidden_x = self.screen.get_width() + 12
+            hidden_x = self.design_size[0] + 12
             rect.x = int(hidden_x + (rect.x - hidden_x) * _back_out(t))
         if layer_id == "grade_main":
             t = _clamp((self.global_time - self.numbers_duration) / self.grade_duration, 0.0, 1.0)
@@ -876,7 +961,7 @@ class SettlementLayoutDebugger:
             t = _clamp((self.global_time - start) / self.top_duration, 0.0, 1.0)
             scale = 1.0 + (1.30 - 1.0) * (1.0 - _back_out(t))
             new_size = (max(2, int(rect.w * scale)), max(2, int(rect.h * scale)))
-            start_y = self._panel_rect().top - new_size[1]
+            start_y = self._layer_rect(self.layers["panel"]).top - new_size[1]
             center_y = int(start_y + (rect.centery - start_y) * _back_out(t))
             rect.size = new_size
             rect.center = (rect.centerx, center_y)
@@ -884,6 +969,11 @@ class SettlementLayoutDebugger:
             start = self.numbers_duration + 0.15
             t = _clamp((self.global_time - start) / 0.28, 0.0, 1.0)
             scale = 0.86 + 0.14 * _back_out(t)
+            rect.size = (max(2, int(rect.w * scale)), max(2, int(rect.h * scale)))
+            rect.center = self._layer_rect(layer).center
+        elif layer_id == "flow3_prompt":
+            t = _clamp(self.prompt_time / float(self.prompt_duration), 0.0, 1.0)
+            scale = 1.12 - 0.12 * t
             rect.size = (max(2, int(rect.w * scale)), max(2, int(rect.h * scale)))
             rect.center = self._layer_rect(layer).center
         elif layer_id.startswith("upgrade_"):
@@ -913,6 +1003,8 @@ class SettlementLayoutDebugger:
             return int(255 * _ease_out_cubic(_clamp((self.global_time - start) / 0.28, 0.0, 1.0)))
         if layer.get("group") == "reward":
             return int(255 * _ease_out_cubic(self._reward_progress()))
+        if layer_id == "flow3_prompt":
+            return int(255 * _ease_out_cubic(_clamp(self.prompt_time / float(self.prompt_duration), 0.0, 1.0)))
         return 255
 
     def _content_rect(self, layer: Dict[str, Any], draw_rect: Optional[pygame.Rect] = None) -> pygame.Rect:
@@ -922,8 +1014,6 @@ class SettlementLayoutDebugger:
 
     def _draw_layer(self, screen: pygame.Surface, layer: Dict[str, Any]):
         if not bool(layer.get("visible", True)):
-            return
-        if layer.get("group") == "reward" and not self.show_reward_group:
             return
         if str(layer.get("id", "")) in {"grade_left", "grade_right"} and not bool(self.payload.get("三把S", True)):
             return
@@ -967,7 +1057,7 @@ class SettlementLayoutDebugger:
 
     def _draw_canvas(self, screen: pygame.Surface):
         screen.fill((0, 0, 0))
-        for layer in self._sorted_layers():
+        for layer in self._process_layers(include_common=True):
             if layer.get("id") == "cover" and self.assets.get("cover") is None:
                 if bool(layer.get("visible", True)):
                     self._draw_placeholder_cover(screen, self._animated_layer_rect(layer))
@@ -976,10 +1066,8 @@ class SettlementLayoutDebugger:
 
     def _layer_hit(self, pos: Tuple[int, int]) -> Optional[Dict[str, Any]]:
         x, y = pos
-        for layer in sorted(self._sorted_layers(), key=lambda item: int(item.get("z", 0)), reverse=True):
+        for layer in sorted(self._process_layers(include_common=True), key=lambda item: int(item.get("z", 0)), reverse=True):
             if not bool(layer.get("visible", True)):
-                continue
-            if layer.get("group") == "reward" and not self.show_reward_group:
                 continue
             if self._animated_layer_rect(layer).collidepoint(x, y):
                 return layer
@@ -1005,9 +1093,9 @@ class SettlementLayoutDebugger:
         return result
 
     def _require_paused_for_edit(self) -> bool:
-        if self.global_paused:
+        if not self.process_playing:
             return True
-        self._set_message("先暂停全局动画再调整布局")
+        self._set_message("先停止当前流程播放再调整布局")
         return False
 
     def _begin_drag(self, mouse_pos: Tuple[int, int]):
@@ -1249,6 +1337,8 @@ class SettlementLayoutDebugger:
             return True
         if panel.panel_id == "visual":
             return self._handle_visual_panel_click(panel, pos)
+        if panel.panel_id == "badge":
+            return self._handle_badge_panel_click(panel, pos)
         if panel.panel_id == "function":
             return self._handle_function_panel_click(panel, pos)
         if panel.panel_id == "layers":
@@ -1260,8 +1350,7 @@ class SettlementLayoutDebugger:
         row_rects = [
             ("show_bounds", pygame.Rect(content.x, content.y, content.w, 28)),
             ("show_names", pygame.Rect(content.x, content.y + 32, content.w, 28)),
-            ("show_reward_group", pygame.Rect(content.x, content.y + 64, content.w, 28)),
-            ("show_help", pygame.Rect(content.x, content.y + 96, content.w, 28)),
+            ("show_help", pygame.Rect(content.x, content.y + 64, content.w, 28)),
         ]
         for field, rect in row_rects:
             if rect.collidepoint(pos):
@@ -1270,43 +1359,50 @@ class SettlementLayoutDebugger:
                 return True
         return False
 
-    def _function_button_rects(self, panel: DebugPanel) -> Dict[str, pygame.Rect]:
+    def _badge_button_rects(self, panel: DebugPanel) -> Dict[str, pygame.Rect]:
         content = self._panel_content_rect(panel)
         return {
-            "global": pygame.Rect(content.x, content.y, content.w, 28),
-            "numbers": pygame.Rect(content.x, content.y + 34, content.w, 28),
-            "level": pygame.Rect(content.x, content.y + 68, content.w, 28),
-            "replay": pygame.Rect(content.x, content.y + 106, (content.w - 8) // 2, 28),
-            "final": pygame.Rect(content.x + (content.w + 8) // 2, content.y + 106, (content.w - 8) // 2, 28),
+            "全连": pygame.Rect(content.x, content.y, content.w, 28),
+            "三把S": pygame.Rect(content.x, content.y + 32, content.w, 28),
+            "失败": pygame.Rect(content.x, content.y + 64, content.w, 28),
         }
+
+    def _handle_badge_panel_click(self, panel: DebugPanel, pos: Tuple[int, int]) -> bool:
+        rects = self._badge_button_rects(panel)
+        labels = {
+            "全连": "全连",
+            "三把S": "三把全连",
+            "失败": "失败",
+        }
+        for key, rect in rects.items():
+            if not rect.collidepoint(pos):
+                continue
+            self.payload["顶标"] = key
+            self.payload["三把S"] = bool(key == "三把S")
+            self._set_process(1, replay=False)
+            self._set_message(f"顶部标已切换为{labels[key]}")
+            return True
+        return False
+
+    def _function_button_rects(self, panel: DebugPanel) -> Dict[str, pygame.Rect]:
+        content = self._panel_content_rect(panel)
+        rects: Dict[str, pygame.Rect] = {}
+        for index, process_index in enumerate((1, 2, 3)):
+            row_y = content.y + index * 36
+            rects[f"check_{process_index}"] = pygame.Rect(content.x, row_y + 2, 26, 26)
+            rects[f"label_{process_index}"] = pygame.Rect(content.x + 34, row_y, max(40, content.w - 118), 30)
+            rects[f"play_{process_index}"] = pygame.Rect(content.right - 76, row_y + 2, 68, 26)
+        return rects
 
     def _handle_function_panel_click(self, panel: DebugPanel, pos: Tuple[int, int]) -> bool:
         rects = self._function_button_rects(panel)
-        if rects["global"].collidepoint(pos):
-            self.global_paused = not self.global_paused
-            return True
-        if rects["numbers"].collidepoint(pos):
-            self.numbers_paused = not self.numbers_paused
-            return True
-        if rects["level"].collidepoint(pos):
-            self.level_paused = not self.level_paused
-            return True
-        if rects["replay"].collidepoint(pos):
-            self.global_time = 0.0
-            self.numbers_time = 0.0
-            self.level_time = 0.0
-            self.global_paused = False
-            self.numbers_paused = False
-            self.level_paused = False
-            return True
-        if rects["final"].collidepoint(pos):
-            self.global_time = 6.0
-            self.numbers_time = self.numbers_duration
-            self.level_time = 2.2
-            self.global_paused = True
-            self.numbers_paused = True
-            self.level_paused = True
-            return True
+        for process_index in (1, 2, 3):
+            if rects[f"check_{process_index}"].collidepoint(pos) or rects[f"label_{process_index}"].collidepoint(pos):
+                self._set_process(process_index, replay=False)
+                return True
+            if rects[f"play_{process_index}"].collidepoint(pos):
+                self._set_process(process_index, replay=True)
+                return True
         return False
 
     def _layer_panel_row_rects(self, panel: DebugPanel) -> Tuple[List[Tuple[pygame.Rect, Dict[str, Any]]], pygame.Rect]:
@@ -1314,7 +1410,7 @@ class SettlementLayoutDebugger:
         list_rect = pygame.Rect(content.x, content.y, content.w, max(60, content.h - 84))
         y = list_rect.y - self.layer_scroll
         rows: List[Tuple[pygame.Rect, Dict[str, Any]]] = []
-        for layer in reversed(self._sorted_layers()):
+        for layer in reversed(self._process_layers(include_common=True)):
             row = pygame.Rect(list_rect.x, y, list_rect.w, 24)
             rows.append((row, layer))
             y += 26
@@ -1385,7 +1481,12 @@ class SettlementLayoutDebugger:
                 self._save_settings()
                 return
             if event.key == pygame.K_SPACE:
-                self.global_paused = not self.global_paused
+                if self.process_playing:
+                    self.process_playing = False
+                    self.process_time = self._process_static_time(self.selected_process)
+                else:
+                    self._set_process(self.selected_process, replay=True)
+                self._sync_preview_timeline()
                 return
             mods = pygame.key.get_mods()
             if event.key == pygame.K_s and mods & pygame.KMOD_CTRL:
@@ -1447,7 +1548,12 @@ class SettlementLayoutDebugger:
                 if panel is not None:
                     if self._handle_panel_mouse_down(panel, pos):
                         return
-                layer = self._layer_hit(pos)
+                canvas_pos = self._screen_to_canvas_pos(pos)
+                if canvas_pos is None:
+                    self.selected_ids.clear()
+                    self.active_layer_id = ""
+                    return
+                layer = self._layer_hit(canvas_pos)
                 if layer is None:
                     self.selected_ids.clear()
                     self.active_layer_id = ""
@@ -1470,7 +1576,7 @@ class SettlementLayoutDebugger:
                     append = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
                     self._select_layer(layer_id, append=append, mode="layout")
                 if event.button == 1:
-                    self._begin_drag(pos)
+                    self._begin_drag(canvas_pos)
                 return
             if event.button in (4, 5):
                 delta = 1 if event.button == 4 else -1
@@ -1495,7 +1601,9 @@ class SettlementLayoutDebugger:
                     self._save_settings()
                 return
             if self.dragging:
-                self._update_drag(event.pos)
+                canvas_pos = self._screen_to_canvas_pos(event.pos, clamp_to_viewport=True)
+                if canvas_pos is not None:
+                    self._update_drag(canvas_pos)
                 return
         if event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
@@ -1503,27 +1611,33 @@ class SettlementLayoutDebugger:
                 self.dragging_panel_id = None
 
     def _update(self, dt: float):
-        if not self.global_paused:
-            self.global_time = min(12.0, self.global_time + dt)
-        if not self.numbers_paused:
-            self.numbers_time = min(self.numbers_duration, self.numbers_time + dt)
-        if not self.level_paused:
-            self.level_time = min(4.0, self.level_time + dt)
+        if self.process_playing:
+            self.process_time = min(self._process_duration(self.selected_process), self.process_time + dt)
+            if self.process_time >= self._process_duration(self.selected_process) - 1e-6:
+                self.process_playing = False
+            self._sync_preview_timeline()
 
     def _draw_selection(self, screen: pygame.Surface):
-        if not self.show_bounds:
+        if (not self.show_bounds) and (not self.selected_ids):
             return
+        selected_only = not self.show_bounds
+        visible_ids = {str(layer.get("id", "")) for layer in self._process_layers(include_common=True)}
         for layer in self._sorted_layers():
             if not bool(layer.get("visible", True)):
                 continue
+            layer_id = str(layer.get("id", "") or "")
+            selected = layer_id in self.selected_ids
+            if layer_id not in visible_ids and not selected:
+                continue
+            if selected_only and not selected:
+                continue
             draw_rect = self._animated_layer_rect(layer)
-            selected = str(layer.get("id", "")) in self.selected_ids
             color = (255, 210, 70) if selected else (100, 180, 255)
-            border_rect = draw_rect if not (selected and self.selection_mode == "content" and str(layer.get("id", "")) == self.active_layer_id) else self._content_rect(layer, draw_rect)
+            border_rect = draw_rect if not (selected and self.selection_mode == "content" and layer_id == self.active_layer_id) else self._content_rect(layer, draw_rect)
             pygame.draw.rect(screen, color, border_rect, 1)
             if selected:
                 pygame.draw.rect(screen, (255, 255, 255), border_rect.inflate(2, 2), 1)
-            if self.show_names:
+            if self.show_names and (self.show_bounds or selected):
                 tag = _render_text_surface(str(layer.get("name", "")), 14, color, False, (0, 0, 0), 1)
                 tag_pos = (border_rect.x, max(0, border_rect.y - tag.get_height() - 2))
                 screen.blit(tag, tag_pos)
@@ -1542,7 +1656,6 @@ class SettlementLayoutDebugger:
         items = [
             ("显示全部布局边框", self.show_bounds),
             ("显示控件命名", self.show_names),
-            ("启用等级小框", self.show_reward_group),
             ("显示帮助说明", self.show_help),
         ]
         y = content.y
@@ -1551,13 +1664,27 @@ class SettlementLayoutDebugger:
             self._draw_button(screen, rect, label, active)
             y += 32
 
+    def _draw_badge_panel(self, screen: pygame.Surface, panel: DebugPanel):
+        rects = self._badge_button_rects(panel)
+        labels = {
+            "全连": "全连",
+            "三把S": "三把全连",
+            "失败": "失败",
+        }
+        current = str(self.payload.get("顶标", "全连") or "全连")
+        for key, rect in rects.items():
+            self._draw_button(screen, rect, labels[key], current == key)
+
     def _draw_function_panel(self, screen: pygame.Surface, panel: DebugPanel):
         rects = self._function_button_rects(panel)
-        self._draw_button(screen, rects["global"], f"全局 {'播放' if self.global_paused else '暂停'}", not self.global_paused)
-        self._draw_button(screen, rects["numbers"], f"数字 {'播放' if self.numbers_paused else '暂停'}", not self.numbers_paused)
-        self._draw_button(screen, rects["level"], f"等级 {'播放' if self.level_paused else '暂停'}", not self.level_paused)
-        self._draw_button(screen, rects["replay"], "重播", False)
-        self._draw_button(screen, rects["final"], "终态", False)
+        for process_index in (1, 2, 3):
+            checked = self.selected_process == process_index
+            self._draw_button(screen, rects[f"check_{process_index}"], "√" if checked else "", checked)
+            label_rect = rects[f"label_{process_index}"]
+            label_surface = _render_text_surface(f"流程{process_index}", 16, (245, 248, 255), checked)
+            screen.blit(label_surface, label_surface.get_rect(midleft=(label_rect.x + 2, label_rect.centery)))
+            playing = checked and self.process_playing
+            self._draw_button(screen, rects[f"play_{process_index}"], "播放", playing)
 
     def _draw_layer_panel(self, screen: pygame.Surface, panel: DebugPanel):
         rows, list_rect = self._layer_panel_row_rects(panel)
@@ -1633,6 +1760,8 @@ class SettlementLayoutDebugger:
             return
         if panel.panel_id == "visual":
             self._draw_visual_panel(screen, panel)
+        elif panel.panel_id == "badge":
+            self._draw_badge_panel(screen, panel)
         elif panel.panel_id == "function":
             self._draw_function_panel(screen, panel)
         elif panel.panel_id == "layers":
@@ -1644,11 +1773,13 @@ class SettlementLayoutDebugger:
         lines = [
             "单击选布局，双击选贴图；双击文字可编辑文字/字号/色值/描边/字间距/粗体",
             "拖动移动；滚轮等比缩放；Shift+滚轮改宽；Ctrl+滚轮改高；方向键 1px，Shift+方向键 10px",
+            "顶部标面板可直接切换全连 / 三把全连 / 失败，并自动切回流程1预览效果",
+            "功能面板勾选流程1/2/3切换当前流程；播放按钮只回放当前流程；空格回放或定格当前流程",
             "Shift+点图层行多选；+/- 改图层 Z；F1/F2/F3 折叠面板；Ctrl+S 保存；Ctrl+R 重置",
-            "只有全局暂停时才能改布局",
+            "播放中不可改布局；图层选中后会强制显示对应边框",
         ]
         x = 22
-        y = self.screen.get_height() - 92
+        y = self.screen.get_height() - 112
         for line in lines:
             text = _render_text_surface(line, 15, (245, 245, 250), False, (0, 0, 0), 1)
             screen.blit(text, (x, y))
@@ -1666,8 +1797,13 @@ class SettlementLayoutDebugger:
         screen.blit(text, rect.topleft)
 
     def _draw(self):
-        self._draw_canvas(self.screen)
-        self._draw_selection(self.screen)
+        self.canvas.fill((0, 0, 0, 0))
+        self._draw_canvas(self.canvas)
+        self._draw_selection(self.canvas)
+        self.screen.fill((0, 0, 0))
+        viewport = self._preview_rect()
+        scaled_canvas = pygame.transform.smoothscale(self.canvas, viewport.size)
+        self.screen.blit(scaled_canvas, viewport.topleft)
         for panel in self.panels.values():
             self._draw_panel(self.screen, panel)
         self._draw_text_editor(self.screen)

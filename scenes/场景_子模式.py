@@ -3,6 +3,12 @@ import math
 import pygame
 
 from core.工具 import cover缩放, 安全加载图片
+from core.踏板控制 import (
+    踏板动作_左,
+    踏板动作_右,
+    踏板动作_确认,
+    循环切换索引,
+)
 from scenes.场景基类 import 场景基类, 场景切换请求
 from ui.按钮 import 图片按钮
 from ui.top栏 import 生成top栏
@@ -346,6 +352,49 @@ class 场景_子模式(场景基类):
             int(w * 0.18), int(h * 0.34), int(w * 0.26), int(h * 0.26)
         )
 
+    def _应用模式选中(self, 模式名: str):
+        self._当前选中模式名 = 模式名
+        self._选中开始毫秒 = pygame.time.get_ticks()
+        self._确认次数 = 1
+        self._首次选中隐藏模式名 = 模式名
+        self._大图标表面 = None
+        self._大图标路径缓存 = None
+        return None
+
+    def _取当前选中索引(self) -> int | None:
+        if not self.子模式按钮列表 or (not self._当前选中模式名):
+            return None
+        for idx, (_按钮, 模式名, _小图, _大图) in enumerate(self.子模式按钮列表):
+            if 模式名 == self._当前选中模式名:
+                return int(idx)
+        return None
+
+    def _踏板切换模式(self, 步进: int):
+        if not self.子模式按钮列表:
+            return None
+        新索引 = 循环切换索引(
+            self._取当前选中索引(),
+            len(self.子模式按钮列表),
+            int(步进),
+            初始索引=0,
+        )
+        _按钮, 模式名, _小图, _大图 = self.子模式按钮列表[int(新索引)]
+        if self._当前选中模式名 == 模式名:
+            return None
+        self._按钮音效.播放()
+        return self._应用模式选中(str(模式名))
+
+    def _触发当前模式确认(self):
+        if (not self._当前选中模式名) or self._全屏放大过渡.是否进行中():
+            return None
+        self._待进入选歌模式名 = self._当前选中模式名
+        if self._大图标表面 and self._大图标矩形:
+            self._过渡起始图 = pygame.transform.smoothscale(
+                self._大图标表面, (self._大图标矩形.w, self._大图标矩形.h)
+            ).convert_alpha()
+            self._全屏放大过渡.开始(self._过渡起始图, self._大图标矩形)
+        return None
+
     # -------------------------
     # 绘制：背景 / top / 底部
     # -------------------------
@@ -636,6 +685,15 @@ class 场景_子模式(场景基类):
     # -------------------------
     # 交互事件
     # -------------------------
+    def 处理全局踏板(self, 动作: str):
+        if 动作 == 踏板动作_左:
+            return self._踏板切换模式(-1)
+        if 动作 == 踏板动作_右:
+            return self._踏板切换模式(+1)
+        if 动作 == 踏板动作_确认:
+            return self._触发当前模式确认()
+        return None
+
     def 处理事件(self, 事件):
         if 事件.type == pygame.VIDEORESIZE:
             self.重算布局()
@@ -651,18 +709,7 @@ class 场景_子模式(场景基类):
             and 事件.button == 1
         ):
             if self._大图标矩形 and self._大图标矩形.collidepoint(事件.pos):
-                # ✅ 启动“放大到全屏过渡”，完成后再进入选歌（取消黑屏过渡）
-                if (not self._全屏放大过渡.是否进行中()) and self._当前选中模式名:
-                    self._待进入选歌模式名 = self._当前选中模式名
-
-                    # 过渡起始图：用当前已加载的大图（原图），按当前rect缩放成一张surface作为起始图
-                    if self._大图标表面:
-                        self._过渡起始图 = pygame.transform.smoothscale(
-                            self._大图标表面, (self._大图标矩形.w, self._大图标矩形.h)
-                        ).convert_alpha()
-                        self._全屏放大过渡.开始(self._过渡起始图, self._大图标矩形)
-
-                return None
+                return self._触发当前模式确认()
 
         # 小按钮点击（仍用 图片按钮 命中）
         for 按钮, 模式名, _小图, _大图 in self.子模式按钮列表:
@@ -671,21 +718,11 @@ class 场景_子模式(场景基类):
                     self._按钮音效.播放()
                 # 第一次点击：选中 + 隐藏该按钮 + 播放大图渐隐放大
                 if self._当前选中模式名 != 模式名:
-                    self._当前选中模式名 = 模式名
-                    self._选中开始毫秒 = pygame.time.get_ticks()
-                    self._确认次数 = 1
-
-                    # ✅ 隐藏被点的按钮
-                    self._首次选中隐藏模式名 = 模式名
-
-                    # ✅ 重置大图缓存，让大图立刻切换成当前模式图
-                    self._大图标表面 = None
-                    self._大图标路径缓存 = None
-                    return None
+                    return self._应用模式选中(str(模式名))
 
                 # 第二次点击确认
                 if self._当前选中模式名 == 模式名:
-                    return self._进入选歌(模式名)
+                    return self._触发当前模式确认()
 
         return None
 

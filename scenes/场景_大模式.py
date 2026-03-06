@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import pygame
 
@@ -11,6 +12,12 @@ except Exception:
     _可用视频 = False
 
 from core.工具 import 绘制文本, cover缩放, 安全加载图片
+from core.踏板控制 import (
+    踏板动作_左,
+    踏板动作_右,
+    踏板动作_确认,
+    循环切换索引,
+)
 from scenes.场景基类 import 场景基类, 场景切换请求
 from ui.按钮 import 图片按钮
 from ui.按钮特效 import 公用按钮音效
@@ -155,6 +162,9 @@ class 场景_大模式(场景基类):
         # toast
         self._提示文本 = ""
         self._提示截止时间 = 0.0
+        self._提示强调开始时间 = 0.0
+        self._banner摇头开始时间 = 0.0
+        self._banner摇头时长 = 0.34
 
         # ✅ banner 点击动效
         from ui.按钮特效 import 公用按钮点击特效
@@ -183,6 +193,8 @@ class 场景_大模式(场景基类):
         self._当前banner原图 = None
         self._提示文本 = ""
         self._提示截止时间 = 0.0
+        self._提示强调开始时间 = 0.0
+        self._banner摇头开始时间 = 0.0
         self._延迟目标场景 = None
         self._按钮当前偏移x = {cfg["键"]: 0.0 for cfg in self._模式列表}
         self._选中开始毫秒 = 0
@@ -311,6 +323,8 @@ class 场景_大模式(场景基类):
         self._当前选择键 = 键
         self._当前banner原图 = self._banner原图字典.get(键)
         self._banner特效开始时间 = time.time()
+        self._提示文本 = ""
+        self._提示截止时间 = 0.0
 
         for cfg in self._模式列表:
             if cfg["键"] == 键:
@@ -318,6 +332,125 @@ class 场景_大模式(场景基类):
                 self.上下文["状态"]["大模式"] = cfg["键"]
                 self.上下文["状态"]["songs子文件夹"] = cfg["songs子目录"]
                 break
+
+    def _取当前选择索引(self) -> int | None:
+        if self._当前选择键 not in self._按钮键列表:
+            return None
+        return int(self._按钮键列表.index(self._当前选择键))
+
+    def _踏板切换选择(self, 步进: int):
+        if not self._按钮键列表:
+            return None
+        新索引 = 循环切换索引(
+            self._取当前选择索引(),
+            len(self._按钮键列表),
+            int(步进),
+            初始索引=0,
+        )
+        键 = self._按钮键列表[int(新索引)]
+        if self._当前选择键 == 键:
+            return None
+        self._按钮音效.播放()
+        self._选中开始毫秒 = pygame.time.get_ticks()
+        if 键 not in self._按钮当前偏移x:
+            self._按钮当前偏移x[键] = 0.0
+        self._设置选择(键)
+        return None
+
+    def _触发不可用提示(self):
+        self._提示文本 = "我还没写，所以点不动"
+        self._提示截止时间 = time.time() + 1.6
+        self._提示强调开始时间 = time.time()
+        self._banner摇头开始时间 = time.time()
+
+    def _取banner摇头偏移(self) -> int:
+        if self._banner摇头开始时间 <= 0.0:
+            return 0
+        t = (time.time() - float(self._banner摇头开始时间)) / max(
+            0.001, float(self._banner摇头时长)
+        )
+        if t <= 0.0 or t >= 1.0:
+            return 0
+        幅度 = 22.0 * (1.0 - float(t) * 0.15)
+        return int(math.sin(float(t) * math.pi * 4.0) * 幅度)
+
+    def _触发当前选择确认(self):
+        if not self._当前选择键:
+            return None
+
+        self._按钮音效.播放()
+        if self._当前选择键 in self._可进入子模式集合:
+            if getattr(self, "_正在放大切场景", False):
+                return None
+            self._正在放大切场景 = True
+
+            起始图 = getattr(self, "_banner当前图", None)
+            起始rect = getattr(self, "_banner当前rect", None)
+            if 起始rect is None:
+                起始rect = self._rect_banner命中.copy()
+
+            if 起始图 is None and self._当前banner原图 is not None:
+                起始图 = pygame.transform.smoothscale(
+                    self._当前banner原图,
+                    (max(1, 起始rect.w), max(1, 起始rect.h)),
+                ).convert_alpha()
+
+            if 起始图 is not None and getattr(self, "_全屏放大过渡", None) is not None:
+                self._全屏放大过渡.开始(起始图, 起始rect)
+                self._延迟目标场景 = "子模式"
+                pygame.time.set_timer(
+                    self._事件_延迟切场景,
+                    int(getattr(self._全屏放大过渡, "总时长毫秒", 520)),
+                    loops=1,
+                )
+                return None
+
+            self._延迟目标场景 = "子模式"
+            pygame.time.set_timer(self._事件_延迟切场景, 300, loops=1)
+            return None
+
+        self._触发不可用提示()
+        return None
+
+    def _绘制未开放提示(self):
+        if (not self._提示文本) or time.time() >= float(self._提示截止时间 or 0.0):
+            return
+
+        屏幕 = self.上下文["屏幕"]
+        小字 = self.上下文["字体"]["小字"]
+        w, h = 屏幕.get_size()
+        t = max(0.0, time.time() - float(self._提示强调开始时间 or 0.0))
+        脉冲 = 0.5 + 0.5 * math.sin(t * 9.0)
+
+        宽 = min(int(w * 0.58), 860)
+        高 = max(82, int(h * 0.09))
+        rect = pygame.Rect(0, 0, 宽, 高)
+        rect.center = (w // 2, int(h * 0.145))
+
+        pygame.draw.rect(屏幕, (0, 0, 0), rect.move(0, 8), border_radius=28)
+
+        面 = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        pygame.draw.rect(面, (42, 18, 18, 228), 面.get_rect(), border_radius=28)
+        高亮宽 = max(16, int(rect.w * (0.16 + 0.04 * 脉冲)))
+        pygame.draw.rect(
+            面,
+            (255, 115, 92, 120),
+            pygame.Rect(18, 12, 高亮宽, rect.h - 24),
+            border_radius=12,
+        )
+        pygame.draw.rect(
+            面,
+            (255, 193, 107),
+            面.get_rect(),
+            width=3,
+            border_radius=28,
+        )
+        屏幕.blit(面, rect.topleft)
+
+        标签色 = (255, 223, 180) if 脉冲 >= 0.5 else (255, 201, 147)
+        提示色 = (255, 241, 220)
+        绘制文本(屏幕, "UNAVAILABLE", 小字, 标签色, (rect.centerx, rect.y + 24), "center")
+        绘制文本(屏幕, self._提示文本, 小字, 提示色, (rect.centerx, rect.centery + 16), "center")
 
     # ---------------- 绘制 ----------------
     def _画背景(self):
@@ -561,6 +694,7 @@ class 场景_大模式(场景基类):
             ).convert_alpha()
             实际矩形 = 可画图.get_rect()
             实际矩形.center = 槽位矩形.center
+            实际矩形.x += self._取banner摇头偏移()
             self._rect_banner命中 = 实际矩形
         else:
             self._rect_banner命中 = 槽位矩形.copy()
@@ -620,16 +754,7 @@ class 场景_大模式(场景基类):
         self._更新推开动画()
         self._画按钮()
         self._画底部credit()
-
-        if self._提示文本 and time.time() < self._提示截止时间:
-            绘制文本(
-                屏幕,
-                self._提示文本,
-                小字,
-                (219, 206, 155),
-                (w // 2, int(h * 0.15)),
-                "center",
-            )
+        self._绘制未开放提示()
 
         # ✅ 放到最后：全屏放大过渡盖住一切
         if getattr(self, "_全屏放大过渡", None) is not None:
@@ -637,6 +762,15 @@ class 场景_大模式(场景基类):
                 self._全屏放大过渡.更新并绘制(屏幕)
 
     # ---------------- 事件 ----------------
+
+    def 处理全局踏板(self, 动作: str):
+        if 动作 == 踏板动作_左:
+            return self._踏板切换选择(-1)
+        if 动作 == 踏板动作_右:
+            return self._踏板切换选择(+1)
+        if 动作 == 踏板动作_确认:
+            return self._触发当前选择确认()
+        return None
 
     def 处理事件(self, 事件):
         if 事件.type == pygame.VIDEORESIZE:
@@ -664,49 +798,7 @@ class 场景_大模式(场景基类):
         # ✅ 点击 banner：允许进子模式时，启动“公用放大过渡器”
         if self._当前选择键 and 事件.type == pygame.MOUSEBUTTONUP and 事件.button == 1:
             if self._rect_banner命中.collidepoint(事件.pos):
-                self._按钮音效.播放()
-
-                if self._当前选择键 in self._可进入子模式集合:
-                    # 防止重复触发
-                    if getattr(self, "_正在放大切场景", False):
-                        return None
-                    self._正在放大切场景 = True
-
-                    # ✅ 起始图/rect：用 _画banner与文案 缓存的“当前实际绘制版本”
-                    起始图 = getattr(self, "_banner当前图", None)
-                    起始rect = getattr(self, "_banner当前rect", None)
-
-                    # 兜底：如果缓存缺失，就用命中rect + 当前banner原图临时缩放一张
-                    if 起始rect is None:
-                        起始rect = self._rect_banner命中.copy()
-
-                    if 起始图 is None and self._当前banner原图 is not None:
-                        起始图 = pygame.transform.smoothscale(
-                            self._当前banner原图,
-                            (max(1, 起始rect.w), max(1, 起始rect.h)),
-                        ).convert_alpha()
-
-                    if (
-                        起始图 is not None
-                        and getattr(self, "_全屏放大过渡", None) is not None
-                    ):
-                        self._全屏放大过渡.开始(起始图, 起始rect)
-
-                        self._延迟目标场景 = "子模式"
-                        pygame.time.set_timer(
-                            self._事件_延迟切场景,
-                            int(getattr(self._全屏放大过渡, "总时长毫秒", 520)),
-                            loops=1,
-                        )
-                    else:
-                        # 兜底：真没图就退回原来的 timer 切场景
-                        self._延迟目标场景 = "子模式"
-                        pygame.time.set_timer(self._事件_延迟切场景, 300, loops=1)
-
-                else:
-                    self._提示文本 = "我还没写，所以点不动"
-                    self._提示截止时间 = time.time() + 1.5
-                return None
+                return self._触发当前选择确认()
 
         # 小按钮：点谁选谁
         for i, b in enumerate(self._按钮列表):

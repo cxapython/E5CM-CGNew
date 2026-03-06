@@ -43,7 +43,6 @@ def 默认资源路径():
         "backmovies目录": 拼路径("backmovies"),
         # 指定只播一个视频；留空则选 backmovies 排序第一个
         "投币_背景视频": "",
-        "投币_遮罩": 拼路径("冷资源", "backimages", "50%黑色遮罩.png"),
         "投币_BGM": 拼路径("冷资源", "backsound", "back_music_logo.mp3"),
         "投币_logo": 拼路径("UI-img", "拼贴banner", "大logo.png"),
         "投币_联网图标": 拼路径("UI-img", "联网状态", "已联网.png"),

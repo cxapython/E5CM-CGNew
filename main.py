@@ -13,6 +13,7 @@ except Exception:
 
 from core.常量与路径 import 默认资源路径
 from core.对局状态 import 取每局所需信用
+from core.踏板控制 import 解析踏板动作
 from core.工具 import 获取字体
 from core.音频 import 音乐管理
 from core.视频 import 全局视频循环播放器, 选择第一个视频
@@ -537,9 +538,6 @@ def 主函数():
             f"设置投币快捷键（当前：{str(状态.get('投币快捷键显示', 投币快捷键显示))}）",
             "开启背景音乐" if bool(非游戏菜单背景音乐关闭) else "关闭背景音乐",
         ]
-        if str(当前场景名 or "") == "选歌":
-            当前方案 = _取兜底击中特效方案()
-            菜单项.append(f"兜底击中特效（{'特效2' if '2' in 当前方案 else '特效1'}）")
         菜单项.append("退出到桌面")
         return 菜单项
 
@@ -591,9 +589,6 @@ def 主函数():
             return
         if "背景音乐" in 选项:
             _切换非游戏背景音乐()
-            return
-        if "兜底击中特效" in 选项:
-            _切换兜底击中特效方案()
             return
         if 选项 == "退出到桌面":
             _退出程序()
@@ -857,6 +852,37 @@ def 主函数():
             值 = 60
         return max(30, min(240, 值))
 
+    def _处理场景返回结果(结果) -> bool:
+        nonlocal 待切换目标场景名, 待切换载荷
+
+        目标 = None
+        载荷 = None
+        禁用黑屏 = False
+
+        if isinstance(结果, dict):
+            if bool(结果.get("退出程序", False)):
+                _退出程序()
+            目标 = 结果.get("切换到")
+            载荷 = 结果.get("载荷")
+            禁用黑屏 = bool(结果.get("禁用黑屏过渡", False))
+        else:
+            try:
+                目标 = getattr(结果, "目标场景名", None)
+                载荷 = getattr(结果, "载荷", None)
+            except Exception:
+                目标 = None
+
+        if not 目标 or (目标 not in 场景表):
+            return False
+
+        待切换目标场景名 = 目标
+        待切换载荷 = 载荷
+        if 禁用黑屏:
+            _执行场景切换()
+        else:
+            过渡.开始(目标)
+        return True
+
     while True:
         时钟.tick(_获取当前目标帧率())
 
@@ -937,57 +963,26 @@ def 主函数():
                     非游戏菜单索引 = 0
                     非游戏菜单等待投币键 = False
 
+            踏板动作 = 解析踏板动作(事件)
+            if 踏板动作 is not None:
+                处理踏板 = getattr(当前场景, "处理全局踏板", None)
+                if callable(处理踏板):
+                    try:
+                        踏板结果 = 处理踏板(踏板动作)
+                    except Exception:
+                        踏板结果 = None
+                    _处理场景返回结果(踏板结果)
+                    continue
+
             结果 = 当前场景.处理事件(事件)
-
-            目标 = None
-            载荷 = None
-            if isinstance(结果, dict):
-                if bool(结果.get("退出程序", False)):
-                    _退出程序()
-                目标 = 结果.get("切换到")
-                载荷 = 结果.get("载荷")
-
-            if 目标 and (目标 in 场景表):
-                禁用黑屏 = (
-                    bool(结果.get("禁用黑屏过渡", False))
-                    if isinstance(结果, dict)
-                    else False
-                )
-                待切换目标场景名 = 目标
-                待切换载荷 = 载荷
-
-                if 禁用黑屏:
-                    _执行场景切换()
-                else:
-                    过渡.开始(目标)
+            _处理场景返回结果(结果)
 
         if (not 过渡.是否进行中()) and hasattr(当前场景, "更新"):
             try:
                 更新结果 = 当前场景.更新()
             except Exception:
                 更新结果 = None
-
-            目标 = None
-            载荷 = None
-            if isinstance(更新结果, dict):
-                if bool(更新结果.get("退出程序", False)):
-                    _退出程序()
-                目标 = 更新结果.get("切换到")
-                载荷 = 更新结果.get("载荷")
-
-            if 目标 and (目标 in 场景表):
-                禁用黑屏 = (
-                    bool(更新结果.get("禁用黑屏过渡", False))
-                    if isinstance(更新结果, dict)
-                    else False
-                )
-                待切换目标场景名 = 目标
-                待切换载荷 = 载荷
-
-                if 禁用黑屏:
-                    _执行场景切换()
-                else:
-                    过渡.开始(目标)
+            _处理场景返回结果(更新结果)
 
         过渡.更新(_执行场景切换)
 

@@ -14,6 +14,7 @@ from core.对局状态 import (
     设置对局流程,
     重置游戏流程状态,
 )
+from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 from core.工具 import 绘制底部联网与信用
 from scenes.场景基类 import 场景基类
 
@@ -192,6 +193,22 @@ class 场景_中转提示(场景基类):
                 self._执行否分支()
         return None
 
+    def 处理全局踏板(self, 动作: str):
+        if self._退出动作 is not None or self._阶段类型 != "继续挑战":
+            return None
+        if 动作 == 踏板动作_左:
+            self._按钮选中 = "是"
+            return None
+        if 动作 == 踏板动作_右:
+            self._按钮选中 = "否"
+            return None
+        if 动作 == 踏板动作_确认:
+            if self._按钮选中 == "是":
+                self._执行是分支()
+            else:
+                self._执行否分支()
+        return None
+
     def 绘制(self):
         屏幕: pygame.Surface = self.上下文["屏幕"]
         屏宽, 屏高 = 屏幕.get_size()
@@ -336,7 +353,7 @@ class 场景_中转提示(场景基类):
         self._是否显示倒计时 = True
         self._续币基准值 = int(取信用数(self.上下文.get("状态", {})))
         self._继续动作 = {
-            "类型": "选歌",
+            **self._构建返回选歌动作(),
             "下一关卡": int(下一关卡),
             "重开新局": bool(重开新局),
             "累计S数": 0 if 重开新局 else int(self._结算后S数),
@@ -352,7 +369,7 @@ class 场景_中转提示(场景基类):
         self._是否显示倒计时 = True
         self._按钮选中 = "是"
         self._继续动作 = {
-            "类型": "选歌",
+            **self._构建返回选歌动作(),
             "下一关卡": int(下一关卡),
             "重开新局": bool(重开新局),
             "累计S数": 0 if 重开新局 else int(self._结算后S数),
@@ -407,7 +424,7 @@ class 场景_中转提示(场景基类):
         self._进入自动提示(
             提示键=提示键,
             持续秒=提示秒数,
-            动作={"类型": "选歌"},
+            动作=self._构建返回选歌动作(),
             显示倒计时=False,
         )
 
@@ -449,7 +466,7 @@ class 场景_中转提示(场景基类):
             累计S数=int(累计S数),
             赠送第四把=False,
         )
-        self._开始退出({"类型": "选歌"})
+        self._开始退出(self._构建返回选歌动作())
 
     def _执行否分支(self):
         self._开始退出(dict(self._默认否动作 or {"类型": "投币"}))
@@ -466,20 +483,36 @@ class 场景_中转提示(场景基类):
             重置游戏流程状态(self.上下文.get("状态", {}))
             return {"切换到": "投币", "禁用黑屏过渡": True}
         if 类型 == "选歌":
-            return self._返回选歌()
+            return self._返回选歌(动作)
         return None
 
-    def _返回选歌(self):
+    def _构建返回选歌动作(self) -> dict:
+        return {
+            "类型": "选歌",
+            "选歌类型": str(self._载荷.get("类型", "竞速") or "竞速"),
+            "选歌模式": str(self._载荷.get("模式", "竞速") or "竞速"),
+            "选歌原始索引": int(self._载荷.get("选歌原始索引", -1) or -1),
+            "选歌恢复详情页": False,
+        }
+
+    def _返回选歌(self, 动作: Optional[dict] = None):
         状态 = (
             self.上下文.get("状态", {})
             if isinstance(self.上下文.get("状态", {}), dict)
             else {}
         )
+        动作 = 动作 if isinstance(动作, dict) else {}
         try:
-            状态["选歌_类型"] = str(self._载荷.get("类型", "竞速") or "竞速")
-            状态["选歌_模式"] = str(self._载荷.get("模式", "竞速") or "竞速")
-            状态["选歌_恢复原始索引"] = int(self._载荷.get("选歌原始索引", -1) or -1)
-            状态["选歌_恢复详情页"] = False
+            状态["选歌_类型"] = str(
+                动作.get("选歌类型", self._载荷.get("类型", "竞速")) or "竞速"
+            )
+            状态["选歌_模式"] = str(
+                动作.get("选歌模式", self._载荷.get("模式", "竞速")) or "竞速"
+            )
+            状态["选歌_恢复原始索引"] = int(
+                动作.get("选歌原始索引", self._载荷.get("选歌原始索引", -1)) or -1
+            )
+            状态["选歌_恢复详情页"] = bool(动作.get("选歌恢复详情页", False))
         except Exception:
             pass
         return {"切换到": "选歌", "禁用黑屏过渡": True}

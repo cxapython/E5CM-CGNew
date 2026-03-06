@@ -214,6 +214,7 @@ class 谱面渲染器布局管理器:
         self._字体缓存: Dict[Tuple[str, int, bool], pygame.font.Font] = {}
         self._文本图缓存: Dict[Tuple[str, str, int, bool, Tuple[int, int, int]], pygame.Surface] = {}
         self._缩放图缓存: Dict[Tuple[str, int, int], pygame.Surface] = {}
+        self._皮肤帧处理缓存: Dict[Tuple[str, str], Optional[pygame.Surface]] = {}
         self._渲染清单缓存: Dict[
             Tuple[Any, ...], List[Dict[str, Any]]
         ] = {}
@@ -289,7 +290,7 @@ class 谱面渲染器布局管理器:
             "y偏移": -12.0,
             "缩放": 1.0,
             "hold宽度系数": 0.96,
-            "判定区宽度系数": 1.08,
+            "判定区宽度系数": 1.0,
             "击中特效宽度系数": 2.6,
             "击中特效偏移x": 0.0,
             "击中特效偏移y": 0.0,
@@ -371,6 +372,7 @@ class 谱面渲染器布局管理器:
     def _清空运行时缓存(self):
         self._渲染清单缓存.clear()
         self._缩放图缓存.clear()
+        self._皮肤帧处理缓存.clear()
 
     def _重建布局依赖键(self):
         依赖键: set[str] = {"_调试强制显示", "_调试隐藏控件ids"}
@@ -631,7 +633,7 @@ class 谱面渲染器布局管理器:
 
             if 控件id == "调试_判定区宽度":
                 参数 = self._取游戏区参数_可写()
-                当前 = float(参数.get("判定区宽度系数", 1.08))
+                当前 = float(参数.get("判定区宽度系数", 1.0))
                 新 = 当前 + (0.02 if 方向 > 0 else -0.02)
                 参数["判定区宽度系数"] = float(max(0.6, min(2.0, 新)))
                 self._清空运行时缓存()
@@ -1186,7 +1188,33 @@ class 谱面渲染器布局管理器:
             取函数 = getattr(图集, "取", None)
             if not callable(取函数):
                 return None
-            return 取函数(帧名)
+            原图 = 取函数(帧名)
+            if not isinstance(原图, pygame.Surface):
+                return None
+            if 分包名 != "key_effect":
+                return 原图
+
+            缓存键 = (str(分包名), str(帧名))
+            if 缓存键 in self._皮肤帧处理缓存:
+                return self._皮肤帧处理缓存[缓存键]
+
+            try:
+                图 = 原图.copy().convert_alpha()
+                w = int(图.get_width())
+                h = int(图.get_height())
+                if w > 0 and h > 0:
+                    for y in range(h):
+                        for x in range(w):
+                            r, g, b, a = 图.get_at((x, y))
+                            if a <= 0:
+                                continue
+                            if max(int(r), int(g), int(b)) <= 8:
+                                图.set_at((x, y), (0, 0, 0, 0))
+                self._皮肤帧处理缓存[缓存键] = 图
+                return 图
+            except Exception:
+                self._皮肤帧处理缓存[缓存键] = 原图
+                return 原图
         except Exception:
             return None
 

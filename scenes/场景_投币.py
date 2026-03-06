@@ -2,6 +2,8 @@ import os
 import time
 import pygame
 
+from core.对局状态 import 取每局所需信用
+
 try:
     import cv2
 
@@ -94,7 +96,6 @@ class 场景_投币:
         self.credit = 0
         self.credit_上限 = 3
 
-        self._遮罩原图 = self._安全加载图片(资源["投币_遮罩"], 透明=True)
         self._logo原图 = self._安全加载图片(资源["投币_logo"], 透明=True)
         self._联网原图 = self._安全加载图片(资源["投币_联网图标"], 透明=True)
         self._按钮原图 = self._安全加载图片(资源["投币_按钮"], 透明=True)
@@ -168,6 +169,19 @@ class 场景_投币:
         # ✅ 不要关闭全局视频
         pass
 
+    def 更新(self):
+        try:
+            状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
+            if not isinstance(状态, dict):
+                状态 = {}
+            当前信用 = int(状态.get("投币数", 0) or 0)
+            所需信用 = int(取每局所需信用(状态))
+            if 当前信用 >= 所需信用:
+                return {"切换到": "玩家选择", "禁用黑屏过渡": True}
+        except Exception:
+            pass
+        return None
+
     # ---------------- 绘制 ----------------
 
     def 绘制(self):
@@ -231,11 +245,12 @@ class 场景_投币:
             屏幕.blit(提示面, 提示rect.topleft)
 
             提示字体2 = self.上下文.get("字体", {}).get("小字", 字体_credit)
-            提示2 = "请窗口最大化以后再点击F11全屏"
-            提示面2 = 提示字体2.render(提示2, True, (220, 220, 220))
-            提示rect2 = 提示面2.get_rect()
-            提示rect2.midtop = (w // 2, 18)
-            屏幕.blit(提示面2, 提示rect2.topleft)
+            if int(现在 - self._开始时间) % 2 == 0:
+                提示2 = "请窗口最大化以后再点击F11全屏"
+                提示面2 = 提示字体2.render(提示2, True, (220, 220, 220))
+                提示rect2 = 提示面2.get_rect()
+                提示rect2.midtop = (w // 2, 18)
+                屏幕.blit(提示面2, 提示rect2.topleft)
         except Exception:
             pass
 
@@ -303,12 +318,9 @@ class 场景_投币:
             return
         self._缓存尺寸 = (w, h)
 
-        if self._遮罩原图:
-            self._遮罩图 = self._cover缩放(self._遮罩原图, w, h)
-        else:
-            暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
-            暗层.fill((0, 0, 0, 128))
-            self._遮罩图 = 暗层
+        暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
+        暗层.fill((0, 0, 0, 128))
+        self._遮罩图 = 暗层
 
         logo_rect = self._映射到屏幕_rect(self._bbox_logo)
         self._logo图 = (

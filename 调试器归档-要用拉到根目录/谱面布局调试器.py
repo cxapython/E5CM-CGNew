@@ -292,17 +292,6 @@ def _构建调试上下文(
     特效目标宽_布局 = (float(箭头目标宽) * 特效宽度系数 * 游戏缩放 * 1.25) / 比例
     特效目标宽_布局 = float(max(40.0, 特效目标宽_布局))
 
-    是否显示击中特效 = bool(模拟普通击中特效) or bool(模拟hold击中特效循环)
-    播放倍率 = 2.0 if bool(模拟hold击中特效循环) else 1.0
-    帧号 = int((float(当前秒) * 60.0 * 播放倍率) % 18.0)
-    特效序列 = {
-        0: ("image_084", False),
-        1: ("image_085", False),
-        2: ("image_086", False),
-        3: ("image_085", True),
-        4: ("image_084", True),
-    }
-
     调试血量显示 = float(max(0.0, min(1.0, 调试血量显示)))
     可见血量HP = int(round(调试血量显示 * 1000.0))
     总血量HP = 0 if 调试血量显示 <= 0.001 else int(min(1200, 200 + 可见血量HP))
@@ -311,6 +300,7 @@ def _构建调试上下文(
     if bool(模拟双踏板模式):
         调试隐藏控件ids.add("判定区组")
         调试隐藏控件ids.add("特效层组")
+        调试隐藏控件ids.add("计数动画组")
 
     上下文 = {
         "_调试强制显示": bool(强制显示),
@@ -386,12 +376,141 @@ def _构建调试上下文(
         "调试_圆环频谱_线条间隔": int(max(1, min(8, 圆环频谱线条间隔))),
     }
 
-    for 轨道序号, (前缀, 是否翻转) in 特效序列.items():
-        上下文[f"特效帧_{轨道序号}"] = (
-            f"{前缀}_{帧号:04d}.png" if 是否显示击中特效 else ""
-        )
-        上下文[f"特效翻转_{轨道序号}"] = bool(是否翻转) if 是否显示击中特效 else False
+    for 轨道序号 in range(5):
+        上下文[f"特效帧_{轨道序号}"] = ""
+        上下文[f"特效翻转_{轨道序号}"] = False
 
+    return 上下文
+
+
+def _取双踏板调试轨道中心列表(
+    屏幕宽: int,
+    左X偏移: float = 0.0,
+    右X偏移: float = 0.0,
+) -> Tuple[List[int], List[int]]:
+    屏幕宽 = int(max(1, 屏幕宽))
+    箭头默认缩放 = 1.2
+    箭头基准宽 = int(max(64, min(118, 屏幕宽 * 0.072)))
+    箭头目标宽 = int(max(28, int(箭头基准宽 * 箭头默认缩放)))
+    轨道中心间距 = int(max(22, int(箭头目标宽 * 0.88)))
+    轨道槽宽 = int(max(箭头目标宽 + 10, int(箭头目标宽 * 1.08)))
+    组宽 = int(轨道槽宽 + 4 * 轨道中心间距)
+
+    边距 = int(max(20, 屏幕宽 * 0.02))
+    中缝 = int(max(22, 屏幕宽 * 0.02))
+    最大组宽 = int(max(200, (屏幕宽 - 边距 * 2 - 中缝) // 2))
+    if 组宽 > 最大组宽:
+        缩放 = float(max(0.5, 最大组宽 / float(max(1, 组宽))))
+        轨道中心间距 = int(max(18, int(轨道中心间距 * 缩放)))
+        轨道槽宽 = int(max(30, int(轨道槽宽 * 缩放)))
+        组宽 = int(轨道槽宽 + 4 * 轨道中心间距)
+
+    左起x = int((屏幕宽 - (组宽 * 2 + 中缝)) // 2)
+    右起x = int(左起x + 组宽 + 中缝)
+
+    左中心 = [int(左起x + 轨道槽宽 // 2 + i * 轨道中心间距) for i in range(5)]
+    右中心 = [int(右起x + 轨道槽宽 // 2 + i * 轨道中心间距) for i in range(5)]
+    左中心 = [int(round(float(v) + float(左X偏移))) for v in 左中心]
+    右中心 = [int(round(float(v) + float(右X偏移))) for v in 右中心]
+    return 左中心, 右中心
+
+
+def _应用玩法布局到上下文(
+    基础上下文: Dict[str, Any],
+    布局管理器: Any,
+    屏幕尺寸: Tuple[int, int],
+    轨道中心列表: List[int],
+    判定线y: int,
+    底部y: int,
+    玩家序号: int = 1,
+) -> Dict[str, Any]:
+    上下文 = dict(基础上下文 or {})
+    try:
+        比例 = float(布局管理器.取全局缩放(屏幕尺寸))
+    except Exception:
+        比例 = 1.0
+    if 比例 <= 0:
+        比例 = 1.0
+
+    游戏区参数 = {
+        "y偏移": -12.0,
+        "缩放": 1.0,
+        "hold宽度系数": 0.96,
+        "判定区宽度系数": 1.0,
+        "击中特效宽度系数": 3.0,
+        "击中特效偏移x": 0.0,
+        "击中特效偏移y": 0.0,
+    }
+    try:
+        取参数 = getattr(布局管理器, "_取游戏区参数_可写", None)
+        if callable(取参数):
+            原值 = 取参数()
+            if isinstance(原值, dict):
+                游戏区参数.update(原值)
+    except Exception:
+        pass
+
+    游戏缩放 = float(游戏区参数.get("缩放", 1.0) or 1.0)
+    y偏移 = float(游戏区参数.get("y偏移", -12.0) or -12.0)
+    判定区宽度系数 = float(游戏区参数.get("判定区宽度系数", 1.0) or 1.0)
+    特效宽度系数 = float(游戏区参数.get("击中特效宽度系数", 3.0) or 3.0)
+    特效偏移x = float(游戏区参数.get("击中特效偏移x", 0.0) or 0.0)
+    特效偏移y = float(游戏区参数.get("击中特效偏移y", 0.0) or 0.0)
+
+    箭头目标宽 = int(max(28, int(上下文.get("调试_hold_箭头宽", 80) or 80)))
+    轨道中心列表_布局 = [float(int(x)) / 比例 for x in list(轨道中心列表 or [])[:5]]
+    判定线y_游戏_布局 = float(float(判定线y) + y偏移) / 比例
+    底部y_游戏_布局 = float(float(底部y) + y偏移) / 比例
+    音符区高度_布局 = float(max(10.0, 底部y_游戏_布局 - 判定线y_游戏_布局))
+    音符区中心y_布局 = float(判定线y_游戏_布局 + 音符区高度_布局 * 0.5)
+
+    轨道中心间距_布局 = 0.0
+    if len(轨道中心列表_布局) >= 2:
+        轨道中心间距_布局 = float(轨道中心列表_布局[1] - 轨道中心列表_布局[0])
+
+    判定区_receptor宽_布局 = (
+        float(箭头目标宽) * 判定区宽度系数 * 游戏缩放
+    ) / 比例
+    判定区_receptor宽_布局 = float(max(12.0, 判定区_receptor宽_布局))
+    特效目标宽_布局 = (
+        float(箭头目标宽) * 特效宽度系数 * 游戏缩放 * 1.25
+    ) / 比例
+    特效目标宽_布局 = float(max(40.0, 特效目标宽_布局))
+
+    左手x_布局 = 0.0
+    右手x_布局 = 0.0
+    if len(轨道中心列表_布局) >= 5:
+        间距 = float(
+            轨道中心间距_布局 if 轨道中心间距_布局 != 0.0 else 判定区_receptor宽_布局
+        )
+        左手x_布局 = float(轨道中心列表_布局[0] - 间距)
+        右手x_布局 = float(轨道中心列表_布局[4] + 间距)
+
+    上下文.update(
+        {
+            "玩家序号": int(玩家序号),
+            "轨道中心列表_布局": 轨道中心列表_布局,
+            "判定线y_游戏_布局": float(判定线y_游戏_布局),
+            "底部y_游戏_布局": float(底部y_游戏_布局),
+            "音符区高度_布局": float(音符区高度_布局),
+            "音符区中心y_布局": float(音符区中心y_布局),
+            "轨道中心间距_布局": float(轨道中心间距_布局),
+            "判定区_receptor宽_布局": float(判定区_receptor宽_布局),
+            "左手x_布局": float(左手x_布局),
+            "右手x_布局": float(右手x_布局),
+            "判定线y_特效_布局": float((float(判定线y) + y偏移 + 特效偏移y) / 比例),
+            "特效目标宽_布局": float(特效目标宽_布局),
+            "击中特效偏移x_布局": float(特效偏移x / 比例),
+            "计数组中心x_布局": float(
+                轨道中心列表_布局[2]
+                if len(轨道中心列表_布局) >= 3
+                else (float(max(1, 屏幕尺寸[0])) * 0.5 / float(比例))
+            ),
+            "调试_hold_轨道中心列表": [int(x) for x in list(轨道中心列表 or [])[:5]],
+            "调试_hold_判定线y": int(float(判定线y) + y偏移),
+            "调试_hold_底部y": int(float(底部y) + y偏移),
+        }
+    )
     return 上下文
 
 
@@ -468,7 +587,7 @@ def 主函数():
 
     选中控件id = ""
     显示全部边框 = False
-    强制显示 = True
+    强制显示 = False
     模拟普通击中特效 = False
     模拟hold击中特效循环 = False
     模拟长按击中 = False
@@ -742,11 +861,7 @@ def 主函数():
 
     def _收集调试设置() -> Dict[str, Any]:
         return {
-            "强制显示": bool(强制显示),
             "显示全部边框": bool(显示全部边框),
-            "模拟普通击中特效": bool(模拟普通击中特效),
-            "模拟hold击中特效循环": bool(模拟hold击中特效循环),
-            "模拟长按击中": bool(模拟长按击中),
             "模拟满血暴走": bool(模拟满血暴走),
             "调试背景蒙板不透明度": float(调试背景蒙板不透明度),
             "调试血量显示": float(调试血量显示),
@@ -812,14 +927,12 @@ def 主函数():
         if not isinstance(数据, dict):
             return
         try:
-            强制显示 = bool(数据.get("强制显示", 强制显示))
+            强制显示 = False
             显示全部边框 = bool(数据.get("显示全部边框", 显示全部边框))
             显示图层面板 = True
-            模拟普通击中特效 = bool(数据.get("模拟普通击中特效", 模拟普通击中特效))
-            模拟hold击中特效循环 = bool(
-                数据.get("模拟hold击中特效循环", 模拟hold击中特效循环)
-            )
-            模拟长按击中 = bool(数据.get("模拟长按击中", 模拟长按击中))
+            模拟普通击中特效 = False
+            模拟hold击中特效循环 = False
+            模拟长按击中 = False
             模拟满血暴走 = bool(数据.get("模拟满血暴走", 模拟满血暴走))
             模拟谱面循环播放 = bool(数据.get("模拟谱面循环播放", 模拟谱面循环播放))
             模拟谱面命中状态 = bool(数据.get("模拟谱面命中状态", 模拟谱面命中状态))
@@ -1014,12 +1127,8 @@ def 主函数():
 
     def _取开关项():
         return [
-            ("force_show", "强制显示", bool(强制显示)),
             ("show_all_borders", "显示全部边框", bool(显示全部边框)),
             ("full_blood_fx", "满血暴走血条", bool(模拟满血暴走)),
-            ("normal_hit_fx", "普通击中特效", bool(模拟普通击中特效)),
-            ("hold_loop", "Hold特效循环", bool(模拟hold击中特效循环)),
-            ("simulate_hold_hit", "模拟长按击中", bool(模拟长按击中)),
         ]
 
     模拟调速候选 = [3.0, 3.5, 4.0, 4.5, 5.0]
@@ -1120,111 +1229,60 @@ def 主函数():
         return 模拟箭头缩放缓存[缓存键]
 
     def _取模拟项列表() -> List[Tuple[str, str]]:
+        双踏板整体X偏移 = float(模拟双踏板左X偏移 + 模拟双踏板右X偏移) * 0.5
+        双踏板间距偏移 = float(模拟双踏板右X偏移 - 模拟双踏板左X偏移) * 0.5
+        双踏板共用Y偏移 = float(模拟双踏板左Y偏移 + 模拟双踏板右Y偏移) * 0.5
         return [
-            ("模拟_循环播放", f"循环播放: {'是' if 模拟谱面循环播放 else '否'}"),
-            ("模拟_命中状态", f"命中状态: {'是' if 模拟谱面命中状态 else '否'}"),
-            ("模拟_调速", f"调速: X{模拟谱面调速倍率:.1f}"),
-            ("模拟_隐藏", f"隐藏: {模拟谱面隐藏模式}"),
-            ("模拟_轨迹", f"轨迹: {模拟谱面轨迹模式}"),
-            ("模拟_方向", f"方向: {模拟谱面方向模式}"),
-            ("模拟_大小", f"大小: {模拟谱面大小模式}"),
-            ("模拟_双踏板", f"双踏板模式: {'开' if 模拟双踏板模式 else '关'}"),
-            ("模拟_双踏板左X", f"双踏板左X偏移: {模拟双踏板左X偏移:+.0f}px"),
-            ("模拟_双踏板右X", f"双踏板右X偏移: {模拟双踏板右X偏移:+.0f}px"),
-            ("模拟_双踏板左Y", f"双踏板左Y偏移: {模拟双踏板左Y偏移:+.0f}px"),
-            ("模拟_双踏板右Y", f"双踏板右Y偏移: {模拟双踏板右Y偏移:+.0f}px"),
-            ("模拟_箭头", f"箭头: {模拟箭头编号}"),
-            ("模拟_半隐入口", f"半隐入口: {int(round(模拟半隐入口比例 * 100.0))}%屏高"),
-            ("模拟_摇摆幅度", f"摇摆幅度: {模拟摇摆幅度倍率:.2f}x"),
-            ("模拟_旋转速度", f"旋转速度: {模拟旋转速度度每秒:.0f}°/s"),
+            ("模拟_双踏板", f"踏板布局: {'双踏板' if 模拟双踏板模式 else '单踏板'}"),
+            ("模拟_双踏板整体X", f"双踏板整体X: {双踏板整体X偏移:+.0f}px"),
+            ("模拟_双踏板间距", f"双踏板间距: {双踏板间距偏移:+.0f}px"),
+            ("模拟_双踏板共用Y", f"双踏板共用Y: {双踏板共用Y偏移:+.0f}px"),
         ]
 
     def _调整模拟项(调试项id: str, 增量: int, 大步进: bool) -> bool:
-        nonlocal 模拟谱面循环播放, 模拟谱面命中状态
-        nonlocal 模拟谱面调速倍率, 模拟谱面隐藏模式, 模拟谱面轨迹模式
-        nonlocal 模拟谱面方向模式, 模拟谱面大小模式
         nonlocal 模拟双踏板模式, 模拟双踏板左X偏移, 模拟双踏板右X偏移
         nonlocal 模拟双踏板左Y偏移, 模拟双踏板右Y偏移
-        nonlocal 模拟半隐入口比例, 模拟摇摆幅度倍率, 模拟旋转速度度每秒
 
         sid = str(调试项id or "")
-        if sid == "模拟_循环播放":
-            模拟谱面循环播放 = not bool(模拟谱面循环播放)
-            return True
-        if sid == "模拟_命中状态":
-            模拟谱面命中状态 = not bool(模拟谱面命中状态)
-            return True
-        if sid == "模拟_调速":
-            模拟谱面调速倍率 = float(
-                _循环枚举值(模拟调速候选, float(模拟谱面调速倍率), int(增量))
-            )
-            return True
-        if sid == "模拟_隐藏":
-            模拟谱面隐藏模式 = str(
-                _循环枚举值(模拟隐藏候选, str(模拟谱面隐藏模式), int(增量))
-            )
-            return True
-        if sid == "模拟_轨迹":
-            模拟谱面轨迹模式 = str(
-                _循环枚举值(模拟轨迹候选, str(模拟谱面轨迹模式), int(增量))
-            )
-            return True
-        if sid == "模拟_方向":
-            模拟谱面方向模式 = str(
-                _循环枚举值(模拟方向候选, str(模拟谱面方向模式), int(增量))
-            )
-            return True
-        if sid == "模拟_大小":
-            模拟谱面大小模式 = str(
-                _循环枚举值(模拟大小候选, str(模拟谱面大小模式), int(增量))
-            )
-            return True
         if sid == "模拟_双踏板":
             模拟双踏板模式 = not bool(模拟双踏板模式)
             return True
-        if sid == "模拟_双踏板左X":
+        if sid == "模拟_双踏板整体X":
             步进 = 20.0 if 大步进 else 5.0
             模拟双踏板左X偏移 = float(
                 max(-600.0, min(600.0, 模拟双踏板左X偏移 + float(增量) * 步进))
             )
-            return True
-        if sid == "模拟_双踏板右X":
-            步进 = 20.0 if 大步进 else 5.0
             模拟双踏板右X偏移 = float(
                 max(-600.0, min(600.0, 模拟双踏板右X偏移 + float(增量) * 步进))
             )
             return True
-        if sid == "模拟_双踏板左Y":
+        if sid == "模拟_双踏板间距":
+            步进 = 20.0 if 大步进 else 5.0
+            模拟双踏板左X偏移 = float(
+                max(-600.0, min(600.0, 模拟双踏板左X偏移 - float(增量) * 步进))
+            )
+            模拟双踏板右X偏移 = float(
+                max(-600.0, min(600.0, 模拟双踏板右X偏移 + float(增量) * 步进))
+            )
+            return True
+        if sid == "模拟_双踏板共用Y":
             步进 = 10.0 if 大步进 else 2.0
+            新值 = float(
+                max(
+                    -260.0,
+                    min(
+                        260.0,
+                        ((模拟双踏板左Y偏移 + 模拟双踏板右Y偏移) * 0.5)
+                        + float(增量) * 步进,
+                    ),
+                )
+            )
+            模拟双踏板左Y偏移 = 新值
             模拟双踏板左Y偏移 = float(
-                max(-260.0, min(260.0, 模拟双踏板左Y偏移 + float(增量) * 步进))
+                max(-260.0, min(260.0, 新值))
             )
-            return True
-        if sid == "模拟_双踏板右Y":
-            步进 = 10.0 if 大步进 else 2.0
             模拟双踏板右Y偏移 = float(
-                max(-260.0, min(260.0, 模拟双踏板右Y偏移 + float(增量) * 步进))
-            )
-            return True
-        if sid == "模拟_箭头":
-            _切换模拟箭头编号(int(增量))
-            return True
-        if sid == "模拟_半隐入口":
-            步进 = 0.10 if 大步进 else 0.02
-            模拟半隐入口比例 = float(
-                max(0.1, min(0.95, 模拟半隐入口比例 + float(增量) * 步进))
-            )
-            return True
-        if sid == "模拟_摇摆幅度":
-            步进 = 0.20 if 大步进 else 0.05
-            模拟摇摆幅度倍率 = float(
-                max(0.2, min(4.0, 模拟摇摆幅度倍率 + float(增量) * 步进))
-            )
-            return True
-        if sid == "模拟_旋转速度":
-            步进 = 120.0 if 大步进 else 30.0
-            模拟旋转速度度每秒 = float(
-                max(30.0, min(1440.0, 模拟旋转速度度每秒 + float(增量) * 步进))
+                max(-260.0, min(260.0, 新值))
             )
             return True
         return False
@@ -1297,7 +1355,7 @@ def 主函数():
                 (int(顶部横杠rect.right - 2), int(顶部横杠rect.centery)),
                 width=2,
             )
-            标题图 = 字体.render("谱面设置功能模拟", True, (255, 245, 170))
+            标题图 = 字体.render("踏板布局调节", True, (255, 245, 170))
             屏幕.blit(标题图, (int(面板rect.x + 12), int(面板rect.y + 12)))
         except Exception:
             pass
@@ -1317,15 +1375,26 @@ def 主函数():
             except Exception:
                 pass
 
-            if str(项id) == "模拟_箭头":
-                try:
-                    缩略图 = _取模拟箭头图(2, 30)
-                    if isinstance(缩略图, pygame.Surface):
-                        x = int(rect.right - 缩略图.get_width() - 8)
-                        y = int(rect.y + (rect.h - 缩略图.get_height()) // 2)
-                        屏幕.blit(缩略图, (x, y))
-                except Exception:
-                    pass
+    def _注入调试常驻击中特效(上下文: Dict[str, Any], 当前秒: float):
+        for i in range(5):
+            上下文[f"特效帧_{i}"] = ""
+            上下文[f"特效翻转_{i}"] = False
+
+        if (not bool(模拟普通击中特效)) and (not bool(模拟hold击中特效循环)):
+            return
+
+        播放倍率 = 2.0 if bool(模拟hold击中特效循环) else 1.0
+        帧号 = int((float(当前秒) * 60.0 * 播放倍率) % 18.0)
+        特效序列 = {
+            0: ("image_084", False),
+            1: ("image_085", False),
+            2: ("image_086", False),
+            3: ("image_085", True),
+            4: ("image_084", True),
+        }
+        for 轨道序号, (前缀, 是否翻转) in 特效序列.items():
+            上下文[f"特效帧_{轨道序号}"] = f"{前缀}_{帧号:04d}.png"
+            上下文[f"特效翻转_{轨道序号}"] = bool(是否翻转)
 
     def _注入模拟命中特效(上下文: Dict[str, Any], 当前秒: float):
         if (not bool(模拟谱面循环播放)) or (not bool(模拟谱面命中状态)):
@@ -1502,6 +1571,114 @@ def 主函数():
                     )
                 except Exception:
                     continue
+
+    def _取双踏板布局上下文集合(基础上下文: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        主上下文 = dict(基础上下文 or {})
+        if not bool(模拟双踏板模式):
+            return 主上下文, None, None
+
+        try:
+            屏宽 = int(屏幕.get_width())
+            左中心, 右中心 = _取双踏板调试轨道中心列表(
+                屏宽,
+                左X偏移=float(模拟双踏板左X偏移),
+                右X偏移=float(模拟双踏板右X偏移),
+            )
+            基准判定线y = int(基础上下文.get("调试_hold_判定线y", 0) or 0)
+            基准底部y = int(基础上下文.get("调试_hold_底部y", 0) or 0)
+            try:
+                双踏板共用Y偏移 = int(
+                    round(
+                        (
+                            float(模拟双踏板左Y偏移)
+                            + float(模拟双踏板右Y偏移)
+                        )
+                        * 0.5
+                    )
+                )
+            except Exception:
+                双踏板共用Y偏移 = 0
+            共用判定线y = int(基准判定线y + 双踏板共用Y偏移)
+            左上下文 = _应用玩法布局到上下文(
+                基础上下文,
+                布局管理器,
+                屏幕.get_size(),
+                左中心,
+                共用判定线y,
+                int(基准底部y),
+                玩家序号=1,
+            )
+            右上下文 = _应用玩法布局到上下文(
+                基础上下文,
+                布局管理器,
+                屏幕.get_size(),
+                右中心,
+                共用判定线y,
+                int(基准底部y),
+                玩家序号=2,
+            )
+            for 子上下文 in (左上下文, 右上下文):
+                try:
+                    原隐藏 = list(子上下文.get("_调试隐藏控件ids", []) or [])
+                except Exception:
+                    原隐藏 = []
+                子上下文["_调试隐藏控件ids"] = [
+                    str(v)
+                    for v in 原隐藏
+                    if str(v) not in {"判定区组", "特效层组", "计数动画组"}
+                ]
+            return 主上下文, 左上下文, 右上下文
+        except Exception:
+            return 主上下文, None, None
+
+    def _绘制布局调试画面(基础上下文: Dict[str, Any], 调试: Any):
+        主上下文, 左上下文, 右上下文 = _取双踏板布局上下文集合(基础上下文)
+        try:
+            布局管理器.绘制(屏幕, 主上下文, 皮肤包, 调试=调试, 仅绘制根id=None)
+        except Exception:
+            pass
+        if not bool(模拟双踏板模式):
+            return
+        for 根id in ("判定区组", "特效层组", "计数动画组"):
+            for 子上下文 in (左上下文, 右上下文):
+                if not isinstance(子上下文, dict):
+                    continue
+                try:
+                    布局管理器.绘制(
+                        屏幕,
+                        子上下文,
+                        皮肤包,
+                        调试=调试,
+                        仅绘制根id=根id,
+                    )
+                except Exception:
+                    continue
+
+    def _命中布局控件(鼠标点: Tuple[int, int], 基础上下文: Dict[str, Any]) -> str:
+        主上下文, 左上下文, 右上下文 = _取双踏板布局上下文集合(基础上下文)
+        try:
+            命中 = 布局管理器.命中控件(
+                鼠标点, 屏幕.get_size(), 主上下文, 仅绘制根id=None
+            )
+            if 命中:
+                return str(命中)
+        except Exception:
+            pass
+        if not bool(模拟双踏板模式):
+            return ""
+        for 根id in ("计数动画组", "特效层组", "判定区组"):
+            for 子上下文 in (左上下文, 右上下文):
+                if not isinstance(子上下文, dict):
+                    continue
+                try:
+                    命中 = 布局管理器.命中控件(
+                        鼠标点, 屏幕.get_size(), 子上下文, 仅绘制根id=根id
+                    )
+                    if 命中:
+                        return str(命中)
+                except Exception:
+                    continue
+        return ""
 
     def _计算左下面板布局() -> (
         Tuple[
@@ -2532,7 +2709,6 @@ def 主函数():
                                     "模拟_方向",
                                     "模拟_大小",
                                     "模拟_双踏板",
-                                    "模拟_箭头",
                                 }:
                                     _调整模拟项(str(模拟项id), +1, False)
                                     _保存调试设置()
@@ -2574,13 +2750,7 @@ def 主函数():
                             拖拽中 = False
                             拖拽已记录撤销 = False
                             continue
-                        if 行rect表.get("force_show") and 行rect表[
-                            "force_show"
-                        ].collidepoint(事件.pos):
-                            选中调试项id = ""
-                            强制显示 = not bool(强制显示)
-                            _保存调试设置()
-                        elif 行rect表.get("show_all_borders") and 行rect表[
+                        if 行rect表.get("show_all_borders") and 行rect表[
                             "show_all_borders"
                         ].collidepoint(事件.pos):
                             选中调试项id = ""
@@ -2591,24 +2761,6 @@ def 主函数():
                         ].collidepoint(事件.pos):
                             选中调试项id = ""
                             模拟满血暴走 = not bool(模拟满血暴走)
-                            _保存调试设置()
-                        elif 行rect表.get("normal_hit_fx") and 行rect表[
-                            "normal_hit_fx"
-                        ].collidepoint(事件.pos):
-                            选中调试项id = ""
-                            模拟普通击中特效 = not bool(模拟普通击中特效)
-                            _保存调试设置()
-                        elif 行rect表.get("hold_loop") and 行rect表[
-                            "hold_loop"
-                        ].collidepoint(事件.pos):
-                            选中调试项id = ""
-                            模拟hold击中特效循环 = not bool(模拟hold击中特效循环)
-                            _保存调试设置()
-                        elif 行rect表.get("simulate_hold_hit") and 行rect表[
-                            "simulate_hold_hit"
-                        ].collidepoint(事件.pos):
-                            选中调试项id = ""
-                            模拟长按击中 = not bool(模拟长按击中)
                             _保存调试设置()
                         拖拽中 = False
                         拖拽已记录撤销 = False
@@ -2689,9 +2841,7 @@ def 主函数():
                     )
                     _同步模拟hold锚点(上下文)
                     _同步血条填充锚点(上下文)
-                    选中控件id = 布局管理器.命中控件(
-                        鼠标点, 屏幕.get_size(), 上下文, 仅绘制根id=None
-                    )
+                    选中控件id = _命中布局控件(鼠标点, 上下文)
                     选中调试项id = ""
                     文本控件id = _按点命中文本控件(
                         鼠标点, 上下文, 关联控件id=str(选中控件id or "")
@@ -2829,18 +2979,14 @@ def 主函数():
         )
         _同步模拟hold锚点(上下文)
         _同步血条填充锚点(上下文)
+        _注入调试常驻击中特效(上下文, 当前秒)
         _注入模拟命中特效(上下文, 当前秒)
         调试 = 调试状态(
             显示全部边框=bool(显示全部边框), 选中控件id=str(选中控件id or "")
         )
 
-        _绘制模拟循环箭头(上下文, 当前秒)
-        try:
-            布局管理器.绘制(屏幕, 上下文, 皮肤包, 调试=调试, 仅绘制根id=None)
-        except Exception:
-            pass
+        _绘制布局调试画面(上下文, 调试)
 
-        _绘制模拟长按击中(上下文, 当前秒)
         _绘制模拟面板()
         _绘制左下面板()
         _绘制右侧图层面板()

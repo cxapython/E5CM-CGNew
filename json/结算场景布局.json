@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "layers": {
     "background": {
       "id": "background",
@@ -30,8 +30,8 @@
       "name": "背景压暗",
       "kind": "shape",
       "rect": [
-        -157,
-        -99,
+        383,
+        146,
         1932,
         1087
       ],
@@ -98,8 +98,8 @@
       "name": "星级",
       "kind": "text",
       "rect": [
-        277,
-        483,
+        251,
+        478,
         205,
         38
       ],
@@ -118,7 +118,7 @@
       ],
       "fit": "none",
       "text_style": {
-        "font_size": 24,
+        "font_size": 30,
         "bold": false,
         "color": [
           242,
@@ -140,9 +140,9 @@
       "name": "歌名",
       "kind": "text",
       "rect": [
-        158,
-        512,
-        229,
+        155,
+        503,
+        311,
         50
       ],
       "z": 23,
@@ -182,9 +182,9 @@
       "name": "MISS",
       "kind": "text",
       "rect": [
-        486,
-        287,
-        210,
+        468,
+        297,
+        212,
         50
       ],
       "z": 24,
@@ -224,8 +224,8 @@
       "name": "GOOD",
       "kind": "text",
       "rect": [
-        478,
-        346,
+        462,
+        348,
         218,
         54
       ],
@@ -266,8 +266,8 @@
       "name": "COOL",
       "kind": "text",
       "rect": [
-        478,
-        404,
+        462,
+        403,
         218,
         54
       ],
@@ -308,7 +308,7 @@
       "name": "PERFECT",
       "kind": "text",
       "rect": [
-        478,
+        462,
         457,
         218,
         54
@@ -350,8 +350,8 @@
       "name": "COMBO",
       "kind": "text",
       "rect": [
-        478,
-        512,
+        462,
+        513,
         218,
         54
       ],
@@ -392,8 +392,8 @@
       "name": "准确率",
       "kind": "text",
       "rect": [
-        481,
-        570,
+        474,
+        573,
         234,
         50
       ],
@@ -477,10 +477,10 @@
       "kind": "image",
       "asset": "grade_s",
       "rect": [
-        129,
-        655,
-        128,
-        108
+        94,
+        703,
+        103,
+        83
       ],
       "z": 30,
       "visible": true,
@@ -501,10 +501,10 @@
       "kind": "image",
       "asset": "grade_s",
       "rect": [
-        204,
-        586,
-        197,
-        166
+        176,
+        616,
+        159,
+        138
       ],
       "z": 31,
       "visible": true,
@@ -525,10 +525,10 @@
       "kind": "image",
       "asset": "grade_s",
       "rect": [
-        342,
-        658,
-        129,
-        109
+        310,
+        706,
+        100,
+        80
       ],
       "z": 30,
       "visible": true,
@@ -549,17 +549,17 @@
       "kind": "image",
       "asset": "top_full_combo",
       "rect": [
-        -121,
-        110,
-        1130,
-        174
+        183,
+        133,
+        530,
+        152
       ],
       "z": 40,
       "visible": true,
       "fit": "contain",
       "content_scale": [
-        1.0097980100999997,
-        1.3203663406462849
+        1.225141874117695,
+        1.816968934283504
       ],
       "content_offset": [
         0.0,
@@ -597,17 +597,17 @@
       "kind": "image",
       "asset": "reward_bg",
       "rect": [
-        642,
-        307,
-        594,
-        297
+        569,
+        271,
+        648,
+        324
       ],
       "z": 50,
       "visible": true,
       "fit": "stretch",
       "content_scale": [
-        1.1148876130739596,
-        1.1372968540967463
+        1.0178581348607925,
+        1.0595050764861143
       ],
       "content_offset": [
         0.0,
@@ -621,8 +621,8 @@
       "kind": "image",
       "asset": "digits",
       "rect": [
-        679,
-        313,
+        808,
+        288,
         156,
         95
       ],
@@ -630,8 +630,8 @@
       "visible": true,
       "fit": "contain",
       "content_scale": [
-        0.9894061484802013,
-        0.9399749104110797
+        0.9584849162761674,
+        0.9209009572025012
       ],
       "content_offset": [
         0.0,
@@ -644,8 +644,8 @@
       "name": "花式标签",
       "kind": "text",
       "rect": [
-        725,
-        432,
+        603,
+        386,
         84,
         32
       ],
@@ -664,7 +664,7 @@
       ],
       "fit": "none",
       "text_style": {
-        "font_size": 18,
+        "font_size": 22,
         "bold": false,
         "color": [
           255,
@@ -687,9 +687,9 @@
       "kind": "image",
       "asset": "style_fill",
       "rect": [
-        793,
-        482,
-        334,
+        702,
+        389,
+        331,
         23
       ],
       "z": 56,
@@ -700,8 +700,8 @@
         1.0
       ],
       "content_offset": [
-        -15.0,
-        -44.0
+        3.0,
+        1.0
       ],
       "group": "reward"
     },
@@ -711,9 +711,9 @@
       "kind": "image",
       "asset": "style_frame",
       "rect": [
-        776,
-        438,
-        334,
+        704,
+        390,
+        403,
         23
       ],
       "z": 57,
@@ -734,8 +734,8 @@
       "name": "花式等级",
       "kind": "text",
       "rect": [
-        1124,
-        431,
+        1116,
+        386,
         110,
         34
       ],
@@ -776,8 +776,8 @@
       "name": "竞速标签",
       "kind": "text",
       "rect": [
-        725,
-        479,
+        604,
+        429,
         80,
         32
       ],
@@ -796,7 +796,7 @@
       ],
       "fit": "none",
       "text_style": {
-        "font_size": 18,
+        "font_size": 22,
         "bold": false,
         "color": [
           255,
@@ -819,8 +819,8 @@
       "kind": "image",
       "asset": "speed_fill",
       "rect": [
-        776,
-        484,
+        705,
+        435,
         334,
         23
       ],
@@ -843,17 +843,17 @@
       "kind": "image",
       "asset": "speed_frame",
       "rect": [
-        774,
-        483,
-        334,
+        704,
+        435,
+        403,
         23
       ],
       "z": 57,
       "visible": true,
       "fit": "stretch",
       "content_scale": [
-        1.0,
-        1.0
+        0.9997000299990001,
+        0.9797080188020797
       ],
       "content_offset": [
         0.0,
@@ -866,8 +866,8 @@
       "name": "竞速等级",
       "kind": "text",
       "rect": [
-        1122,
-        478,
+        1114,
+        429,
         110,
         34
       ],
@@ -909,17 +909,17 @@
       "kind": "image",
       "asset": "rank",
       "rect": [
-        720,
-        505,
-        125,
-        105
+        772,
+        456,
+        248,
+        144
       ],
       "z": 58,
       "visible": true,
       "fit": "contain",
       "content_scale": [
-        1.0935759041570925,
-        0.9998000100000001
+        1.0076795535121845,
+        0.9212694096939
       ],
       "content_offset": [
         0.0,
@@ -932,9 +932,9 @@
       "name": "段位文字",
       "kind": "text",
       "rect": [
-        664,
-        506,
-        117,
+        599,
+        511,
+        115,
         34
       ],
       "z": 58,
@@ -975,17 +975,17 @@
       "kind": "image",
       "asset": "upgrade_center",
       "rect": [
-        1108,
-        275,
-        300,
-        108
+        728,
+        191,
+        348,
+        120
       ],
       "z": 59,
       "visible": true,
       "fit": "contain",
       "content_scale": [
-        0.9897030296990097,
-        1.0510100501
+        1.5175752878937665,
+        2.261271193059864
       ],
       "content_offset": [
         2.0,
@@ -999,17 +999,17 @@
       "kind": "image",
       "asset": "upgrade_lt",
       "rect": [
-        1140,
-        259,
-        128,
-        128
+        698,
+        153,
+        156,
+        149
       ],
       "z": 58,
       "visible": true,
       "fit": "contain",
       "content_scale": [
-        1.0,
-        1.0
+        1.1491294054567278,
+        1.0402918600140794
       ],
       "content_offset": [
         0.0,
@@ -1023,21 +1023,21 @@
       "kind": "image",
       "asset": "upgrade_rt",
       "rect": [
-        1240,
-        265,
-        92,
-        92
+        860,
+        58,
+        303,
+        250
       ],
       "z": 58,
       "visible": true,
       "fit": "contain",
       "content_scale": [
-        1.0,
-        1.0
+        0.897085805168819,
+        0.7352017110441864
       ],
       "content_offset": [
-        0.0,
-        0.0
+        -15.0,
+        10.0
       ],
       "group": "reward"
     },
@@ -1047,10 +1047,34 @@
       "kind": "image",
       "asset": "upgrade_lb",
       "rect": [
-        1137,
-        284,
-        112,
-        112
+        703,
+        205,
+        183,
+        133
+      ],
+      "z": 58,
+      "visible": true,
+      "fit": "contain",
+      "content_scale": [
+        1.0916091398087193,
+        0.8672701257910358
+      ],
+      "content_offset": [
+        -15.0,
+        3.0
+      ],
+      "group": "reward"
+    },
+    "upgrade_rb": {
+      "id": "upgrade_rb",
+      "name": "升级右下",
+      "kind": "image",
+      "asset": "upgrade_rb",
+      "rect": [
+        877,
+        168,
+        234,
+        228
       ],
       "z": 58,
       "visible": true,
@@ -1065,18 +1089,18 @@
       ],
       "group": "reward"
     },
-    "upgrade_rb": {
-      "id": "upgrade_rb",
-      "name": "升级右下",
+    "flow3_prompt": {
+      "id": "flow3_prompt",
+      "name": "流程3提示",
       "kind": "image",
-      "asset": "upgrade_rb",
+      "asset": "flow3_prompt",
       "rect": [
-        1243,
-        245,
-        143,
-        143
+        410,
+        378,
+        780,
+        144
       ],
-      "z": 58,
+      "z": 70,
       "visible": true,
       "fit": "contain",
       "content_scale": [
@@ -1087,7 +1111,7 @@
         0.0,
         0.0
       ],
-      "group": "reward"
+      "group": ""
     }
   }
 }

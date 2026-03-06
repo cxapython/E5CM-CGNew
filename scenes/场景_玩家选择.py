@@ -11,6 +11,7 @@ except Exception:
     _可用视频 = False
 
 from core.对局状态 import 初始化对局流程, 消耗信用, 取每局所需信用
+from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 from ui.按钮特效 import 公用按钮点击特效, 公用按钮音效
 
 
@@ -96,7 +97,6 @@ class 场景_玩家选择:
         self._背景视频 = 上下文.get("背景视频")
 
         # 原图
-        self._遮罩原图 = self._安全加载图片(资源["投币_遮罩"], 透明=True)
         self._logo原图 = self._安全加载图片(资源["投币_logo"], 透明=True)
         self._联网原图 = self._安全加载图片(资源["投币_联网图标"], 透明=True)
         self._1p原图 = self._安全加载图片(资源["1P按钮"], 透明=True)
@@ -120,6 +120,7 @@ class 场景_玩家选择:
         # hover 状态
         self._hover_1p = False
         self._hover_2p = False
+        self._踏板选中玩家数: int | None = None
 
         # 音效
         self.按钮音效 = 公用按钮音效(资源["按钮音效"])
@@ -185,13 +186,9 @@ class 场景_玩家选择:
             return
         self._缓存尺寸 = (w, h)
 
-        # 遮罩
-        if self._遮罩原图:
-            self._遮罩图 = self._cover缩放(self._遮罩原图, w, h)
-        else:
-            暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
-            暗层.fill((0, 0, 0, 128))
-            self._遮罩图 = 暗层
+        暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
+        暗层.fill((0, 0, 0, 128))
+        self._遮罩图 = 暗层
 
         # logo
         logo_rect = self._映射到屏幕_rect(self._bbox_logo)
@@ -293,6 +290,7 @@ class 场景_玩家选择:
 
         self._开始时间 = time.time()
         self._缓存尺寸 = (0, 0)
+        self._踏板选中玩家数 = None
         self._确保缓存()
 
     def 退出(self):
@@ -302,6 +300,25 @@ class 场景_玩家选择:
     # -------------------------
     # 绘制
     # -------------------------
+    def _绘制_按中心缩放(
+        self,
+        屏幕: pygame.Surface,
+        图: pygame.Surface | None,
+        基准rect: pygame.Rect,
+        scale: float,
+    ):
+        if 图 is None:
+            return
+        scale = float(max(0.1, scale))
+        if abs(scale - 1.0) <= 0.001:
+            屏幕.blit(图, 基准rect.topleft)
+            return
+        ww = max(1, int(基准rect.w * scale))
+        hh = max(1, int(基准rect.h * scale))
+        图2 = pygame.transform.smoothscale(图, (ww, hh)).convert_alpha()
+        rect2 = 图2.get_rect(center=基准rect.center)
+        屏幕.blit(图2, rect2.topleft)
+
     def 绘制(self):
         屏幕 = self.上下文["屏幕"]
         self._确保缓存()
@@ -345,7 +362,9 @@ class 场景_玩家选择:
             if self._1p特效.是否动画中():
                 self._1p特效.绘制按钮(屏幕, self._1p图, self._1p_rect)
             else:
-                if self._hover_1p and self._1p图_hover:
+                if self._踏板选中玩家数 == 1:
+                    self._绘制_按中心缩放(屏幕, self._1p图, self._1p_rect, 1.12)
+                elif self._hover_1p and self._1p图_hover:
                     r = self._1p图_hover.get_rect()
                     r.center = self._1p_rect.center
                     屏幕.blit(self._1p图_hover, r.topleft)
@@ -356,7 +375,9 @@ class 场景_玩家选择:
             if self._2p特效.是否动画中():
                 self._2p特效.绘制按钮(屏幕, self._2p图, self._2p_rect)
             else:
-                if self._hover_2p and self._2p图_hover:
+                if self._踏板选中玩家数 == 2:
+                    self._绘制_按中心缩放(屏幕, self._2p图, self._2p_rect, 1.12)
+                elif self._hover_2p and self._2p图_hover:
                     r = self._2p图_hover.get_rect()
                     r.center = self._2p_rect.center
                     屏幕.blit(self._2p图_hover, r.topleft)
@@ -366,6 +387,34 @@ class 场景_玩家选择:
     # -------------------------
     # 事件
     # -------------------------
+    def _执行选择(self, 玩家数: int):
+        self.按钮音效.播放()
+        if int(玩家数) == 1:
+            self._1p特效.触发()
+        else:
+            self._2p特效.触发()
+        self._消耗开局信用()
+        初始化对局流程(self.上下文.get("状态", {}))
+        self.上下文["状态"]["玩家数"] = int(玩家数)
+        return {"切换到": "登陆磁卡"}
+
+    def 处理全局踏板(self, 动作: str):
+        if 动作 == 踏板动作_左:
+            if self._踏板选中玩家数 != 1:
+                self.按钮音效.播放()
+            self._踏板选中玩家数 = 1
+            return None
+
+        if 动作 == 踏板动作_右:
+            if self._踏板选中玩家数 != 2:
+                self.按钮音效.播放()
+            self._踏板选中玩家数 = 2
+            return None
+
+        if 动作 == 踏板动作_确认 and self._踏板选中玩家数 in (1, 2):
+            return self._执行选择(int(self._踏板选中玩家数))
+        return None
+
     def 处理事件(self, 事件):
         if 事件.type == pygame.VIDEORESIZE:
             return None
@@ -377,19 +426,11 @@ class 场景_玩家选择:
 
         if 事件.type == pygame.MOUSEBUTTONUP and 事件.button == 1:
             if self._1p_rect.collidepoint(事件.pos):
-                self.按钮音效.播放()
-                self._1p特效.触发()
-                self._消耗开局信用()
-                初始化对局流程(self.上下文.get("状态", {}))
-                self.上下文["状态"]["玩家数"] = 1
-                return {"切换到": "登陆磁卡"}
+                self._踏板选中玩家数 = 1
+                return self._执行选择(1)
 
             if self._2p_rect.collidepoint(事件.pos):
-                self.按钮音效.播放()
-                self._2p特效.触发()
-                self._消耗开局信用()
-                初始化对局流程(self.上下文.get("状态", {}))
-                self.上下文["状态"]["玩家数"] = 2
-                return {"切换到": "登陆磁卡"}
+                self._踏板选中玩家数 = 2
+                return self._执行选择(2)
 
         return None

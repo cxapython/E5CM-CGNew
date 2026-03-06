@@ -1,13 +1,22 @@
 {
   "show_bounds": false,
   "show_names": false,
-  "show_reward_group": true,
-  "show_help": true,
+  "show_help": false,
   "panels": {
     "visual": {
       "rect": [
-        808,
-        831,
+        1194,
+        857,
+        280,
+        126
+      ],
+      "collapsed": false,
+      "hidden": false
+    },
+    "badge": {
+      "rect": [
+        683,
+        868,
         280,
         126
       ],
@@ -16,8 +25,8 @@
     },
     "function": {
       "rect": [
-        3,
-        8,
+        1556,
+        839,
         320,
         150
       ],
@@ -26,8 +35,8 @@
     },
     "layers": {
       "rect": [
-        1548,
-        56,
+        1554,
+        25,
         352,
         384
       ],

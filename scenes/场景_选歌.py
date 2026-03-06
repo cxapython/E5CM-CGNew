@@ -17,7 +17,9 @@ import math
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Set, Callable
+from core.歌曲记录 import 读取歌曲记录索引, 取歌曲记录键
 from core.对局状态 import 取当前关卡, 取累计S数, 是否赠送第四把
+from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 from ui.top栏 import 生成top栏
 from ui.选歌设置菜单控件 import (
     构建设置参数文本,
@@ -292,6 +294,21 @@ class 场景_选歌(场景基类):
             # 防御：别让选歌绘制崩全局
             pass
 
+    def 处理全局踏板(self, 动作: str):
+        if self._选歌实例 is None:
+            return None
+
+        退出状态 = None
+        try:
+            if hasattr(self._选歌实例, "处理全局踏板"):
+                退出状态 = self._选歌实例.处理全局踏板(动作)
+        except Exception:
+            退出状态 = None
+
+        if 退出状态:
+            return self._根据退出状态切场景(str(退出状态))
+        return None
+
     def 处理事件(self, 事件):
         if self._选歌实例 is None:
             return None
@@ -370,7 +387,10 @@ class 歌曲信息:
     歌名: str
     星级: int
     bpm: Optional[int]
-    是否VIP: bool
+    是否VIP: bool = False
+    游玩次数: int = 0
+    是否NEW: bool = False
+    是否HOT: bool = False
 
 
 # =========================
@@ -703,9 +723,13 @@ def _确保设置页资源(self):
     # 状态
     self.是否设置页 = False
     self._设置页_打开开始时间 = 0.0
+    self._设置页_关闭开始时间 = 0.0
     self._设置页_打开动画时长 = 0.28
+    self._设置页_关闭动画时长 = 0.22
+    self._设置页_动画状态 = "closed"
     self._设置页_面板基础矩形 = pygame.Rect(0, 0, 10, 10)
     self._设置页_面板绘制矩形 = pygame.Rect(0, 0, 10, 10)
+    self._设置页_最后绘制表面 = None
     self._设置页_最后缩放 = 1.0
     self._设置页_上次屏幕尺寸 = (0, 0)
 
@@ -1077,6 +1101,112 @@ def _设置页_缓出(self, 进度: float) -> float:
     return 1.0 - (1.0 - 进度) * (1.0 - 进度)
 
 
+def _设置页_缓入(self, 进度: float) -> float:
+    try:
+        进度 = float(进度)
+    except Exception:
+        进度 = 1.0
+    if 进度 < 0.0:
+        进度 = 0.0
+    if 进度 > 1.0:
+        进度 = 1.0
+    return 进度 * 进度 * 进度
+
+
+def _设置页_立即隐藏(self):
+    self.是否设置页 = False
+    self._设置页_动画状态 = "closed"
+    self._设置页_最后绘制表面 = None
+
+
+def _设置页_取动画参数(self) -> dict:
+    if not bool(getattr(self, "是否设置页", False)):
+        return {"是否可见": False}
+
+    现在 = time.time()
+    状态 = str(getattr(self, "_设置页_动画状态", "open") or "open")
+
+    if 状态 == "closing":
+        开始 = float(getattr(self, "_设置页_关闭开始时间", 0.0) or 0.0)
+        时长 = float(getattr(self, "_设置页_关闭动画时长", 0.22) or 0.22)
+        if 开始 <= 0.0 or 时长 <= 0.0:
+            _设置页_立即隐藏(self)
+            return {"是否可见": False}
+
+        进度 = (现在 - 开始) / max(0.001, 时长)
+        if 进度 >= 1.0:
+            _设置页_立即隐藏(self)
+            return {"是否可见": False}
+
+        缓进度 = self._设置页_缓入(进度)
+        return {
+            "是否可见": True,
+            "缩放": 1.0 - 0.05 * 缓进度,
+            "透明度": 1.0 - 缓进度,
+            "遮罩透明度": 170 * (1.0 - 缓进度),
+            "y偏移": int(20 * 缓进度),
+        }
+
+    开始 = float(getattr(self, "_设置页_打开开始时间", 0.0) or 0.0)
+    时长 = float(getattr(self, "_设置页_打开动画时长", 0.28) or 0.28)
+    if 开始 <= 0.0 or 时长 <= 0.0:
+        self._设置页_动画状态 = "open"
+        return {
+            "是否可见": True,
+            "缩放": 1.0,
+            "透明度": 1.0,
+            "遮罩透明度": 170,
+            "y偏移": 0,
+        }
+
+    进度 = (现在 - 开始) / max(0.001, 时长)
+    if 进度 >= 1.0:
+        self._设置页_动画状态 = "open"
+        return {
+            "是否可见": True,
+            "缩放": 1.0,
+            "透明度": 1.0,
+            "遮罩透明度": 170,
+            "y偏移": 0,
+        }
+
+    缓进度 = self._设置页_缓出(进度)
+    return {
+        "是否可见": True,
+        "缩放": 0.94 + 0.06 * 缓进度,
+        "透明度": 缓进度,
+        "遮罩透明度": 170 * 缓进度,
+        "y偏移": int((1.0 - 缓进度) * 24),
+    }
+
+
+def _设置页_点在有效面板区域(self, 屏幕点) -> bool:
+    面板绘制矩形 = getattr(self, "_设置页_面板绘制矩形", None)
+    if not isinstance(面板绘制矩形, pygame.Rect):
+        return False
+    if not 面板绘制矩形.collidepoint(屏幕点):
+        return False
+
+    面板表面 = getattr(self, "_设置页_最后绘制表面", None)
+    if not isinstance(面板表面, pygame.Surface):
+        return True
+
+    局部x = int(屏幕点[0] - 面板绘制矩形.x)
+    局部y = int(屏幕点[1] - 面板绘制矩形.y)
+    if (
+        局部x < 0
+        or 局部y < 0
+        or 局部x >= int(面板表面.get_width())
+        or 局部y >= int(面板表面.get_height())
+    ):
+        return False
+
+    try:
+        return int(面板表面.get_at((局部x, 局部y)).a) > 12
+    except Exception:
+        return True
+
+
 def 打开设置页(self):
     self._确保设置页资源()
     # 每次打开都重读一次布局覆盖，便于外部调试器实时打磨
@@ -1100,11 +1230,22 @@ def 打开设置页(self):
 
     self._重算设置页布局()
     self.是否设置页 = True
+    self._设置页_动画状态 = "opening"
     self._设置页_打开开始时间 = time.time()
+    self._设置页_关闭开始时间 = 0.0
 
 
-def 关闭设置页(self):
-    self.是否设置页 = False
+def 关闭设置页(self, 立即: bool = False):
+    self._确保设置页资源()
+    if bool(立即):
+        _设置页_立即隐藏(self)
+        return
+    if not bool(getattr(self, "是否设置页", False)):
+        return
+    if str(getattr(self, "_设置页_动画状态", "") or "") == "closing":
+        return
+    self._设置页_动画状态 = "closing"
+    self._设置页_关闭开始时间 = time.time()
 
 
 def _设置页_切换选项(self, 行键: str, 方向: int):
@@ -1280,6 +1421,9 @@ def _设置页_处理事件(self, 事件):
     self._确保设置页资源()
     self._重算设置页布局()
 
+    if str(getattr(self, "_设置页_动画状态", "") or "") == "closing":
+        return
+
     面板绘制矩形 = getattr(self, "_设置页_面板绘制矩形", None)
     if not isinstance(面板绘制矩形, pygame.Rect):
         面板绘制矩形 = self._设置页_面板基础矩形
@@ -1301,8 +1445,8 @@ def _设置页_处理事件(self, 事件):
     if 事件.type != pygame.MOUSEBUTTONDOWN or 事件.button != 1:
         return
 
-    # 点到面板外：关闭
-    if not 面板绘制矩形.collidepoint(事件.pos):
+    # 点到面板外或透明像素：关闭
+    if not self._设置页_点在有效面板区域(事件.pos):
         self.关闭设置页()
         return
 
@@ -1350,9 +1494,20 @@ def 绘制设置页(self):
     self._确保设置页资源()
     self._重算设置页布局()
 
+    动画参数 = _设置页_取动画参数(self)
+    if not bool(动画参数.get("是否可见", False)):
+        return
+
     # 遮罩
     遮罩 = pygame.Surface((self.宽, self.高), pygame.SRCALPHA)
-    遮罩.fill((0, 0, 0, 170))
+    遮罩.fill(
+        (
+            0,
+            0,
+            0,
+            int(max(0, min(255, 动画参数.get("遮罩透明度", 170)))),
+        )
+    )
     self.屏幕.blit(遮罩, (0, 0))
 
     面板矩形 = self._设置页_面板基础矩形
@@ -1547,18 +1702,8 @@ def 绘制设置页(self):
             对齐="center",
         )
 
-    # 弹出缩放动画（保留）
-    现在 = time.time()
-    开始 = float(getattr(self, "_设置页_打开开始时间", 0.0) or 0.0)
-    时长 = float(getattr(self, "_设置页_打开动画时长", 0.28) or 0.28)
-
-    进度 = 1.0
-    if 开始 > 0.0 and 时长 > 0.0:
-        进度 = (现在 - 开始) / max(0.001, 时长)
-    缓进度 = self._设置页_缓出(进度)
-
-    动画缩放 = 0.92 + (1.00 - 0.92) * 缓进度
-    动画透明 = int(255 * 缓进度)
+    动画缩放 = float(动画参数.get("缩放", 1.0) or 1.0)
+    动画透明 = int(255 * float(动画参数.get("透明度", 1.0) or 1.0))
     动画透明 = max(0, min(255, 动画透明))
 
     self._设置页_最后缩放 = float(动画缩放)
@@ -1582,7 +1727,9 @@ def 绘制设置页(self):
 
     绘制矩形 = 面板画布2.get_rect()
     绘制矩形.center = 面板矩形.center
+    绘制矩形.y += int(动画参数.get("y偏移", 0) or 0)
     self._设置页_面板绘制矩形 = 绘制矩形
+    self._设置页_最后绘制表面 = 面板画布2
     self.屏幕.blit(面板画布2, 绘制矩形.topleft)
 
 
@@ -2253,6 +2400,42 @@ def 绘制文本(
     return 文本矩形
 
 
+def 渲染紧凑文本(
+    文本: str,
+    字体: pygame.font.Font,
+    颜色,
+    字符间距: int = 0,
+) -> pygame.Surface:
+    字符面列表: List[pygame.Surface] = []
+    总宽 = 0
+    最大高 = 0
+    间距 = int(字符间距)
+
+    for 字符 in str(文本 or ""):
+        字符面 = 字体.render(str(字符), True, 颜色).convert_alpha()
+        字符面列表.append(字符面)
+        总宽 += int(字符面.get_width())
+        最大高 = max(最大高, int(字符面.get_height()))
+
+    if not 字符面列表:
+        return pygame.Surface((1, 1), pygame.SRCALPHA)
+
+    总宽 += 间距 * max(0, len(字符面列表) - 1)
+    总宽 = max(1, int(总宽))
+    最大高 = max(1, int(最大高))
+    画布 = pygame.Surface((总宽, 最大高), pygame.SRCALPHA)
+
+    当前x = 0
+    for idx, 字符面 in enumerate(字符面列表):
+        当前y = 最大高 - int(字符面.get_height())
+        画布.blit(字符面, (当前x, 当前y))
+        当前x += int(字符面.get_width())
+        if idx < len(字符面列表) - 1:
+            当前x += 间距
+
+    return 画布
+
+
 def 安全读取文本(文件路径: str) -> str:
     for 编码 in ("utf-8-sig", "utf-8", "gbk"):
         try:
@@ -2364,6 +2547,7 @@ def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Opti
         星级=max(1, int(星级 or 1)),
         bpm=bpm,
         是否VIP=bool(int(星级 or 0) >= 5),
+        游玩次数=0,
     )
 
 
@@ -3226,6 +3410,7 @@ class 歌曲卡片:
         self.歌曲 = 歌曲
         self.矩形 = 矩形
         self.悬停 = False
+        self.踏板高亮 = False
         self.封面矩形 = pygame.Rect(0, 0, 1, 1)
 
     def _计算封面矩形(self, 锚点矩形: pygame.Rect, 屏宽: int, 屏高: int) -> pygame.Rect:
@@ -3278,6 +3463,14 @@ class 歌曲卡片:
 
     def 绘制(self, 屏幕: pygame.Surface, 小字体: pygame.font.Font, 图缓存: "图像缓存"):
         屏宽, 屏高 = 屏幕.get_size()
+        是否高亮 = bool(self.悬停 or self.踏板高亮)
+        基准矩形 = self.矩形.copy()
+        if 是否高亮:
+            缩放 = 1.08 if bool(self.踏板高亮) else 1.04
+            新宽 = max(1, int(self.矩形.w * 缩放))
+            新高 = max(1, int(self.矩形.h * 缩放))
+            基准矩形.size = (新宽, 新高)
+            基准矩形.center = self.矩形.center
 
         # =========================
         # 1) 缩略图框（支持等比缩放模式）
@@ -3297,8 +3490,8 @@ class 歌曲卡片:
         框宽缩放 = max(0.20, min(3.0, 框宽缩放))
         框高缩放 = max(0.20, min(3.0, 框高缩放))
 
-        框绘制宽 = max(1, int(self.矩形.w * 框宽缩放))
-        框绘制高 = max(1, int(self.矩形.h * 框高缩放))
+        框绘制宽 = max(1, int(基准矩形.w * 框宽缩放))
+        框绘制高 = max(1, int(基准矩形.h * 框高缩放))
 
         框x偏移 = 取选歌布局像素(
             "缩略图.框.x偏移", 0, 屏宽, 屏高, 最小=-9999, 最大=9999
@@ -3314,11 +3507,11 @@ class 歌曲卡片:
         )
         框图 = 获取UI容器图(框路径, 框绘制宽, 框绘制高, 缩放模式=框缩放模式, 透明=True)
 
-        框x = self.矩形.x + int(框x偏移)
-        框y = self.矩形.y + int(框y偏移)
+        框x = 基准矩形.x + int(框x偏移)
+        框y = 基准矩形.y + int(框y偏移)
 
         边框锚点矩形 = (
-            pygame.Rect(框x, 框y, 框绘制宽, 框绘制高) if 框图 is not None else self.矩形
+            pygame.Rect(框x, 框y, 框绘制宽, 框绘制高) if 框图 is not None else 基准矩形
         )
 
         # =========================
@@ -3432,6 +3625,11 @@ class 歌曲卡片:
         # =========================
         # 5) BPM：字号/位置全可控
         # =========================
+        游玩次数 = 0
+        try:
+            游玩次数 = int(max(0, int(getattr(self.歌曲, "游玩次数", 0) or 0)))
+        except Exception:
+            游玩次数 = 0
         bpm文本 = f"BPM:{self.歌曲.bpm}" if self.歌曲.bpm else "BPM:?"
         默认字号 = max(10, int(信息条.h * 0.55))
         bpm字号 = 取选歌布局像素(
@@ -3455,21 +3653,133 @@ class 歌曲卡片:
         bpmy偏移 = 取选歌布局像素(
             "缩略图.BPM.y偏移", 0, 屏宽, 屏高, 最小=-9999, 最大=9999
         )
+        游玩和BPM间距 = 取选歌布局像素(
+            "缩略图.游玩次数.BPM间距",
+            max(10, int(信息条.h * 0.20)),
+            屏宽,
+            屏高,
+            最小=0,
+            最大=9999,
+        )
+        游玩左内边距 = 取选歌布局像素(
+            "缩略图.游玩次数.左内边距",
+            max(8, int(信息条.w * 0.08)),
+            屏宽,
+            屏高,
+            最小=0,
+            最大=99999,
+        )
+        游玩中心x偏移 = 取选歌布局像素(
+            "缩略图.游玩次数.中心x偏移",
+            -max(6, int(信息条.w * 0.03)),
+            屏宽,
+            屏高,
+            最小=-9999,
+            最大=9999,
+        )
+        游玩x偏移 = 取选歌布局像素(
+            "缩略图.游玩次数.x偏移", 0, 屏宽, 屏高, 最小=-9999, 最大=9999
+        )
+        游玩y偏移 = 取选歌布局像素(
+            "缩略图.游玩次数.y偏移", 0, 屏宽, 屏高, 最小=-9999, 最大=9999
+        )
+        游玩标签字号 = 取选歌布局像素(
+            "缩略图.游玩次数.标签字号",
+            max(8, int(bpm字号 * 0.84)),
+            屏宽,
+            屏高,
+            最小=8,
+            最大=120,
+        )
+        游玩数字字号 = 取选歌布局像素(
+            "缩略图.游玩次数.数字字号",
+            max(8, int(bpm字号 * 0.94)),
+            屏宽,
+            屏高,
+            最小=8,
+            最大=120,
+        )
+        游玩标签字间距 = 取选歌布局像素(
+            "缩略图.游玩次数.字间距", -1, 屏宽, 屏高, 最小=-8, 最大=12
+        )
+        游玩数值间距 = 取选歌布局像素(
+            "缩略图.游玩次数.值间距", 2, 屏宽, 屏高, 最小=0, 最大=40
+        )
+        游玩标签基线偏移 = 取选歌布局像素(
+            "缩略图.游玩次数.标签基线偏移", 0, 屏宽, 屏高, 最小=-20, 最大=20
+        )
+        游玩数字基线偏移 = 取选歌布局像素(
+            "缩略图.游玩次数.数字基线偏移", 0, 屏宽, 屏高, 最小=-20, 最大=20
+        )
 
         try:
             bpm字体 = 获取字体(int(bpm字号), 是否粗体=True)
-            文面 = bpm字体.render(bpm文本, True, (255, 255, 255))
-            文宽 = 文面.get_width()
-            文高 = 文面.get_height()
+            bpm文面 = bpm字体.render(bpm文本, True, (255, 255, 255))
+            bpm文宽 = bpm文面.get_width()
+            bpm文高 = bpm文面.get_height()
 
-            文x = 信息条.right - int(bpm右内边距) - 文宽 + int(bpmx偏移)
-            文y = 信息条.bottom - int(bpm下内边距) - 文高 + int(bpmy偏移)
+            bpm文x = 信息条.right - int(bpm右内边距) - bpm文宽 + int(bpmx偏移)
+            bpm文y = 信息条.bottom - int(bpm下内边距) - bpm文高 + int(bpmy偏移)
 
-            # 防御：别跑出信息条可见区域太离谱
-            文x = max(信息条.x + 2, min(信息条.right - 2 - 文宽, 文x))
-            文y = max(信息条.y, min(信息条.bottom - 文高, 文y))
+            bpm文x = max(信息条.x + 2, min(信息条.right - 2 - bpm文宽, bpm文x))
+            bpm文y = max(信息条.y, min(信息条.bottom - bpm文高, bpm文y))
 
-            屏幕.blit(文面, (文x, 文y))
+            游玩标签字体 = 获取字体(int(游玩标签字号), 是否粗体=True)
+            游玩数字字体 = 获取字体(int(游玩数字字号), 是否粗体=True)
+            游玩标签面 = 渲染紧凑文本(
+                "游玩次数:",
+                游玩标签字体,
+                (235, 235, 235),
+                字符间距=int(游玩标签字间距),
+            )
+            游玩数字面 = 渲染紧凑文本(
+                str(游玩次数),
+                游玩数字字体,
+                (235, 235, 235),
+                字符间距=0,
+            )
+            游玩块宽 = (
+                int(游玩标签面.get_width())
+                + int(游玩数值间距)
+                + int(游玩数字面.get_width())
+            )
+            游玩块理想x = (
+                int(星星区域.centerx)
+                - int(游玩块宽 * 0.56)
+                + int(游玩中心x偏移)
+                + int(游玩x偏移)
+            )
+            游玩块最小x = int(信息条.x + int(游玩左内边距))
+            游玩块最大x = int(bpm文x - int(游玩和BPM间距) - int(游玩块宽))
+            if 游玩块最大x < 游玩块最小x:
+                游玩块x = int(max(信息条.x + 2, 游玩块最大x))
+            else:
+                游玩块x = int(max(游玩块最小x, min(游玩块最大x, 游玩块理想x)))
+
+            基线y = int(bpm文y + bpm文高 + int(游玩y偏移))
+            游玩标签y = int(
+                基线y
+                - int(游玩标签面.get_height())
+                + int(游玩标签基线偏移)
+            )
+            游玩数字y = int(
+                基线y
+                - int(游玩数字面.get_height())
+                + int(游玩数字基线偏移)
+            )
+            游玩标签y = max(
+                信息条.y, min(信息条.bottom - int(游玩标签面.get_height()), 游玩标签y)
+            )
+            游玩数字y = max(
+                信息条.y, min(信息条.bottom - int(游玩数字面.get_height()), 游玩数字y)
+            )
+
+            屏幕.blit(游玩标签面, (游玩块x, 游玩标签y))
+            屏幕.blit(
+                游玩数字面,
+                (游玩块x + int(游玩标签面.get_width()) + int(游玩数值间距), 游玩数字y),
+            )
+            屏幕.blit(bpm文面, (bpm文x, bpm文y))
         except Exception:
             pass
 
@@ -3526,6 +3836,58 @@ class 歌曲卡片:
                     vx = 边框锚点矩形.right - vipw + int(vipx偏移)
                     vy = 边框锚点矩形.top + int(vipy偏移)
                     屏幕.blit(vip图, (vx, vy))
+
+        try:
+            if bool(getattr(self.歌曲, "是否HOT", False)):
+                hot路径 = _资源路径("UI-img", "选歌界面资源", "热门.png")
+                hot原 = 获取UI原图(hot路径, 透明=True)
+                if hot原 is not None:
+                    hot高占比 = 取选歌布局值("缩略图.HOT.高占比", 0.20)
+                    try:
+                        hot高占比 = float(hot高占比)
+                    except Exception:
+                        hot高占比 = 0.20
+                    hot高占比 = max(0.02, min(0.80, hot高占比))
+
+                    hot高 = max(12, int(边框锚点矩形.h * hot高占比))
+                    hot图 = _按高等比缩放(hot原, hot高)
+                    if hot图 is not None:
+                        hotw, _hoth = hot图.get_size()
+                        hot右内边距 = 取选歌布局像素(
+                            "缩略图.HOT.右内边距",
+                            max(4, int(hot高 * 0.08)),
+                            屏宽,
+                            屏高,
+                            最小=-9999,
+                            最大=9999,
+                        )
+                        hot上内边距 = 取选歌布局像素(
+                            "缩略图.HOT.上内边距",
+                            max(4, int(hot高 * 0.06)),
+                            屏宽,
+                            屏高,
+                            最小=-9999,
+                            最大=9999,
+                        )
+                        hotx偏移 = 取选歌布局像素(
+                            "缩略图.HOT.x偏移", 0, 屏宽, 屏高, 最小=-9999, 最大=9999
+                        )
+                        hoty偏移 = 取选歌布局像素(
+                            "缩略图.HOT.y偏移", 0, 屏宽, 屏高, 最小=-9999, 最大=9999
+                        )
+                        if bool(getattr(self.歌曲, "是否VIP", False)):
+                            hotx偏移 -= int(hotw * 0.82)
+
+                        hx = (
+                            边框锚点矩形.right
+                            - hotw
+                            - int(hot右内边距)
+                            + int(hotx偏移)
+                        )
+                        hy = 边框锚点矩形.top + int(hot上内边距) + int(hoty偏移)
+                        屏幕.blit(hot图, (hx, hy))
+        except Exception:
+            pass
 
         try:
             if bool(getattr(self.歌曲, "是否NEW", False)):
@@ -3713,6 +4075,7 @@ class 选歌游戏:
         self.动画旧页卡片 = []
         self.动画新页卡片 = []
         self.当前页卡片 = []
+        self._踏板选中视图索引: Optional[int] = None
 
         self.按钮_歌曲分类 = 按钮("歌曲分类", pygame.Rect(0, 0, 0, 0))
         self.按钮_ALL = 按钮("ALL", pygame.Rect(0, 0, 0, 0))
@@ -3731,6 +4094,7 @@ class 选歌游戏:
                 self.数据树 = {}
         else:
             self.数据树 = 扫描songs目录(self.songs根目录)
+        self._同步歌曲游玩记录()
 
         self.类型列表 = sorted(self.数据树.keys())
         self.当前类型索引 = 0
@@ -4065,6 +4429,37 @@ class 选歌游戏:
 
         return 列表
 
+    def _同步歌曲游玩记录(self):
+        根目录 = _取项目根目录()
+        try:
+            索引 = 读取歌曲记录索引(根目录)
+        except Exception:
+            索引 = {}
+
+        self._歌曲记录索引 = dict(索引) if isinstance(索引, dict) else {}
+
+        for 类型映射 in self.数据树.values():
+            if not isinstance(类型映射, dict):
+                continue
+            for 列表 in 类型映射.values():
+                if not isinstance(列表, list):
+                    continue
+                for 歌 in 列表:
+                    try:
+                        键 = 取歌曲记录键(str(getattr(歌, "sm路径", "") or ""), 根目录)
+                    except Exception:
+                        键 = ""
+                    项 = self._歌曲记录索引.get(键, {})
+                    try:
+                        游玩次数 = int(max(0, int((项 or {}).get("游玩次数", 0) or 0)))
+                    except Exception:
+                        游玩次数 = 0
+                    try:
+                        setattr(歌, "游玩次数", 游玩次数)
+                        setattr(歌, "是否HOT", bool(游玩次数 > 2))
+                    except Exception:
+                        pass
+
     def _确保NEW标记(self, 原始列表: Optional[List[歌曲信息]] = None):
         if 原始列表 is None:
             try:
@@ -4365,6 +4760,7 @@ class 选歌游戏:
         歌名 = "Loading..."
         星级 = 0
         bpm = None
+        游玩次数 = 0
         类型 = ""
         模式 = ""
         歌曲文件夹 = ""
@@ -4392,6 +4788,10 @@ class 选歌游戏:
                 bpm = int(bpm) if bpm is not None else None
             except Exception:
                 bpm = None
+            try:
+                游玩次数 = int(max(0, int(getattr(歌, "游玩次数", 0) or 0)))
+            except Exception:
+                游玩次数 = 0
 
             # ✅ 这三个用于 StepMania runtime pack 命名/建目录
             try:
@@ -4432,6 +4832,7 @@ class 选歌游戏:
             "星级": int(星级),
             "bpm": bpm,
             "人气": int(人气),
+            "游玩次数": int(游玩次数),
             "设置参数": dict(设置参数),
             "设置参数文本": str(设置参数文本),
             # ✅ 给 StepMania 用
@@ -5692,6 +6093,7 @@ class 选歌游戏:
 
         新原始索引 = max(0, min(新原始索引, len(原始) - 1))
         self.当前选择原始索引 = 新原始索引
+        self._踏板选中视图索引 = int(目标视图索引)
 
         # ✅ 播放预览
         try:
@@ -5748,6 +6150,11 @@ class 选歌游戏:
 
         self.当前选择原始索引 = max(0, min(原始索引, len(原始) - 1))
         self.是否详情页 = True
+        try:
+            _列表, 映射 = self.当前歌曲列表与映射()
+            self._踏板选中视图索引 = int(映射.index(self.当前选择原始索引))
+        except Exception:
+            self._踏板选中视图索引 = None
 
         # ✅ 改：第一次点击就播，所以不需要“点击次数”
         # 只重置“上次播放时间”，防止刚切歌立刻点被节流
@@ -5781,11 +6188,14 @@ class 选歌游戏:
             except Exception:
                 视图索引 = 0
             self.当前页 = max(0, 视图索引 // self.每页数量)
+            self._踏板选中视图索引 = int(视图索引)
         else:
             self.当前页 = 0
+            self._踏板选中视图索引 = None
 
         self.当前页卡片 = self.生成指定页卡片(self.当前页)
         self.安排预加载(基准页=self.当前页)
+        self._同步踏板卡片高亮()
 
     def 下一首(self):
         列表, 映射 = self.当前歌曲列表与映射()
@@ -5804,6 +6214,127 @@ class 选歌游戏:
         当前视图索引 = self._取当前视图索引(映射)
         目标视图索引 = (当前视图索引 - 1) % len(映射)
         self._详情切到视图索引(目标视图索引, 方向=-1)
+
+    def _同步踏板卡片高亮(self):
+        基准视图索引 = getattr(self, "_踏板选中视图索引", None)
+        for idx, 卡片 in enumerate(getattr(self, "当前页卡片", []) or []):
+            try:
+                视图索引 = int(self.当前页) * int(self.每页数量) + int(idx)
+                卡片.踏板高亮 = 基准视图索引 is not None and int(基准视图索引) == 视图索引
+            except Exception:
+                try:
+                    卡片.踏板高亮 = False
+                except Exception:
+                    pass
+
+    def _踏板选中缩略图(self, 方向步进: int):
+        if bool(getattr(self, "动画中", False)) or bool(getattr(self, "是否设置页", False)):
+            return None
+        if bool(getattr(self, "是否星级筛选页", False)):
+            return None
+
+        列表, 映射 = self.当前歌曲列表与映射()
+        if not 映射:
+            return None
+
+        if bool(getattr(self, "是否详情页", False)):
+            try:
+                self._播放按钮音效()
+            except Exception:
+                pass
+            if int(方向步进) < 0:
+                self.上一首()
+            else:
+                self.下一首()
+            return None
+
+        当前视图索引 = getattr(self, "_踏板选中视图索引", None)
+        if 当前视图索引 is None:
+            当前视图索引 = int(self.当前页) * int(self.每页数量)
+            当前视图索引 = max(0, min(int(当前视图索引), len(映射) - 1))
+        else:
+            当前视图索引 = (int(当前视图索引) + int(方向步进)) % len(映射)
+
+        self._踏板选中视图索引 = int(当前视图索引)
+        self.当前页 = int(max(0, min(len(映射) - 1, 当前视图索引)) // max(1, int(self.每页数量)))
+        self.当前页卡片 = self.生成指定页卡片(self.当前页)
+        self.安排预加载(基准页=self.当前页)
+        self._同步踏板卡片高亮()
+
+        try:
+            self.当前选择原始索引 = int(映射[int(当前视图索引)])
+        except Exception:
+            pass
+
+        try:
+            self._播放按钮音效()
+        except Exception:
+            pass
+        return None
+
+    def _踏板确认当前歌曲(self):
+        if bool(getattr(self, "动画中", False)) or bool(getattr(self, "是否设置页", False)):
+            return None
+        if bool(getattr(self, "是否星级筛选页", False)):
+            return None
+
+        if bool(getattr(self, "是否详情页", False)):
+            self._启动过渡(
+                self._特效_大图确认,
+                self.详情大框矩形,
+                self._记录并处理大图确认点击,
+            )
+            return None
+
+        列表, 映射 = self.当前歌曲列表与映射()
+        if not 映射:
+            return None
+
+        当前视图索引 = getattr(self, "_踏板选中视图索引", None)
+        if 当前视图索引 is None:
+            当前视图索引 = int(self.当前页) * int(self.每页数量)
+        当前视图索引 = max(0, min(int(当前视图索引), len(映射) - 1))
+
+        页内索引 = int(当前视图索引) - int(self.当前页) * int(self.每页数量)
+        if not (0 <= 页内索引 < len(self.当前页卡片)):
+            self._踏板选中视图索引 = int(当前视图索引)
+            self._同步踏板卡片高亮()
+            return None
+
+        try:
+            原始索引 = int(映射[int(当前视图索引)])
+        except Exception:
+            原始索引 = 0
+        卡片 = self.当前页卡片[int(页内索引)]
+        self._踏板选中视图索引 = int(当前视图索引)
+        self._同步踏板卡片高亮()
+        self._启动过渡(
+            self._特效_按钮,
+            卡片.矩形,
+            lambda: self.进入详情_原始索引(int(原始索引)),
+        )
+        return None
+
+    def 处理全局踏板(self, 动作: str):
+        try:
+            self._确保公共交互()
+        except Exception:
+            pass
+        try:
+            if (
+                getattr(self, "_过渡_特效", None) is not None
+                and self._过渡_特效.是否动画中()
+            ):
+                return None
+        except Exception:
+            pass
+        if 动作 == 踏板动作_左:
+            return self._踏板选中缩略图(-1)
+        if 动作 == 踏板动作_右:
+            return self._踏板选中缩略图(+1)
+        if 动作 == 踏板动作_确认:
+            return self._踏板确认当前歌曲()
+        return None
 
     # -------------------------
     # 绘制
@@ -5989,6 +6520,8 @@ class 选歌游戏:
             except Exception:
                 pass
             return
+
+        self._同步踏板卡片高亮()
 
         # ✅ 关键修复：第二个参数是字体，第三个参数才是图缓存
         for 卡片 in self.当前页卡片:
@@ -6285,12 +6818,16 @@ class 选歌游戏:
             线宽,
         )
 
-        人气值 = int(歌.bpm or 0)
+        游玩次数 = 0
+        try:
+            游玩次数 = int(max(0, int(getattr(歌, "游玩次数", 0) or 0)))
+        except Exception:
+            游玩次数 = 0
         bpm值 = str(歌.bpm) if 歌.bpm else "?"
         try:
             底部字号 = max(12, int(18 * 最终缩放))
             字体2 = 获取字体(底部字号, 是否粗体=False)
-            左文 = 字体2.render(f"人气:{人气值}", True, (230, 230, 230))
+            左文 = 字体2.render(f"游玩次数:{游玩次数}", True, (230, 230, 230))
             右文 = 字体2.render(f"BPM:{bpm值}", True, (230, 230, 230))
 
             左x = 末行.x + int(16 * 最终缩放)
@@ -6899,20 +7436,7 @@ class 选歌游戏:
                 # ✅ 全局点击特效（保持原逻辑）
                 if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button == 1:
                     try:
-                        禁止触发全局 = False
-                        if bool(getattr(self, "是否设置页", False)):
-                            try:
-                                面板绘制矩形 = getattr(
-                                    self, "_设置页_面板绘制矩形", None
-                                )
-                                if isinstance(
-                                    面板绘制矩形, pygame.Rect
-                                ) and 面板绘制矩形.collidepoint(事件.pos):
-                                    禁止触发全局 = True
-                            except Exception:
-                                pass
-
-                        if (not 禁止触发全局) and (self._全局点击特效 is not None):
+                        if self._全局点击特效 is not None:
                             x, y = 事件.pos
                             self._全局点击特效.触发(int(x), int(y))
                     except Exception:
@@ -7180,7 +7704,9 @@ def 绑定设置页方法到选歌游戏类():
     选歌游戏._设置页_同步参数 = _设置页_同步参数
     选歌游戏._设置页_取缩放图 = _设置页_取缩放图
     选歌游戏._重算设置页布局 = _重算设置页布局
+    选歌游戏._设置页_缓入 = _设置页_缓入
     选歌游戏._设置页_缓出 = _设置页_缓出
+    选歌游戏._设置页_点在有效面板区域 = _设置页_点在有效面板区域
     选歌游戏.打开设置页 = 打开设置页
     选歌游戏.关闭设置页 = 关闭设置页
     选歌游戏._设置页_切换选项 = _设置页_切换选项
@@ -7333,20 +7859,7 @@ def 选歌_处理事件_外部(self, 事件):
     # ✅ 全局点击特效（如果你在场景里把 _全局点击特效=None，这里就不会重复触发）
     if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button == 1:
         try:
-            禁止触发全局 = False
-            if bool(getattr(self, "是否设置页", False)):
-                try:
-                    面板绘制矩形 = getattr(self, "_设置页_面板绘制矩形", None)
-                    if isinstance(
-                        面板绘制矩形, pygame.Rect
-                    ) and 面板绘制矩形.collidepoint(事件.pos):
-                        禁止触发全局 = True
-                except Exception:
-                    pass
-
-            if (not 禁止触发全局) and (
-                getattr(self, "_全局点击特效", None) is not None
-            ):
+            if getattr(self, "_全局点击特效", None) is not None:
                 x, y = 事件.pos
                 self._全局点击特效.触发(int(x), int(y))
         except Exception:
@@ -7521,6 +8034,8 @@ def 选歌_处理事件_外部(self, 事件):
 
     # ===== 列表页 hover =====
     if 事件.type == pygame.MOUSEMOTION:
+        self._踏板选中视图索引 = None
+        self._同步踏板卡片高亮()
         for 卡片 in self.当前页卡片:
             try:
                 卡片.处理事件(事件)

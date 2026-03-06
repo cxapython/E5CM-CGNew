@@ -5,6 +5,7 @@ from typing import Optional, Tuple, List, Dict
 
 import pygame
 
+from core.踏板控制 import 踏板动作_确认
 from ui.按钮特效 import 公用按钮点击特效, 公用按钮音效
 from ui.场景过渡 import 公用放大过渡器
 
@@ -27,7 +28,6 @@ class 场景_个人资料:
 
         self._背景视频 = 上下文.get("背景视频")
 
-        self._遮罩原图 = self._安全加载图片(资源.get("投币_遮罩", ""), 透明=True)
         self._联网原图 = self._安全加载图片(资源.get("投币_联网图标", ""), 透明=True)
 
         根 = str(资源.get("根", "") or os.getcwd())
@@ -1256,13 +1256,9 @@ class 场景_个人资料:
         except Exception:
             pass
 
-        # 遮罩
-        if self._遮罩原图 is not None:
-            self._遮罩图 = self._cover缩放(self._遮罩原图, w, h)
-        else:
-            暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
-            暗层.fill((0, 0, 0, 128))
-            self._遮罩图 = 暗层
+        暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
+        暗层.fill((0, 0, 0, 128))
+        self._遮罩图 = 暗层
 
         # top栏
         self._rect_top栏, self._top栏图, self._rect_top标题, self._top标题图 = (
@@ -2370,6 +2366,14 @@ class 场景_个人资料:
             屏幕.blit(面, r.topleft)
 
     # ---------------- 事件 ----------------
+    def 处理全局踏板(self, 动作: str):
+        if 动作 != 踏板动作_确认:
+            return None
+        if self._弹窗类型 or self._全屏放大过渡.是否进行中():
+            return None
+        self._触发离开()
+        return None
+
     def 处理事件(self, 事件):
         if 事件.type == pygame.VIDEORESIZE:
             return None

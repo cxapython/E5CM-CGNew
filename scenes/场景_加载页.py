@@ -229,7 +229,9 @@ class 场景_加载页(场景基类):
                 self._布局渲染器 = None
 
             try:
-                联网图路径 = str((self.上下文.get("资源", {}) or {}).get("投币_联网图标", "") or "")
+                联网图路径 = str(
+                    (self.上下文.get("资源", {}) or {}).get("投币_联网图标", "") or ""
+                )
                 if 联网图路径 and os.path.isfile(联网图路径):
                     self._联网原图 = pygame.image.load(联网图路径).convert_alpha()
                 else:
@@ -813,8 +815,8 @@ class 场景_加载页(场景基类):
         记录保持者 = str(getattr(self, "_个人昵称", "未知") or "未知")
         最高分 = int(getattr(self, "_最高分", 0) or 0)
 
-        文1 = 字体.render(f"记录保持者：{记录保持者}", True, 绿)
-        文2 = 字体.render(f"最高分：{最高分}", True, 粉)
+        文1 = 字体.render(f"记录保持者：         {记录保持者}", True, 绿)
+        文2 = 字体.render(f"最高分：         {最高分}", True, 粉)
 
         屏幕.blit(文1, (x, y))
         屏幕.blit(文2, (x, y + 行高))

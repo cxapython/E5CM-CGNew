@@ -6,9 +6,27 @@ from typing import Dict, List, Optional, Tuple
 
 import pygame
 
+from core.对局状态 import (
+    初始化对局流程,
+    取信用数,
+    取每局所需信用,
+    取累计S数,
+    是否赠送第四把,
+    消耗信用,
+    设置对局流程,
+    重置游戏流程状态,
+)
+from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 from core.歌曲记录 import 更新歌曲最高分
 from core.工具 import 绘制底部联网与信用
 from scenes.场景基类 import 场景基类
+from ui.settlement_layout_shared import (
+    SettlementLayoutStore,
+    fit_size,
+    get_font,
+    parse_color,
+    render_text_surface,
+)
 
 
 def _获取字体(字号: int, 是否粗体: bool = False) -> pygame.font.Font:
@@ -42,6 +60,10 @@ def _回弹(t: float) -> float:
     return 1.0 + c3 * pow(x - 1.0, 3) + c1 * pow(x - 1.0, 2)
 
 
+def _线性插值(a: float, b: float, t: float) -> float:
+    return float(a) + (float(b) - float(a)) * _夹取(t, 0.0, 1.0)
+
+
 def _安全载图(路径: str, 透明: bool = True) -> Optional[pygame.Surface]:
     try:
         if 路径 and os.path.isfile(路径):
@@ -62,6 +84,13 @@ class 场景_结算(场景基类):
         self._数值动画秒 = 2.5
         self._评级砸入秒 = 0.2
         self._顶部砸入秒 = 0.3
+        self._流程1时长秒 = 10.0
+        self._流程2时长秒 = 10.0
+        self._流程3时长秒 = 10.0
+        self._流程3黑屏秒 = 1.0
+        self._经验窗入场秒 = 0.55
+        self._流程3提示入场秒 = 0.45
+        self._流程3内容退场秒 = 0.8
 
         self._背景图: Optional[pygame.Surface] = None
         self._背景视频播放器 = None
@@ -80,9 +109,39 @@ class 场景_结算(场景基类):
         self._竞速经验值图: Optional[pygame.Surface] = None
         self._经验数字图集: Dict[str, pygame.Surface] = {}
         self._升级图集: Dict[str, pygame.Surface] = {}
+        self._提示图集: Dict[str, pygame.Surface] = {}
+        self._倒计时图集: Dict[str, pygame.Surface] = {}
+        self._是按钮图: Optional[pygame.Surface] = None
+        self._否按钮图: Optional[pygame.Surface] = None
         self._段位图: Optional[pygame.Surface] = None
         self._联网原图: Optional[pygame.Surface] = None
         self._缩放缓存: Dict[Tuple[int, int, int], pygame.Surface] = {}
+        self._流程1缓存尺寸: Tuple[int, int] = (0, 0)
+        self._流程1最终图: Optional[pygame.Surface] = None
+        self._流程1虚化图: Optional[pygame.Surface] = None
+        self._玩家序号 = 1
+        self._流程3提示键 = ""
+        self._流程3阶段类型 = ""
+        self._流程3阶段开始秒 = 0.0
+        self._流程3阶段持续秒 = 0.0
+        self._流程3是否显示倒计时 = False
+        self._流程3续币基准值 = 0
+        self._流程3继续动作: Optional[dict] = None
+        self._流程3默认否动作: Optional[dict] = None
+        self._流程3按钮选中 = "是"
+        self._流程3退出动作: Optional[dict] = None
+        self._流程3退出开始秒 = 0.0
+        self._流程3当前关卡 = 1
+        self._流程3每局所需信用 = 3
+        self._流程3是否失败 = False
+        self._流程3结算后S数 = 0
+        self._流程3已赠送第四把 = False
+        self._流程3三把S赠送 = False
+        self._流程3是按钮rect = pygame.Rect(0, 0, 1, 1)
+        self._流程3否按钮rect = pygame.Rect(0, 0, 1, 1)
+        self._布局存储: Optional[SettlementLayoutStore] = None
+        self._运行时布局缓存: Dict[str, Dict[str, object]] = {}
+        self._运行时布局缓存键: Optional[Tuple[int, int, int, Optional[float], str]] = None
 
         self._标题字体 = _获取字体(54, True)
         self._歌名字体 = _获取字体(26, False)
@@ -101,11 +160,6 @@ class 场景_结算(场景基类):
         self._已切结算BGM = False
         self._奖励数据: Dict[str, object] = {}
         self._歌曲记录结果: Dict[str, object] = {}
-        self._奖励窗出现秒 = (
-            self._数值动画秒 + self._评级砸入秒 + self._顶部砸入秒 + 0.25
-        )
-        self._中转等待秒 = 5.0
-        self._已请求中转提示 = False
 
     def 进入(self, 载荷=None):
         self._载荷 = dict(载荷) if isinstance(载荷, dict) else {}
@@ -114,9 +168,14 @@ class 场景_结算(场景基类):
         self._缩放缓存.clear()
         self._奖励数据 = {}
         self._歌曲记录结果 = {}
-        self._已请求中转提示 = False
+        self._流程1缓存尺寸 = (0, 0)
+        self._流程1最终图 = None
+        self._流程1虚化图 = None
+        self._运行时布局缓存 = {}
+        self._运行时布局缓存键 = None
         self._加载资源()
         self._更新个人资料()
+        self._配置流程状态()
         self._播放结算音效()
 
     def 退出(self):
@@ -139,19 +198,115 @@ class 场景_结算(场景基类):
 
         if (not self._已切结算BGM) and (经过秒 >= float(self._结算音效时长秒 or 0.0)):
             self._播放结算背景音乐()
-        if (not self._已请求中转提示) and 经过秒 >= float(self._中转等待秒):
-            self._已请求中转提示 = True
-            return {
-                "切换到": "中转提示",
-                "载荷": self._构建中转提示载荷(经过秒),
-                "禁用黑屏过渡": True,
-            }
+        流程阶段, _ = self._取流程阶段(经过秒)
+        if 流程阶段 < 3:
+            return None
+
+        当前系统秒 = time.perf_counter()
+        if self._流程3退出动作 is not None:
+            if (当前系统秒 - float(self._流程3退出开始秒 or 当前系统秒)) >= float(
+                self._流程3黑屏秒
+            ):
+                return self._构建流程3退出结果(self._流程3退出动作)
+            return None
+
+        if self._流程3阶段类型 == "自动提示":
+            if (当前系统秒 - float(self._流程3阶段开始秒 or 当前系统秒)) >= float(
+                self._流程3阶段持续秒 or 0.0
+            ):
+                self._开始流程3退出(dict(self._流程3继续动作 or {}))
+            return None
+
+        if self._流程3阶段类型 == "续币等待":
+            当前信用 = 取信用数(self.上下文.get("状态", {}))
+            if 当前信用 >= int(self._流程3每局所需信用):
+                self._处理流程3续币成功()
+                return None
+            if (当前系统秒 - float(self._流程3阶段开始秒 or 当前系统秒)) >= float(
+                self._流程3阶段持续秒 or 0.0
+            ):
+                self._播放游戏结束音效()
+                self._进入流程3自动提示(
+                    提示键="游戏结束",
+                    持续秒=3.0,
+                    动作={"类型": "投币"},
+                    显示倒计时=False,
+                )
+            return None
+
+        if self._流程3阶段类型 == "继续挑战":
+            if (当前系统秒 - float(self._流程3阶段开始秒 or 当前系统秒)) >= float(
+                self._流程3阶段持续秒 or 0.0
+            ):
+                self._执行流程3否分支()
         return None
 
     def 处理事件(self, 事件):
+        经过秒 = max(0.0, float(time.perf_counter() - float(self._进入系统秒 or 0.0)))
+        流程阶段, _ = self._取流程阶段(经过秒)
         if 事件.type == pygame.KEYDOWN:
+            if (
+                流程阶段 == 3
+                and self._流程3退出动作 is None
+                and self._流程3阶段类型 == "继续挑战"
+                and 事件.key in (pygame.K_ESCAPE, pygame.K_n)
+            ):
+                self._执行流程3否分支()
+                return None
             if 事件.key == pygame.K_ESCAPE:
                 return self._返回选歌()
+        if (
+            流程阶段 != 3
+            or self._流程3退出动作 is not None
+            or self._流程3阶段类型 != "继续挑战"
+        ):
+            return None
+        if 事件.type == pygame.MOUSEMOTION:
+            if self._流程3是按钮rect.collidepoint(事件.pos):
+                self._流程3按钮选中 = "是"
+            elif self._流程3否按钮rect.collidepoint(事件.pos):
+                self._流程3按钮选中 = "否"
+            return None
+        if 事件.type == pygame.MOUSEBUTTONUP and 事件.button == 1:
+            if self._流程3是按钮rect.collidepoint(事件.pos):
+                self._执行流程3是分支()
+            elif self._流程3否按钮rect.collidepoint(事件.pos):
+                self._执行流程3否分支()
+            return None
+        if 事件.type == pygame.KEYDOWN:
+            if 事件.key in (pygame.K_LEFT, pygame.K_KP1, pygame.K_a):
+                self._流程3按钮选中 = "是"
+            elif 事件.key in (pygame.K_RIGHT, pygame.K_KP3, pygame.K_d):
+                self._流程3按钮选中 = "否"
+            elif 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP5):
+                if self._流程3按钮选中 == "是":
+                    self._执行流程3是分支()
+                else:
+                    self._执行流程3否分支()
+            elif 事件.key == pygame.K_y:
+                self._执行流程3是分支()
+        return None
+
+    def 处理全局踏板(self, 动作: str):
+        经过秒 = max(0.0, float(time.perf_counter() - float(self._进入系统秒 or 0.0)))
+        流程阶段, _ = self._取流程阶段(经过秒)
+        if (
+            流程阶段 != 3
+            or self._流程3退出动作 is not None
+            or self._流程3阶段类型 != "继续挑战"
+        ):
+            return None
+        if 动作 == 踏板动作_左:
+            self._流程3按钮选中 = "是"
+            return None
+        if 动作 == 踏板动作_右:
+            self._流程3按钮选中 = "否"
+            return None
+        if 动作 == 踏板动作_确认:
+            if self._流程3按钮选中 == "是":
+                self._执行流程3是分支()
+            else:
+                self._执行流程3否分支()
         return None
 
     def 绘制(self):
@@ -168,26 +323,542 @@ class 场景_结算(场景基类):
 
         入场t = _夹取(经过秒 / 0.45, 0.0, 1.0)
         黑幕alpha = int((1.0 - _缓出三次方(入场t)) * 255.0)
+        面板矩形 = self._取结算面板矩形(屏宽, 屏高)
+        流程阶段, 阶段秒 = self._取流程阶段(经过秒)
+        if 流程阶段 == 1:
+            self._绘制流程1层(屏幕, 经过秒, 是否虚化=False, 总透明度=1.0)
+        elif 流程阶段 == 2:
+            self._绘制流程1层(
+                屏幕, self._流程1时长秒, 是否虚化=True, 总透明度=1.0
+            )
+            self._绘制奖励小窗(屏幕, 面板矩形, 阶段秒, 总透明度=1.0)
+        else:
+            内容退场t = _夹取(
+                阶段秒 / max(0.01, float(self._流程3内容退场秒)), 0.0, 1.0
+            )
+            内容透明 = 1.0 - _缓出三次方(内容退场t)
+            if 内容透明 > 0.0:
+                self._绘制流程1层(
+                    屏幕,
+                    self._流程1时长秒,
+                    是否虚化=True,
+                    总透明度=内容透明,
+                )
+                self._绘制奖励小窗(
+                    屏幕,
+                    面板矩形,
+                    self._流程2时长秒,
+                    总透明度=内容透明,
+                    固定最终=True,
+                )
+            提示透明 = self._取流程3界面透明度(阶段秒)
+            self._绘制流程3提示(屏幕, 阶段秒, 提示透明)
+            if self._流程3阶段类型 == "继续挑战":
+                self._绘制流程3选择按钮(屏幕, 提示透明)
+            if self._流程3是否显示倒计时:
+                self._绘制流程3倒计时(屏幕, 提示透明)
 
-        面板尺寸 = int(max(360, min(int(屏高 * 0.82), int(屏宽 * 0.48), 700)))
-        面板矩形 = pygame.Rect(
-            max(28, int(屏宽 * 0.06)),
-            max(20, (屏高 - 面板尺寸) // 2),
-            面板尺寸,
-            面板尺寸,
-        )
-        self._绘制结算面板(屏幕, 面板矩形, 经过秒)
-        self._绘制奖励小窗(屏幕, 面板矩形, 经过秒)
         self._绘制底部币值(屏幕)
+
+        if 流程阶段 == 3 and self._流程3退出动作 is not None:
+            黑屏t = _夹取(
+                (time.perf_counter() - float(self._流程3退出开始秒 or 0.0))
+                / max(0.01, float(self._流程3黑屏秒)),
+                0.0,
+                1.0,
+            )
+            退场黑幕 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
+            退场黑幕.fill((0, 0, 0, int(255 * _缓出三次方(黑屏t))))
+            屏幕.blit(退场黑幕, (0, 0))
 
         if 黑幕alpha > 0:
             黑幕 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
             黑幕.fill((0, 0, 0, 黑幕alpha))
             屏幕.blit(黑幕, (0, 0))
 
+    def _配置流程状态(self):
+        try:
+            玩家序号 = int(self._载荷.get("玩家序号", 1) or 1)
+        except Exception:
+            玩家序号 = 1
+        self._玩家序号 = 2 if 玩家序号 == 2 else 1
+        self._运行时布局缓存 = {}
+        self._运行时布局缓存键 = None
+        try:
+            self._流程3当前关卡 = int(
+                self._载荷.get("当前关卡", self._载荷.get("局数", 1)) or 1
+            )
+        except Exception:
+            self._流程3当前关卡 = 1
+        self._流程3当前关卡 = max(1, int(self._流程3当前关卡))
+        评级 = str(self._载荷.get("评级", "") or "").strip().upper()
+        self._流程3是否失败 = bool(self._载荷.get("失败", False)) or 评级 == "F"
+        try:
+            self._流程3结算后S数 = int(
+                self._载荷.get(
+                    "结算后S数",
+                    self._载荷.get("累计S数", 取累计S数(self.上下文.get("状态", {}))),
+                )
+                or 0
+            )
+        except Exception:
+            self._流程3结算后S数 = 0
+        self._流程3结算后S数 = max(0, min(3, self._流程3结算后S数))
+        self._流程3已赠送第四把 = bool(
+            self._载荷.get(
+                "是否赠送第四把", 是否赠送第四把(self.上下文.get("状态", {}))
+            )
+        )
+        self._流程3三把S赠送 = bool(self._载荷.get("三把S赠送", False))
+        self._流程3每局所需信用 = int(取每局所需信用(self.上下文.get("状态", {})) or 3)
+        self._流程3阶段类型 = ""
+        self._流程3提示键 = ""
+        self._流程3阶段开始秒 = 0.0
+        self._流程3阶段持续秒 = 0.0
+        self._流程3是否显示倒计时 = False
+        self._流程3续币基准值 = 0
+        self._流程3继续动作 = None
+        self._流程3默认否动作 = None
+        self._流程3按钮选中 = "是"
+        self._流程3退出动作 = None
+        self._流程3退出开始秒 = 0.0
+        self._配置流程3初始流程()
+
+    def _取流程3界面透明度(self, 阶段秒: float) -> float:
+        入场t = _夹取(
+            阶段秒 / max(0.01, float(self._流程3提示入场秒)),
+            0.0,
+            1.0,
+        )
+        透明度 = _缓出三次方(入场t)
+        if self._流程3退出动作 is not None:
+            退出t = _夹取(
+                (time.perf_counter() - float(self._流程3退出开始秒 or 0.0))
+                / max(0.01, float(self._流程3黑屏秒)),
+                0.0,
+                1.0,
+            )
+            透明度 *= 1.0 - 退出t
+        return _夹取(透明度, 0.0, 1.0)
+
+    def _配置流程3初始流程(self):
+        if self._流程3三把S赠送:
+            self._准备流程3进入下一把(
+                下一关卡=4,
+                提示键="赠送一把",
+                提示秒数=3.0,
+                累计S数=3,
+                赠送第四把=True,
+            )
+            return
+        if self._流程3当前关卡 in (1, 2):
+            if not self._流程3是否失败:
+                self._准备流程3进入下一把(
+                    下一关卡=self._流程3当前关卡 + 1,
+                    提示键="下一把",
+                    提示秒数=3.0,
+                    累计S数=self._流程3结算后S数,
+                    赠送第四把=False,
+                )
+            else:
+                self._进入流程3是否继续分支(
+                    下一关卡=self._流程3当前关卡 + 1,
+                    重开新局=False,
+                )
+            return
+        self._进入流程3是否继续分支(下一关卡=1, 重开新局=True)
+
+    def _进入流程3是否继续分支(self, *, 下一关卡: int, 重开新局: bool):
+        if 取信用数(self.上下文.get("状态", {})) >= int(self._流程3每局所需信用):
+            self._进入流程3继续挑战提示(
+                下一关卡=下一关卡,
+                重开新局=bool(重开新局),
+            )
+            return
+        self._流程3阶段类型 = "续币等待"
+        self._流程3提示键 = "是否续币"
+        self._流程3阶段开始秒 = time.perf_counter()
+        self._流程3阶段持续秒 = 10.0
+        self._流程3是否显示倒计时 = True
+        self._流程3续币基准值 = int(取信用数(self.上下文.get("状态", {})))
+        self._流程3继续动作 = {
+            **self._构建返回选歌动作(),
+            "下一关卡": int(下一关卡),
+            "重开新局": bool(重开新局),
+            "累计S数": 0 if 重开新局 else int(self._流程3结算后S数),
+            "赠送第四把": False,
+        }
+        self._流程3默认否动作 = {"类型": "投币"}
+
+    def _进入流程3继续挑战提示(self, *, 下一关卡: int, 重开新局: bool):
+        self._流程3阶段类型 = "继续挑战"
+        self._流程3提示键 = "继续挑战"
+        self._流程3阶段开始秒 = time.perf_counter()
+        self._流程3阶段持续秒 = 10.0
+        self._流程3是否显示倒计时 = True
+        self._流程3按钮选中 = "是"
+        self._流程3继续动作 = {
+            **self._构建返回选歌动作(),
+            "下一关卡": int(下一关卡),
+            "重开新局": bool(重开新局),
+            "累计S数": 0 if 重开新局 else int(self._流程3结算后S数),
+            "赠送第四把": False,
+            "消耗信用": int(self._流程3每局所需信用),
+        }
+        self._流程3默认否动作 = {"类型": "投币"}
+
+    def _进入流程3自动提示(
+        self,
+        *,
+        提示键: str,
+        持续秒: float,
+        动作: dict,
+        显示倒计时: bool = False,
+    ):
+        self._流程3阶段类型 = "自动提示"
+        self._流程3提示键 = str(提示键 or "")
+        self._流程3阶段开始秒 = time.perf_counter()
+        self._流程3阶段持续秒 = float(max(0.1, 持续秒))
+        self._流程3继续动作 = dict(动作 or {})
+        self._流程3是否显示倒计时 = bool(显示倒计时)
+
+    def _准备流程3进入下一把(
+        self,
+        *,
+        下一关卡: int,
+        提示键: str,
+        提示秒数: float,
+        累计S数: int,
+        赠送第四把: bool,
+        消耗数量: int = 0,
+        重开新局: bool = False,
+    ):
+        状态 = self.上下文.get("状态", {})
+        if 重开新局:
+            初始化对局流程(状态)
+            设置对局流程(状态, 当前把数=1, 累计S数=0, 赠送第四把=False)
+        if 消耗数量 > 0:
+            消耗信用(状态, int(消耗数量))
+        设置对局流程(
+            状态,
+            当前把数=int(下一关卡),
+            累计S数=int(累计S数),
+            赠送第四把=bool(赠送第四把),
+        )
+        self._进入流程3自动提示(
+            提示键=提示键,
+            持续秒=提示秒数,
+            动作=self._构建返回选歌动作(),
+            显示倒计时=False,
+        )
+
+    def _处理流程3续币成功(self):
+        动作 = dict(self._流程3继续动作 or {})
+        下一关卡 = int(动作.get("下一关卡", 1) or 1)
+        重开新局 = bool(动作.get("重开新局", False))
+        累计S数 = int(动作.get("累计S数", 0) or 0)
+        self._准备流程3进入下一把(
+            下一关卡=下一关卡,
+            提示键="下一把",
+            提示秒数=3.0,
+            累计S数=累计S数,
+            赠送第四把=False,
+            消耗数量=int(self._流程3每局所需信用),
+            重开新局=重开新局,
+        )
+
+    def _执行流程3是分支(self):
+        动作 = dict(self._流程3继续动作 or {})
+        下一关卡 = int(动作.get("下一关卡", 1) or 1)
+        重开新局 = bool(动作.get("重开新局", False))
+        累计S数 = int(动作.get("累计S数", 0) or 0)
+        状态 = self.上下文.get("状态", {})
+        if 重开新局:
+            初始化对局流程(状态)
+            设置对局流程(状态, 当前把数=1, 累计S数=0, 赠送第四把=False)
+        if int(动作.get("消耗信用", 0) or 0) > 0:
+            消耗信用(状态, int(动作.get("消耗信用", 0) or 0))
+        设置对局流程(
+            状态,
+            当前把数=int(下一关卡),
+            累计S数=int(累计S数),
+            赠送第四把=False,
+        )
+        self._开始流程3退出(self._构建返回选歌动作())
+
+    def _执行流程3否分支(self):
+        self._开始流程3退出(dict(self._流程3默认否动作 or {"类型": "投币"}))
+
+    def _开始流程3退出(self, 动作: dict):
+        if self._流程3退出动作 is not None:
+            return
+        self._流程3退出动作 = dict(动作 or {})
+        self._流程3退出开始秒 = time.perf_counter()
+
+    def _构建流程3退出结果(self, 动作: dict):
+        类型 = str((动作 or {}).get("类型", "") or "")
+        if 类型 == "投币":
+            重置游戏流程状态(self.上下文.get("状态", {}))
+            return {"切换到": "投币", "禁用黑屏过渡": True}
+        if 类型 == "选歌":
+            return self._返回选歌(动作)
+        return None
+
+    def _布局文件路径(self) -> str:
+        根目录 = str((self.上下文.get("资源", {}) or {}).get("根", "") or os.getcwd())
+        return os.path.join(根目录, "json", "结算场景布局.json")
+
+    def _刷新布局存储(self) -> SettlementLayoutStore:
+        布局路径 = self._布局文件路径()
+        if self._布局存储 is None or self._布局存储.layout_path != os.path.abspath(布局路径):
+            self._布局存储 = SettlementLayoutStore(布局路径)
+        else:
+            self._布局存储.reload_if_changed()
+        return self._布局存储
+
+    def _取运行时布局(self, 屏幕尺寸: Tuple[int, int]) -> Dict[str, Dict[str, object]]:
+        存储 = self._刷新布局存储()
+        键 = (
+            int(屏幕尺寸[0]),
+            int(屏幕尺寸[1]),
+            int(self._玩家序号),
+            getattr(存储, "_mtime", None),
+            str(self._流程3提示键 or ""),
+        )
+        if 键 != self._运行时布局缓存键:
+            self._运行时布局缓存 = 存储.runtime_layers(屏幕尺寸, player_index=self._玩家序号)
+            self._运行时布局缓存键 = 键
+        return self._运行时布局缓存
+
+    def _取布局层(self, 屏幕尺寸: Tuple[int, int], 图层id: str) -> Dict[str, object]:
+        图层 = self._取运行时布局(屏幕尺寸).get(str(图层id), {})
+        return 图层 if isinstance(图层, dict) else {}
+
+    def _取布局矩形(
+        self, 屏幕尺寸: Tuple[int, int], 图层id: str, 默认值: Optional[pygame.Rect] = None
+    ) -> pygame.Rect:
+        图层 = self._取布局层(屏幕尺寸, 图层id)
+        rect = 图层.get("rect", [0, 0, 0, 0]) if isinstance(图层, dict) else [0, 0, 0, 0]
+        if isinstance(rect, (list, tuple)) and len(rect) == 4:
+            return pygame.Rect(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        return 默认值.copy() if isinstance(默认值, pygame.Rect) else pygame.Rect(0, 0, 0, 0)
+
+    def _取布局局部矩形(
+        self, 屏幕尺寸: Tuple[int, int], 图层id: str, 基准图层id: str
+    ) -> pygame.Rect:
+        rect = self._取布局矩形(屏幕尺寸, 图层id)
+        基准 = self._取布局矩形(屏幕尺寸, 基准图层id)
+        return pygame.Rect(rect.x - 基准.x, rect.y - 基准.y, rect.w, rect.h)
+
+    def _取图层内容缩放(self, 图层: Dict[str, object]) -> Tuple[float, float]:
+        raw = 图层.get("content_scale", [1.0, 1.0])
+        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+            try:
+                return max(0.05, float(raw[0])), max(0.05, float(raw[1]))
+            except Exception:
+                return (1.0, 1.0)
+        return (1.0, 1.0)
+
+    def _取图层内容偏移(self, 图层: Dict[str, object]) -> Tuple[float, float]:
+        raw = 图层.get("content_offset", [0.0, 0.0])
+        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+            try:
+                return float(raw[0]), float(raw[1])
+            except Exception:
+                return (0.0, 0.0)
+        return (0.0, 0.0)
+
+    def _拟合图层内容矩形(
+        self, 图层: Dict[str, object], 基础矩形: pygame.Rect, surface: pygame.Surface
+    ) -> pygame.Rect:
+        fit_mode = str(图层.get("fit", "contain") or "contain")
+        scale_x, scale_y = self._取图层内容缩放(图层)
+        size = fit_size(surface.get_size(), 基础矩形.size, fit_mode)
+        width = max(1, int(round(size[0] * scale_x)))
+        height = max(1, int(round(size[1] * scale_y)))
+        style = 图层.get("text_style", {}) if isinstance(图层.get("text_style"), dict) else {}
+        align = str(style.get("align", "center") or "center")
+        offset_x, offset_y = self._取图层内容偏移(图层)
+        rect = pygame.Rect(0, 0, width, height)
+        if align == "left":
+            rect.midleft = (基础矩形.left, 基础矩形.centery)
+        elif align == "right":
+            rect.midright = (基础矩形.right, 基础矩形.centery)
+        else:
+            rect.center = 基础矩形.center
+        rect.x += int(round(offset_x))
+        rect.y += int(round(offset_y))
+        return rect
+
+    def _绘制布局文本(
+        self,
+        屏幕: pygame.Surface,
+        图层id: str,
+        文本: str,
+        区域: Optional[pygame.Rect] = None,
+        默认字号: int = 24,
+        默认颜色: Tuple[int, int, int] = (255, 255, 255),
+        默认描边颜色: Tuple[int, int, int] = (0, 0, 0),
+        默认描边粗细: int = 0,
+        默认字间距: int = 0,
+        默认粗体: bool = False,
+        默认对齐: str = "center",
+    ):
+        基础矩形 = 区域 or self._取布局矩形(屏幕.get_size(), 图层id)
+        if 基础矩形.w <= 0 or 基础矩形.h <= 0 or not 文本:
+            return
+        图层 = self._取布局层(屏幕.get_size(), 图层id)
+        self._绘制指定图层文本(
+            屏幕,
+            图层,
+            基础矩形,
+            文本,
+            默认字号=默认字号,
+            默认颜色=默认颜色,
+            默认描边颜色=默认描边颜色,
+            默认描边粗细=默认描边粗细,
+            默认字间距=默认字间距,
+            默认粗体=默认粗体,
+            默认对齐=默认对齐,
+        )
+
+    def _绘制指定图层文本(
+        self,
+        屏幕: pygame.Surface,
+        图层: Dict[str, object],
+        基础矩形: pygame.Rect,
+        文本: str,
+        默认字号: int = 24,
+        默认颜色: Tuple[int, int, int] = (255, 255, 255),
+        默认描边颜色: Tuple[int, int, int] = (0, 0, 0),
+        默认描边粗细: int = 0,
+        默认字间距: int = 0,
+        默认粗体: bool = False,
+        默认对齐: str = "center",
+    ):
+        if 基础矩形.w <= 0 or 基础矩形.h <= 0 or not 文本:
+            return
+        style = 图层.get("text_style", {}) if isinstance(图层.get("text_style"), dict) else {}
+        if not style:
+            style = {"align": 默认对齐}
+        文字图 = render_text_surface(
+            str(文本 or ""),
+            int(style.get("font_size", 默认字号) or 默认字号),
+            parse_color(style.get("color", list(默认颜色)), 默认颜色),
+            bool(style.get("bold", 默认粗体)),
+            parse_color(style.get("stroke_color", list(默认描边颜色)), 默认描边颜色),
+            int(style.get("stroke_width", 默认描边粗细) or 默认描边粗细),
+            int(style.get("letter_spacing", 默认字间距) or 默认字间距),
+        )
+        内容矩形 = self._拟合图层内容矩形(图层, 基础矩形, 文字图)
+        待绘图 = 文字图
+        if 内容矩形.size != 文字图.get_size():
+            待绘图 = pygame.transform.smoothscale(文字图, 内容矩形.size).convert_alpha()
+        屏幕.blit(待绘图, 内容矩形.topleft)
+
+    def _绘制布局滚动文本(
+        self,
+        屏幕: pygame.Surface,
+        图层id: str,
+        文本: str,
+        滚动秒: float,
+        默认字号: int = 24,
+        默认颜色: Tuple[int, int, int] = (255, 255, 255),
+        默认粗体: bool = False,
+    ):
+        区域 = self._取布局矩形(屏幕.get_size(), 图层id)
+        if 区域.w <= 0 or 区域.h <= 0 or not 文本:
+            return
+        图层 = self._取布局层(屏幕.get_size(), 图层id)
+        style = 图层.get("text_style", {}) if isinstance(图层.get("text_style"), dict) else {}
+        字体 = get_font(int(style.get("font_size", 默认字号) or 默认字号), bool(style.get("bold", 默认粗体)))
+        self._绘制滚动文本(
+            屏幕,
+            文本=str(文本 or ""),
+            字体=字体,
+            颜色=parse_color(style.get("color", list(默认颜色)), 默认颜色),
+            区域=区域,
+            滚动秒=float(滚动秒),
+        )
+
+    def _取流程阶段(self, 经过秒: float) -> Tuple[int, float]:
+        流程1终点 = float(self._流程1时长秒)
+        流程2终点 = 流程1终点 + float(self._流程2时长秒)
+        if 经过秒 < 流程1终点:
+            return 1, float(max(0.0, 经过秒))
+        if 经过秒 < 流程2终点:
+            return 2, float(max(0.0, 经过秒 - 流程1终点))
+        return 3, float(max(0.0, 经过秒 - 流程2终点))
+
+    def _取结算面板矩形(self, 屏宽: int, 屏高: int) -> pygame.Rect:
+        return self._取布局矩形((屏宽, 屏高), "panel")
+
+    def _取奖励窗矩形(self, 面板矩形: pygame.Rect, 屏宽: int, 屏高: int) -> pygame.Rect:
+        return self._取布局矩形((屏宽, 屏高), "reward_bg")
+
+    def _渲染流程1层图(self, 尺寸: Tuple[int, int], 经过秒: float) -> pygame.Surface:
+        屏宽, 屏高 = int(尺寸[0]), int(尺寸[1])
+        图层 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
+        面板矩形 = self._取结算面板矩形(屏宽, 屏高)
+        self._绘制结算面板(图层, 面板矩形, float(经过秒))
+        return 图层
+
+    def _模糊图层(self, 图层: pygame.Surface) -> pygame.Surface:
+        w, h = 图层.get_size()
+        小图 = pygame.transform.smoothscale(
+            图层, (max(1, int(w * 0.22)), max(1, int(h * 0.22)))
+        ).convert_alpha()
+        return pygame.transform.smoothscale(小图, (w, h)).convert_alpha()
+
+    def _确保流程1缓存(self, 尺寸: Tuple[int, int]):
+        目标尺寸 = (int(尺寸[0]), int(尺寸[1]))
+        if (
+            self._流程1最终图 is not None
+            and self._流程1虚化图 is not None
+            and self._流程1缓存尺寸 == 目标尺寸
+        ):
+            return
+        最终图 = self._渲染流程1层图(目标尺寸, float(self._流程1时长秒))
+        self._流程1最终图 = 最终图
+        self._流程1虚化图 = self._模糊图层(最终图)
+        self._流程1缓存尺寸 = 目标尺寸
+
+    def _绘制流程1层(
+        self,
+        屏幕: pygame.Surface,
+        经过秒: float,
+        是否虚化: bool = False,
+        总透明度: float = 1.0,
+    ):
+        屏宽, 屏高 = 屏幕.get_size()
+        if 是否虚化:
+            self._确保流程1缓存((屏宽, 屏高))
+            图层 = self._流程1虚化图
+        else:
+            图层 = self._渲染流程1层图((屏宽, 屏高), float(经过秒))
+        if 图层 is None:
+            return
+        待绘图 = 图层
+        if (总透明度 < 0.999) or 是否虚化:
+            try:
+                待绘图 = 图层.copy()
+                if 是否虚化:
+                    暗化层 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
+                    暗化层.fill((0, 0, 0, int(128 * max(0.0, min(1.0, 总透明度)))))
+                    待绘图.blit(暗化层, (0, 0))
+                if 总透明度 < 0.999:
+                    待绘图.set_alpha(int(255 * max(0.0, min(1.0, 总透明度))))
+            except Exception:
+                待绘图 = 图层
+        屏幕.blit(待绘图, (0, 0))
+
     def _绘制结算面板(self, 屏幕: pygame.Surface, 面板矩形: pygame.Rect, 经过秒: float):
+        屏幕尺寸 = 屏幕.get_size()
+        面板矩形 = self._取布局矩形(屏幕尺寸, "panel", 面板矩形)
+        面板图层 = self._取布局层(屏幕尺寸, "panel")
         if self._面板图 is not None:
-            面板图 = self._缩放图(self._面板图, 面板矩形.size)
+            面板内容矩形 = self._拟合图层内容矩形(面板图层, 面板矩形, self._面板图)
+            面板图 = self._缩放图(self._面板图, 面板内容矩形.size)
             if 面板图 is not None:
                 if 经过秒 < 0.25:
                     try:
@@ -195,35 +866,34 @@ class 场景_结算(场景基类):
                         面板图.set_alpha(int(255 * _缓出三次方(经过秒 / 0.25)))
                     except Exception:
                         pass
-                屏幕.blit(面板图, 面板矩形.topleft)
+                屏幕.blit(面板图, 面板内容矩形.topleft)
         else:
             pygame.draw.rect(
                 屏幕, (30, 45, 90), 面板矩形, border_radius=max(12, 面板矩形.w // 24)
             )
 
-        def px(x: float) -> int:
-            return 面板矩形.left + int(面板矩形.w * (float(x) / 512.0))
-
-        def py(y: float) -> int:
-            return 面板矩形.top + int(面板矩形.h * (float(y) / 512.0))
-
-        封面框 = pygame.Rect(px(58), py(138), px(184) - px(58), py(272) - py(138))
+        封面框 = self._取布局矩形(屏幕尺寸, "cover")
         self._绘制封面区域(屏幕, 封面框)
-
         星级 = int(self._载荷.get("星级", 0) or 0)
         星星文本 = ("★" * max(0, 星级)) if 星级 > 0 else ""
         if 星星文本:
-            星图 = self._星星字体.render(星星文本, True, (242, 223, 60))
-            屏幕.blit(星图, (px(48), py(304)))
+            self._绘制布局文本(
+                屏幕,
+                "stars",
+                星星文本,
+                默认字号=24,
+                默认颜色=(242, 223, 60),
+                默认对齐="left",
+            )
 
         歌名 = str(self._载荷.get("曲目名", "Unknown") or "Unknown")
-        self._绘制滚动文本(
+        self._绘制布局滚动文本(
             屏幕,
-            文本=歌名,
-            字体=self._歌名字体,
-            颜色=(255, 255, 255),
-            区域=pygame.Rect(px(46), py(332), px(214) - px(46), py(370) - py(332)),
-            滚动秒=float(经过秒),
+            "song_title",
+            歌名,
+            float(经过秒),
+            默认字号=26,
+            默认颜色=(255, 255, 255),
         )
 
         数值t = _缓出三次方(_夹取(经过秒 / float(self._数值动画秒), 0.0, 1.0))
@@ -237,22 +907,19 @@ class 场景_结算(场景基类):
         百分比目标 = float(self._载荷.get("百分比数值", 0.0) or 0.0)
         百分比值 = 百分比目标 * 数值t
 
-        行右x = px(442)
-        self._绘制右侧数值(屏幕, 行右x, py(147), str(miss值), (166, 19, 27))
-        self._绘制右侧数值(屏幕, 行右x, py(194), str(good值), (49, 74, 25))
-        self._绘制右侧数值(屏幕, 行右x, py(241), str(cool值), (12, 9, 69))
-        self._绘制右侧数值(屏幕, 行右x, py(289), str(perfect值), (113, 19, 61))
-        self._绘制右侧数值(屏幕, 行右x, py(336), str(combo值), (56, 33, 113))
-        self._绘制右侧数值(屏幕, 行右x, py(390), f"{百分比值:05.2f}%", (223, 193, 61))
-
-        总分标签 = self._总分标签字体.render("", True, (245, 245, 255))
-        屏幕.blit(总分标签, 总分标签.get_rect(center=(px(176), py(450))))
-        self._绘制纯色文本(
+        self._绘制布局文本(屏幕, "miss", str(miss值), 默认字号=42, 默认描边颜色=(166, 19, 27), 默认描边粗细=1, 默认对齐="right")
+        self._绘制布局文本(屏幕, "good", str(good值), 默认字号=42, 默认描边颜色=(49, 74, 25), 默认描边粗细=1, 默认对齐="right")
+        self._绘制布局文本(屏幕, "cool", str(cool值), 默认字号=42, 默认描边颜色=(12, 9, 69), 默认描边粗细=1, 默认对齐="right")
+        self._绘制布局文本(屏幕, "perfect", str(perfect值), 默认字号=42, 默认描边颜色=(113, 19, 61), 默认描边粗细=1, 默认对齐="right")
+        self._绘制布局文本(屏幕, "combo", str(combo值), 默认字号=42, 默认描边颜色=(56, 33, 113), 默认描边粗细=1, 默认对齐="right")
+        self._绘制布局文本(屏幕, "accuracy", f"{百分比值:05.2f}%", 默认字号=42, 默认描边颜色=(223, 193, 61), 默认描边粗细=1, 默认对齐="right")
+        self._绘制布局文本(
             屏幕,
+            "score",
             str(int(分数字)),
-            self._总分数字字体,
-            (255, 255, 255),
-            (px(340), py(452)),
+            默认字号=44,
+            默认颜色=(255, 255, 255),
+            默认对齐="center",
         )
 
         self._绘制评级动画(屏幕, 面板矩形, 经过秒)
@@ -261,11 +928,12 @@ class 场景_结算(场景基类):
 
     def _绘制封面区域(self, 屏幕: pygame.Surface, 区域: pygame.Rect):
         pygame.draw.rect(屏幕, (20, 20, 20), 区域)
+        图层 = self._取布局层(屏幕.get_size(), "cover")
         if self._封面图 is not None:
-            图 = self._缩放cover图(self._封面图, 区域.size)
+            内容rect = self._拟合图层内容矩形(图层, 区域, self._封面图)
+            图 = self._缩放图(self._封面图, 内容rect.size)
             if 图 is not None:
-                rr = 图.get_rect(center=区域.center)
-                屏幕.blit(图, rr.topleft)
+                屏幕.blit(图, 内容rect.topleft)
                 return
         占位 = self._占位字体.render("NO IMAGE", True, (230, 230, 230))
         屏幕.blit(占位, 占位.get_rect(center=区域.center))
@@ -324,11 +992,10 @@ class 场景_结算(场景基类):
             self._绘制三S评级动画(屏幕, 面板矩形, 进度)
             return
 
-        目标宽 = int(面板矩形.w * 0.25)
-        比例 = float(self._评级图.get_height()) / float(
-            max(1, self._评级图.get_width())
-        )
-        目标高 = int(目标宽 * 比例)
+        屏幕尺寸 = 屏幕.get_size()
+        目标rect = self._取布局矩形(屏幕尺寸, "grade_main")
+        目标宽 = int(max(2, 目标rect.w))
+        目标高 = int(max(2, 目标rect.h))
 
         动画缩放 = 1.0 + (1.30 - 1.0) * (1.0 - _回弹(进度))
         动画宽 = max(2, int(目标宽 * 动画缩放))
@@ -344,10 +1011,7 @@ class 场景_结算(场景基类):
         except Exception:
             pass
 
-        目标中心 = (
-            面板矩形.left + int(面板矩形.w * (100.0 / 512.0)),
-            面板矩形.top + int(面板矩形.h * (425.0 / 512.0)),
-        )
+        目标中心 = 目标rect.center
         起始中心x = -动画宽 // 2
         当前中心x = int(起始中心x + (目标中心[0] - 起始中心x) * _回弹(进度))
         当前中心y = int(目标中心[1])
@@ -360,17 +1024,18 @@ class 场景_结算(场景基类):
         if self._评级图 is None:
             return
 
-        目标中心 = (
-            面板矩形.left + int(面板矩形.w * (100.0 / 512.0)),
-            面板矩形.top + int(面板矩形.h * (425.0 / 512.0)),
-        )
-        主宽 = int(面板矩形.w * 0.24)
-        主高 = int(主宽 * float(self._评级图.get_height()) / float(max(1, self._评级图.get_width())))
+        屏幕尺寸 = 屏幕.get_size()
+        主rect = self._取布局矩形(屏幕尺寸, "grade_main")
+        左rect = self._取布局矩形(屏幕尺寸, "grade_left")
+        右rect = self._取布局矩形(屏幕尺寸, "grade_right")
+        目标中心 = 主rect.center
+        主宽 = int(max(2, 主rect.w))
+        主高 = int(max(2, 主rect.h))
         动画缩放 = 1.0 + (1.30 - 1.0) * (1.0 - _回弹(进度))
         主宽 = max(2, int(主宽 * 动画缩放))
         主高 = max(2, int(主高 * 动画缩放))
-        副宽 = max(2, int(主宽 * 0.68))
-        副高 = max(2, int(主高 * 0.68))
+        副宽 = max(2, int(左rect.w * 动画缩放))
+        副高 = max(2, int(左rect.h * 动画缩放))
         alpha = int(255 * _缓出三次方(进度))
 
         def _画单个(图宽: int, 图高: int, 目标x: int, 目标y: int):
@@ -387,10 +1052,9 @@ class 场景_结算(场景基类):
             rr = 图.get_rect(center=(当前x, 目标y))
             屏幕.blit(图, rr.topleft)
 
-        间距 = int(主宽 * 0.82)
-        _画单个(副宽, 副高, 目标中心[0] - 间距, 目标中心[1] + int(主高 * 0.06))
+        _画单个(副宽, 副高, 左rect.centerx, 左rect.centery)
         _画单个(主宽, 主高, 目标中心[0], 目标中心[1])
-        _画单个(副宽, 副高, 目标中心[0] + 间距, 目标中心[1] + int(主高 * 0.06))
+        _画单个(max(2, int(右rect.w * 动画缩放)), max(2, int(右rect.h * 动画缩放)), 右rect.centerx, 右rect.centery)
 
     def _绘制顶部状态动画(
         self, 屏幕: pygame.Surface, 面板矩形: pygame.Rect, 经过秒: float
@@ -403,9 +1067,9 @@ class 场景_结算(场景基类):
         if 进度 <= 0.0:
             return
 
-        目标宽 = int(面板矩形.w * 0.72)
-        比例 = float(顶部图.get_height()) / float(max(1, 顶部图.get_width()))
-        目标高 = int(目标宽 * 比例)
+        目标rect = self._取布局矩形(屏幕.get_size(), "top_badge")
+        目标宽 = int(max(2, 目标rect.w))
+        目标高 = int(max(2, 目标rect.h))
         缩放 = 1.0 + (1.30 - 1.0) * (1.0 - _回弹(进度))
         动画宽 = max(2, int(目标宽 * 缩放))
         动画高 = max(2, int(目标高 * 缩放))
@@ -418,8 +1082,8 @@ class 场景_结算(场景基类):
         except Exception:
             pass
 
-        目标中心 = (面板矩形.centerx, 面板矩形.top + int(面板矩形.h * 0.10))
-        起始中心y = 面板矩形.top - 动画高
+        目标中心 = 目标rect.center
+        起始中心y = 目标rect.top - 动画高
         当前中心y = int(起始中心y + (目标中心[1] - 起始中心y) * _回弹(进度))
         rr = 图.get_rect(center=(目标中心[0], 当前中心y))
         屏幕.blit(图, rr.topleft)
@@ -445,11 +1109,9 @@ class 场景_结算(场景基类):
         t = _夹取((经过秒 - 开始秒) / 0.28, 0.0, 1.0)
         if t <= 0.0:
             return
-        目标宽 = int(max(120, 面板矩形.w * 0.42))
-        比例 = float(self._新纪录图.get_height()) / float(
-            max(1, self._新纪录图.get_width())
-        )
-        目标高 = int(max(40, 目标宽 * 比例))
+        目标rect = self._取布局矩形(屏幕.get_size(), "new_record")
+        目标宽 = int(max(2, 目标rect.w))
+        目标高 = int(max(2, 目标rect.h))
         缩放 = 0.86 + 0.14 * _回弹(t)
         图 = self._缩放图(self._新纪录图, (int(目标宽 * 缩放), int(目标高 * 缩放)))
         if 图 is None:
@@ -459,124 +1121,187 @@ class 场景_结算(场景基类):
             图.set_alpha(int(255 * _缓出三次方(t)))
         except Exception:
             pass
-        rr = 图.get_rect(
-            center=(
-                面板矩形.right - int(面板矩形.w * 0.04),
-                面板矩形.top + int(面板矩形.h * 0.11),
-            )
-        )
+        rr = 图.get_rect(center=目标rect.center)
         屏幕.blit(图, rr.topleft)
 
-    def _绘制奖励小窗(self, 屏幕: pygame.Surface, 面板矩形: pygame.Rect, 经过秒: float):
-        if 经过秒 < float(self._奖励窗出现秒):
-            return
+    def _绘制奖励小窗(
+        self,
+        屏幕: pygame.Surface,
+        面板矩形: pygame.Rect,
+        经过秒: float,
+        总透明度: float = 1.0,
+        固定最终: bool = False,
+    ):
         if self._等级窗背景图 is None and self._等级窗底图 is None:
             return
 
-        t = _夹取((经过秒 - float(self._奖励窗出现秒)) / 0.32, 0.0, 1.0)
-        屏宽, 屏高 = 屏幕.get_size()
-        目标宽 = int(min(max(380, 屏宽 * 0.36), 620))
-        目标高 = int(max(190, 目标宽 * 0.50))
-        目标x = int(min(屏宽 - 24 - 目标宽, 面板矩形.right + 24))
-        目标y = int(面板矩形.centery - 目标高 // 2)
-        当前x = int(屏宽 + 12 - (屏宽 + 12 - 目标x) * _回弹(t))
+        实际屏幕尺寸 = 屏幕.get_size()
+        目标rect = self._取奖励窗矩形(面板矩形, *实际屏幕尺寸)
+        入场t = 1.0 if 固定最终 else _夹取(经过秒 / max(0.01, float(self._经验窗入场秒)), 0.0, 1.0)
+        if 入场t <= 0.0 or 总透明度 <= 0.0:
+            return
 
+        if 入场t < 0.55:
+            比例 = _线性插值(1.28, 0.90, 入场t / 0.55)
+        else:
+            比例 = _线性插值(0.90, 1.00, (入场t - 0.55) / 0.45)
+        if 固定最终:
+            比例 = 1.0
+
+        画布 = pygame.Surface(目标rect.size, pygame.SRCALPHA)
+        小窗图层 = self._取布局层(实际屏幕尺寸, "reward_bg")
+        小窗基础矩形 = pygame.Rect(0, 0, 目标rect.w, 目标rect.h)
         if self._等级窗背景图 is not None:
-            背景图 = self._缩放图(self._等级窗背景图, (目标宽, 目标高))
+            背景图rect = self._拟合图层内容矩形(小窗图层, 小窗基础矩形, self._等级窗背景图)
+            背景图 = self._缩放图(self._等级窗背景图, 背景图rect.size)
             if 背景图 is not None:
-                try:
-                    背景图 = 背景图.copy()
-                    背景图.set_alpha(int(255 * _缓出三次方(t)))
-                except Exception:
-                    pass
-                屏幕.blit(背景图, (当前x, 目标y))
+                画布.blit(背景图, 背景图rect.topleft)
         if self._等级窗底图 is not None:
-            底图 = self._缩放图(self._等级窗底图, (目标宽, 目标高))
+            底图rect = self._拟合图层内容矩形(小窗图层, 小窗基础矩形, self._等级窗底图)
+            底图 = self._缩放图(self._等级窗底图, 底图rect.size)
             if 底图 is not None:
                 try:
                     底图 = 底图.copy()
-                    底图.set_alpha(int(235 * _缓出三次方(t)))
+                    底图.set_alpha(235)
                 except Exception:
                     pass
-                屏幕.blit(底图, (当前x, 目标y))
+                画布.blit(底图, 底图rect.topleft)
 
-        self._绘制经验奖励数字(屏幕, pygame.Rect(当前x, 目标y, 目标宽, 目标高))
-        self._绘制经验进度区(屏幕, pygame.Rect(当前x, 目标y, 目标宽, 目标高))
-        self._绘制段位区(屏幕, pygame.Rect(当前x, 目标y, 目标宽, 目标高))
-        self._绘制升级动画(屏幕, pygame.Rect(当前x, 目标y, 目标宽, 目标高), 经过秒)
+        小窗区域 = pygame.Rect(0, 0, 目标rect.w, 目标rect.h)
+        self._绘制经验奖励数字(画布, 小窗区域, 实际屏幕尺寸)
+        self._绘制经验进度区(
+            画布,
+            小窗区域,
+            经过秒 if not 固定最终 else float(self._流程2时长秒),
+            实际屏幕尺寸,
+        )
+        self._绘制段位区(画布, 小窗区域, 实际屏幕尺寸)
+        self._绘制升级动画(
+            画布,
+            小窗区域,
+            经过秒 if not 固定最终 else float(self._流程2时长秒),
+            实际屏幕尺寸,
+        )
 
-    def _绘制经验奖励数字(self, 屏幕: pygame.Surface, 区域: pygame.Rect):
-        奖励经验 = int((self._奖励数据 or {}).get("经验增加值", 10) or 10)
+        动画宽 = max(2, int(round(目标rect.w * 比例)))
+        动画高 = max(2, int(round(目标rect.h * 比例)))
+        动画图 = pygame.transform.smoothscale(画布, (动画宽, 动画高)).convert_alpha()
+        try:
+            动画图 = 动画图.copy()
+            动画图.set_alpha(int(255 * _缓出三次方(入场t) * max(0.0, min(1.0, 总透明度))))
+        except Exception:
+            pass
+        rr = 动画图.get_rect(center=目标rect.center)
+        屏幕.blit(动画图, rr.topleft)
+
+    def _绘制经验奖励数字(
+        self,
+        屏幕: pygame.Surface,
+        区域: pygame.Rect,
+        实际屏幕尺寸: Tuple[int, int],
+    ):
+        奖励经验 = int((self._奖励数据 or {}).get("经验增加值", 0) or 0)
         文本 = f"+{奖励经验}"
         图列表: List[pygame.Surface] = []
         for ch in 文本:
             图 = self._经验数字图集.get(ch)
             if 图 is not None:
                 图列表.append(图)
-        if not 图列表:
-            self._绘制纯色文本(
-                屏幕,
-                文本,
-                self._数值字体,
-                (220, 220, 90),
-                (区域.x + int(区域.w * 0.26), 区域.y + int(区域.h * 0.18)),
-            )
+        数字图层 = self._取布局层(实际屏幕尺寸, "reward_digits")
+        数字rect = self._取布局局部矩形(实际屏幕尺寸, "reward_digits", "reward_bg")
+        if 数字rect.w <= 0 or 数字rect.h <= 0:
             return
-        目标高 = int(max(30, 区域.h * 0.28))
-        x = int(区域.x + 区域.w * 0.09)
-        y = int(区域.y + 区域.h * 0.06)
+        if not 图列表:
+            回退图 = render_text_surface(文本, 36, (245, 230, 92), True, (50, 40, 0), 1)
+            内容rect = self._拟合图层内容矩形(数字图层, 数字rect, 回退图)
+            屏幕.blit(pygame.transform.smoothscale(回退图, 内容rect.size).convert_alpha(), 内容rect.topleft)
+            return
+        目标高 = max(28, max(int(图.get_height()) for 图 in 图列表))
+        总宽 = 0
+        缩放图列: List[pygame.Surface] = []
         for 图源 in 图列表:
             比例 = float(目标高) / float(max(1, 图源.get_height()))
             目标宽 = int(max(10, 图源.get_width() * 比例))
             图 = self._缩放图(图源, (目标宽, 目标高))
             if 图 is None:
                 continue
-            屏幕.blit(图, (x, y))
-            x += 图.get_width() - int(目标高 * 0.10)
+            缩放图列.append(图)
+            总宽 += 图.get_width()
+        总宽 += max(0, len(缩放图列) - 1) * 2
+        数字图 = pygame.Surface((max(1, 总宽), max(1, 目标高)), pygame.SRCALPHA)
+        x = 0
+        for 图 in 缩放图列:
+            数字图.blit(图, (x, 0))
+            x += 图.get_width() + 2
+        内容rect = self._拟合图层内容矩形(数字图层, 数字rect, 数字图)
+        待绘图 = 数字图 if 内容rect.size == 数字图.get_size() else pygame.transform.smoothscale(数字图, 内容rect.size).convert_alpha()
+        屏幕.blit(待绘图, 内容rect.topleft)
 
-    def _绘制经验进度区(self, 屏幕: pygame.Surface, 区域: pygame.Rect):
+    def _绘制经验进度区(
+        self,
+        屏幕: pygame.Surface,
+        区域: pygame.Rect,
+        经过秒: float,
+        实际屏幕尺寸: Tuple[int, int],
+    ):
         奖励 = self._奖励数据 or {}
         组列表 = [
-            ("花式", self._花式经验框图, self._花式经验值图, 0.46),
-            ("竞速", self._竞速经验框图, self._竞速经验值图, 0.62),
+            ("花式", "style_label", "style_fill", "style_frame", "style_lv", self._花式经验框图, self._花式经验值图),
+            ("竞速", "speed_label", "speed_fill", "speed_frame", "speed_lv", self._竞速经验框图, self._竞速经验值图),
         ]
-        for 模式名, 框图源, 值图源, y比例 in 组列表:
+        for 模式名, 标签id, 填充id, 框id, 等级id, 框图源, 值图源 in 组列表:
             数据 = (
                 奖励.get(模式名, {}) if isinstance(奖励.get(模式名, {}), dict) else {}
             )
-            等级 = int(数据.get("等级", 1) or 1)
-            经验 = float(max(0.0, min(1.0, float(数据.get("经验", 0.0) or 0.0))))
-            行y = int(区域.y + 区域.h * y比例)
-            条rect = pygame.Rect(
-                int(区域.x + 区域.w * 0.18),
-                int(行y - 区域.h * 0.035),
-                int(区域.w * 0.58),
-                int(max(10, 区域.h * 0.08)),
+            动画状态 = self._计算经验动画状态(模式名, 经过秒)
+            等级 = int(动画状态.get("等级", 数据.get("等级", 1)) or 1)
+            经验 = float(
+                max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(动画状态.get("经验", 数据.get("经验", 0.0)) or 0.0),
+                    ),
+                )
             )
+            填充rect = self._取布局局部矩形(实际屏幕尺寸, 填充id, "reward_bg")
+            框rect = self._取布局局部矩形(实际屏幕尺寸, 框id, "reward_bg")
             self._绘制结算贴图经验条(
                 屏幕=屏幕,
-                条rect=条rect,
+                填充rect=填充rect,
+                框rect=框rect,
                 经验值=经验,
                 框图源=框图源,
                 值图源=值图源,
             )
-            模式图 = self._等级小窗小字体.render(模式名, True, (240, 240, 245))
-            屏幕.blit(
-                模式图,
-                (
-                    int(区域.x + 区域.w * 0.05),
-                    int(条rect.centery - 模式图.get_height() // 2),
-                ),
+            标签图层 = self._取布局层(实际屏幕尺寸, 标签id)
+            标签rect = self._取布局局部矩形(实际屏幕尺寸, 标签id, "reward_bg")
+            self._绘制指定图层文本(
+                屏幕,
+                标签图层,
+                标签rect,
+                模式名,
+                默认字号=18,
+                默认颜色=(240, 240, 245),
+                默认对齐="left",
             )
-            lv图 = self._等级小窗字体.render(f"Lv : {等级}", True, (245, 245, 245))
-            屏幕.blit(
-                lv图, (条rect.right + 8, int(条rect.centery - lv图.get_height() // 2))
+            等级图层 = self._取布局层(实际屏幕尺寸, 等级id)
+            等级rect = self._取布局局部矩形(实际屏幕尺寸, 等级id, "reward_bg")
+            self._绘制指定图层文本(
+                屏幕,
+                等级图层,
+                等级rect,
+                f"Lv : {等级}",
+                默认字号=22,
+                默认颜色=(245, 245, 245),
+                默认对齐="left",
             )
 
     def _绘制结算贴图经验条(
         self,
         屏幕: pygame.Surface,
-        条rect: pygame.Rect,
+        填充rect: pygame.Rect,
+        框rect: pygame.Rect,
         经验值: float,
         框图源: Optional[pygame.Surface],
         值图源: Optional[pygame.Surface],
@@ -586,7 +1311,8 @@ class 场景_结算(场景基类):
         except Exception:
             经验值 = 0.0
         经验值 = max(0.0, min(1.0, float(经验值)))
-        圆角 = max(2, int(条rect.h // 2))
+        基础rect = 框rect if 框rect.w > 0 and 框rect.h > 0 else 填充rect
+        圆角 = max(2, int(基础rect.h // 2))
 
         def _圆角遮罩(w: int, h: int, r: int) -> pygame.Surface:
             罩 = pygame.Surface((max(1, int(w)), max(1, int(h))), pygame.SRCALPHA)
@@ -600,97 +1326,318 @@ class 场景_结算(场景基类):
             return 罩
 
         pygame.draw.rect(
-            屏幕, (20, 32, 60), 条rect, border_radius=max(4, 条rect.h // 2)
+            屏幕, (20, 32, 60), 基础rect, border_radius=max(4, 基础rect.h // 2)
         )
 
-        if 值图源 is not None:
-            值图 = self._缩放图(值图源, (条rect.w, 条rect.h))
+        if 值图源 is not None and 填充rect.w > 0 and 填充rect.h > 0:
+            值图 = self._缩放图(值图源, (填充rect.w, 填充rect.h))
             if 值图 is not None:
-                填充宽 = int(max(0, min(条rect.w, round(条rect.w * 经验值))))
+                填充宽 = int(max(0, min(填充rect.w, round(填充rect.w * 经验值))))
                 if 填充宽 > 0:
-                    值层 = pygame.Surface((条rect.w, 条rect.h), pygame.SRCALPHA)
+                    值层 = pygame.Surface((填充rect.w, 填充rect.h), pygame.SRCALPHA)
                     值层.fill((0, 0, 0, 0))
                     值层.blit(
                         值图,
                         (0, 0),
-                        area=pygame.Rect(0, 0, 填充宽, 条rect.h),
+                        area=pygame.Rect(0, 0, 填充宽, 填充rect.h),
                     )
                     值层.blit(
-                        _圆角遮罩(条rect.w, 条rect.h, 圆角),
+                        _圆角遮罩(填充rect.w, 填充rect.h, 圆角),
                         (0, 0),
                         special_flags=pygame.BLEND_RGBA_MULT,
                     )
-                    屏幕.blit(值层, 条rect.topleft)
+                    屏幕.blit(值层, 填充rect.topleft)
 
-        if 框图源 is not None:
-            框图 = self._缩放图(框图源, (条rect.w, 条rect.h))
+        if 框图源 is not None and 框rect.w > 0 and 框rect.h > 0:
+            框图 = self._缩放图(框图源, (框rect.w, 框rect.h))
             if 框图 is not None:
-                框层 = pygame.Surface((条rect.w, 条rect.h), pygame.SRCALPHA)
+                框层 = pygame.Surface((框rect.w, 框rect.h), pygame.SRCALPHA)
                 框层.fill((0, 0, 0, 0))
                 框层.blit(框图, (0, 0))
                 框层.blit(
-                    _圆角遮罩(条rect.w, 条rect.h, 圆角),
+                    _圆角遮罩(框rect.w, 框rect.h, 圆角),
                     (0, 0),
                     special_flags=pygame.BLEND_RGBA_MULT,
                 )
-                屏幕.blit(框层, 条rect.topleft)
+                屏幕.blit(框层, 框rect.topleft)
 
-    def _绘制段位区(self, 屏幕: pygame.Surface, 区域: pygame.Rect):
-        if self._段位图 is not None:
-            图 = self._缩放图(self._段位图, (int(区域.h * 0.28), int(区域.h * 0.28)))
+    def _绘制段位区(
+        self,
+        屏幕: pygame.Surface,
+        区域: pygame.Rect,
+        实际屏幕尺寸: Tuple[int, int],
+    ):
+        图标图层 = self._取布局层(实际屏幕尺寸, "rank_icon")
+        图标rect = self._取布局局部矩形(实际屏幕尺寸, "rank_icon", "reward_bg")
+        if self._段位图 is not None and 图标rect.w > 0 and 图标rect.h > 0:
+            内容rect = self._拟合图层内容矩形(图标图层, 图标rect, self._段位图)
+            图 = self._缩放图(self._段位图, 内容rect.size)
             if 图 is not None:
-                rr = 图.get_rect(
-                    center=(int(区域.x + 区域.w * 0.18), int(区域.y + 区域.h * 0.82))
-                )
-                屏幕.blit(图, rr.topleft)
-        文本 = self._等级小窗字体.render("当前段位", True, (240, 240, 245))
-        屏幕.blit(文本, (int(区域.x + 区域.w * 0.29), int(区域.y + 区域.h * 0.75)))
+                屏幕.blit(图, 内容rect.topleft)
+        标签图层 = self._取布局层(实际屏幕尺寸, "rank_label")
+        标签rect = self._取布局局部矩形(实际屏幕尺寸, "rank_label", "reward_bg")
+        self._绘制指定图层文本(
+            屏幕,
+            标签图层,
+            标签rect,
+            "当前段位",
+            默认字号=22,
+            默认颜色=(245, 245, 245),
+            默认对齐="left",
+        )
 
-    def _绘制升级动画(self, 屏幕: pygame.Surface, 区域: pygame.Rect, 经过秒: float):
+    def _计算经验动画状态(self, 模式名: str, 经过秒: float) -> Dict[str, object]:
         奖励 = self._奖励数据 or {}
-        if not bool(奖励.get("是否升级", False)):
+        数据 = 奖励.get(模式名, {}) if isinstance(奖励.get(模式名, {}), dict) else {}
+        原等级 = int(数据.get("原等级", 数据.get("等级", 1)) or 1)
+        原经验 = float(数据.get("原经验", 数据.get("经验", 0.0)) or 0.0)
+        新等级 = int(数据.get("等级", 原等级) or 原等级)
+        新经验 = float(数据.get("经验", 原经验) or 原经验)
+        总增长 = max(0.0, (新等级 - 原等级) + (新经验 - 原经验))
+        动画开始秒 = float(self._经验窗入场秒) + 0.20
+        动画时长 = max(0.30, float(self._流程2时长秒) - 动画开始秒 - 0.35)
+        进度 = _夹取((经过秒 - 动画开始秒) / 动画时长, 0.0, 1.0)
+        已增长 = float(总增长) * float(进度)
+
+        当前等级 = int(原等级)
+        当前经验 = float(原经验 + 已增长)
+        升级节点: List[float] = []
+        if 总增长 > 1e-6:
+            剩余 = float(总增长)
+            临时经验 = float(原经验)
+            临时等级 = int(原等级)
+            已消费 = 0.0
+            while 剩余 > 1e-6 and 临时等级 < 70:
+                需要值 = max(0.0, 1.0 - 临时经验)
+                if 剩余 + 1e-6 < 需要值 or 需要值 <= 1e-6:
+                    break
+                已消费 += 需要值
+                升级节点.append(float(已消费 / max(1e-6, 总增长)))
+                剩余 -= 需要值
+                临时经验 = 0.0
+                临时等级 += 1
+            while 当前经验 >= 1.0 and 当前等级 < 70:
+                当前经验 -= 1.0
+                当前等级 += 1
+        if 进度 >= 0.999:
+            当前等级 = int(新等级)
+            当前经验 = float(新经验)
+
+        升级动画t = None
+        if 升级节点 and 进度 >= 升级节点[0]:
+            起点 = float(升级节点[0])
+            升级动画t = _夹取((进度 - 起点) / max(0.01, 1.0 - 起点), 0.0, 1.0)
+
+        return {
+            "等级": int(max(1, 当前等级)),
+            "经验": float(max(0.0, min(1.0, 当前经验))),
+            "进度": float(进度),
+            "升级动画t": 升级动画t,
+            "升级次数": int(max(0, 新等级 - 原等级)),
+        }
+
+    def _绘制升级动画(
+        self,
+        屏幕: pygame.Surface,
+        区域: pygame.Rect,
+        经过秒: float,
+        实际屏幕尺寸: Tuple[int, int],
+    ):
+        奖励 = self._奖励数据 or {}
+        升级模式 = str(奖励.get("升级模式", "") or "")
+        if not 升级模式:
             return
-        开始秒 = float(self._奖励窗出现秒) + 0.15
-        t = _夹取((经过秒 - 开始秒) / 0.9, 0.0, 1.0)
-        if t <= 0.0:
+        动画状态 = self._计算经验动画状态(升级模式, 经过秒)
+        动画t = 动画状态.get("升级动画t")
+        if 动画t is None:
             return
-        中心 = (int(区域.centerx), int(区域.y + 区域.h * 0.24))
-        for 键, dx, dy in (
-            ("左上", -1.0, -1.0),
-            ("右上", 1.0, -1.0),
-            ("左下", -1.0, 1.0),
-            ("右下", 1.0, 1.0),
-        ):
-            图源 = self._升级图集.get(键)
+        t = float(max(0.0, min(1.0, float(动画t))))
+        中层rect = self._取布局局部矩形(实际屏幕尺寸, "upgrade_center", "reward_bg")
+        中心 = 中层rect.center
+        主图源 = self._升级图集.get("升级")
+        if 主图源 is not None:
+            if t < 0.18:
+                比例 = _线性插值(0.75, 1.30, t / 0.18)
+            elif t < 0.30:
+                比例 = _线性插值(1.30, 1.00, (t - 0.18) / 0.12)
+            else:
+                比例 = 1.0
+            宽 = int(max(2, 中层rect.w * 比例))
+            高 = int(max(2, 中层rect.h * 比例))
+            图 = self._缩放图(主图源, (宽, 高))
+            if 图 is not None:
+                try:
+                    图 = 图.copy()
+                    图.set_alpha(int(255 * _缓出三次方(min(1.0, t * 1.8))))
+                except Exception:
+                    pass
+                rr = 图.get_rect(center=中心)
+                屏幕.blit(图, rr.topleft)
+
+        角配置 = [
+            ("upgrade_rt", "右上", 0.12, 0.30),
+            ("upgrade_lt", "左上", 0.28, 0.46),
+            ("upgrade_lb", "左下", 0.28, 0.46),
+            ("upgrade_rb", "右下", 0.46, 0.62),
+        ]
+        for 图层id, 资源键, 开始, 结束 in 角配置:
+            图源 = self._升级图集.get(资源键)
             if 图源 is None:
                 continue
-            距离 = int(区域.h * 0.18 * _缓出三次方(t))
-            尺寸 = int(max(32, 区域.h * (0.18 + 0.10 * (1.0 - t))))
+            if t <= 开始:
+                continue
+            局部t = _夹取((t - 开始) / max(0.01, 结束 - 开始), 0.0, 1.0)
+            if t >= 0.62:
+                局部t = _夹取((t - 0.62) / 0.38, 0.0, 1.0)
+                比例 = _线性插值(0.82, 1.0, 局部t)
+                alpha = int(_线性插值(190, 255, 局部t))
+            else:
+                比例 = _线性插值(0.52, 0.86, 局部t)
+                alpha = int(_线性插值(0, 180, 局部t))
+            目标rect = self._取布局局部矩形(实际屏幕尺寸, 图层id, "reward_bg")
+            尺寸 = int(max(2, max(目标rect.w, 目标rect.h) * 比例))
             图 = self._缩放图(图源, (尺寸, 尺寸))
             if 图 is None:
                 continue
             try:
                 图 = 图.copy()
-                图.set_alpha(int(255 * (1.0 - t * 0.45)))
+                图.set_alpha(alpha)
             except Exception:
                 pass
-            rr = 图.get_rect(
-                center=(中心[0] + int(dx * 距离), 中心[1] + int(dy * 距离))
-            )
+            rr = 图.get_rect(center=目标rect.center)
             屏幕.blit(图, rr.topleft)
-        升级图 = self._升级图集.get("升级")
-        if 升级图 is not None:
-            宽 = int(max(120, 区域.w * (0.22 + 0.06 * (1.0 - t))))
-            高 = int(max(48, 升级图.get_height() * (宽 / max(1, 升级图.get_width()))))
-            图 = self._缩放图(升级图, (宽, 高))
-            if 图 is not None:
-                try:
-                    图 = 图.copy()
-                    图.set_alpha(int(255 * _缓出三次方(t)))
-                except Exception:
-                    pass
-                rr = 图.get_rect(center=中心)
-                屏幕.blit(图, rr.topleft)
+
+    def _绘制流程3提示(
+        self, 屏幕: pygame.Surface, 阶段秒: float, 透明度系数: float = 1.0
+    ):
+        图 = self._提示图集.get(str(self._流程3提示键 or ""))
+        if 图 is None:
+            return
+        t = _夹取(
+            阶段秒 / max(0.01, float(self._流程3提示入场秒)),
+            0.0,
+            1.0,
+        )
+        提示rect = self._取布局矩形(屏幕.get_size(), "flow3_prompt")
+        目标宽 = int(max(2, 提示rect.w))
+        目标高 = int(max(2, 提示rect.h))
+        动画宽 = int(max(2, _线性插值(目标宽 * 1.12, 目标宽, t)))
+        动画高 = int(max(2, _线性插值(目标高 * 1.12, 目标高, t)))
+        动画图 = self._缩放图(图, (动画宽, 动画高))
+        if 动画图 is None:
+            return
+        try:
+            动画图 = 动画图.copy()
+            动画图.set_alpha(int(255 * _缓出三次方(t) * _夹取(透明度系数, 0.0, 1.0)))
+        except Exception:
+            pass
+        rr = 动画图.get_rect(center=提示rect.center)
+        屏幕.blit(动画图, rr.topleft)
+
+    def _流程3计算按钮布局(self, 屏宽: int, 屏高: int):
+        按钮宽 = max(140, int(屏宽 * 0.11))
+        按钮高 = max(72, int(按钮宽 * 0.42))
+        间距 = max(20, int(按钮宽 * 0.24))
+        中心y = int(屏高 * 0.60)
+        self._流程3是按钮rect = pygame.Rect(0, 0, 按钮宽, 按钮高)
+        self._流程3否按钮rect = pygame.Rect(0, 0, 按钮宽, 按钮高)
+        self._流程3是按钮rect.center = (屏宽 // 2 - (按钮宽 // 2 + 间距), 中心y)
+        self._流程3否按钮rect.center = (屏宽 // 2 + (按钮宽 // 2 + 间距), 中心y)
+
+    def _绘制流程3选择按钮(self, 屏幕: pygame.Surface, 透明度系数: float):
+        屏宽, 屏高 = 屏幕.get_size()
+        self._流程3计算按钮布局(屏宽, 屏高)
+        self._绘制流程3按钮(
+            屏幕,
+            self._是按钮图,
+            self._流程3是按钮rect,
+            self._流程3按钮选中 == "是",
+            透明度系数,
+        )
+        self._绘制流程3按钮(
+            屏幕,
+            self._否按钮图,
+            self._流程3否按钮rect,
+            self._流程3按钮选中 == "否",
+            透明度系数,
+        )
+
+    def _绘制流程3按钮(
+        self,
+        屏幕: pygame.Surface,
+        原图: Optional[pygame.Surface],
+        基准rect: pygame.Rect,
+        是否选中: bool,
+        透明度系数: float,
+    ):
+        放大系数 = 1.08 if 是否选中 else 1.0
+        宽 = max(1, int(基准rect.w * 放大系数))
+        高 = max(1, int(基准rect.h * 放大系数))
+        rr = pygame.Rect(0, 0, 宽, 高)
+        rr.center = 基准rect.center
+        if 是否选中:
+            高亮 = pygame.Surface((rr.w + 24, rr.h + 24), pygame.SRCALPHA)
+            高亮.fill((0, 0, 0, 0))
+            pygame.draw.rect(
+                高亮,
+                (255, 214, 92, int(70 * 透明度系数)),
+                pygame.Rect(0, 0, 高亮.get_width(), 高亮.get_height()),
+                border_radius=24,
+            )
+            屏幕.blit(高亮, 高亮.get_rect(center=rr.center).topleft)
+        if 原图 is None:
+            pygame.draw.rect(
+                屏幕,
+                (245, 245, 245, int(210 * 透明度系数)),
+                rr,
+                border_radius=max(12, rr.h // 4),
+                width=2,
+            )
+            return
+        图 = self._缩放图(原图, rr.size)
+        if 图 is None:
+            return
+        try:
+            图 = 图.copy()
+            图.set_alpha(int(255 * 透明度系数))
+        except Exception:
+            pass
+        屏幕.blit(图, rr.topleft)
+
+    def _绘制流程3倒计时(self, 屏幕: pygame.Surface, 透明度系数: float):
+        if not self._流程3是否显示倒计时:
+            return
+        剩余秒 = max(
+            0,
+            int(
+                math.ceil(
+                    float(self._流程3阶段持续秒)
+                    - max(
+                        0.0,
+                        time.perf_counter() - float(self._流程3阶段开始秒 or 0.0),
+                    )
+                )
+            ),
+        )
+        文本 = str(剩余秒)
+        图列表 = [self._倒计时图集.get(ch) for ch in 文本 if self._倒计时图集.get(ch)]
+        if not 图列表:
+            return
+        间距 = 4
+        总宽 = sum(图.get_width() for 图 in 图列表) + max(0, len(图列表) - 1) * 间距
+        最大高 = max(图.get_height() for 图 in 图列表)
+        画布 = pygame.Surface((max(1, 总宽), max(1, 最大高)), pygame.SRCALPHA)
+        x = 0
+        for 图 in 图列表:
+            try:
+                单图 = 图.copy()
+                单图.set_alpha(int(255 * 透明度系数))
+            except Exception:
+                单图 = 图
+            画布.blit(单图, (x, 0))
+            x += 图.get_width() + 间距
+        rr = 画布.get_rect(center=(屏幕.get_width() // 2, int(屏幕.get_height() * 0.80)))
+        屏幕.blit(画布, rr.topleft)
 
     def _绘制裁切文本(
         self,
@@ -960,6 +1907,20 @@ class 场景_结算(场景基类):
         self._新纪录图 = _安全载图(
             os.path.join(根目录, "UI-img", "游戏界面", "结算", "新纪录.png")
         )
+        提示目录 = os.path.join(根目录, "UI-img", "游戏界面", "结算", "提示")
+        self._提示图集 = {}
+        for 名称 in ("下一把", "继续挑战", "是否续币", "游戏结束", "赠送一把"):
+            图 = _安全载图(os.path.join(提示目录, f"{名称}.png"))
+            if 图 is not None:
+                self._提示图集[名称] = 图
+        self._倒计时图集 = {}
+        数字目录 = os.path.join(提示目录, "数字-倒计时")
+        for idx in range(10):
+            图 = _安全载图(os.path.join(数字目录, f"{idx}.png"))
+            if 图 is not None:
+                self._倒计时图集[str(idx)] = 图
+        self._是按钮图 = _安全载图(os.path.join(提示目录, "是.png"))
+        self._否按钮图 = _安全载图(os.path.join(提示目录, "否.png"))
 
         小窗目录 = os.path.join(根目录, "UI-img", "游戏界面", "结算", "结算等级小窗")
         self._等级窗背景图 = _安全载图(os.path.join(小窗目录, "背景.png"))
@@ -1062,45 +2023,49 @@ class 场景_结算(场景基类):
         except Exception:
             pass
 
-    def _构建中转提示载荷(self, 经过秒: float) -> dict:
-        载荷 = dict(self._载荷)
+    def _播放游戏结束音效(self):
         try:
-            屏幕 = self.上下文.get("屏幕")
-            if isinstance(屏幕, pygame.Surface):
-                屏宽, 屏高 = 屏幕.get_size()
-                背景截图 = pygame.Surface((屏宽, 屏高))
-                背景截图.fill((0, 0, 0))
-                self._绘制结算背景(背景截图)
-
-                常驻暗层 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
-                常驻暗层.fill((0, 0, 0, 120))
-                背景截图.blit(常驻暗层, (0, 0))
-
-                面板尺寸 = int(max(360, min(int(屏高 * 0.82), int(屏宽 * 0.48), 700)))
-                面板矩形 = pygame.Rect(
-                    max(28, int(屏宽 * 0.06)),
-                    max(20, (屏高 - 面板尺寸) // 2),
-                    面板尺寸,
-                    面板尺寸,
-                )
-                self._绘制结算面板(背景截图, 面板矩形, float(经过秒))
-                self._绘制奖励小窗(背景截图, 面板矩形, float(经过秒))
-                载荷["结算背景截图"] = 背景截图.convert()
+            if not pygame.mixer.get_init():
+                return
+        except Exception:
+            return
+        根目录 = str((self.上下文.get("资源", {}) or {}).get("根", "") or os.getcwd())
+        音效路径 = os.path.join(根目录, "冷资源", "backsound", "gameover.mp3")
+        try:
+            if os.path.isfile(音效路径):
+                pygame.mixer.music.stop()
+                pygame.mixer.music.load(音效路径)
+                pygame.mixer.music.play()
         except Exception:
             pass
-        return 载荷
 
-    def _返回选歌(self):
+    def _构建返回选歌动作(self) -> dict:
+        return {
+            "类型": "选歌",
+            "选歌类型": str(self._载荷.get("类型", "竞速") or "竞速"),
+            "选歌模式": str(self._载荷.get("模式", "竞速") or "竞速"),
+            "选歌原始索引": int(self._载荷.get("选歌原始索引", -1) or -1),
+            "选歌恢复详情页": False,
+        }
+
+    def _返回选歌(self, 动作: Optional[dict] = None):
         状态 = (
             self.上下文.get("状态", {})
             if isinstance(self.上下文.get("状态", {}), dict)
             else {}
         )
+        动作 = 动作 if isinstance(动作, dict) else {}
         try:
-            状态["选歌_类型"] = str(self._载荷.get("类型", "竞速") or "竞速")
-            状态["选歌_模式"] = str(self._载荷.get("模式", "竞速") or "竞速")
-            状态["选歌_恢复原始索引"] = int(self._载荷.get("选歌原始索引", -1) or -1)
-            状态["选歌_恢复详情页"] = False
+            状态["选歌_类型"] = str(
+                动作.get("选歌类型", self._载荷.get("类型", "竞速")) or "竞速"
+            )
+            状态["选歌_模式"] = str(
+                动作.get("选歌模式", self._载荷.get("模式", "竞速")) or "竞速"
+            )
+            状态["选歌_恢复原始索引"] = int(
+                动作.get("选歌原始索引", self._载荷.get("选歌原始索引", -1)) or -1
+            )
+            状态["选歌_恢复详情页"] = bool(动作.get("选歌恢复详情页", False))
         except Exception:
             pass
         return {"切换到": "选歌", "禁用黑屏过渡": True}
@@ -1163,7 +2128,9 @@ class 场景_结算(场景基类):
             if ("花" in 模式键)
             else ("竞速" if ("竞" in 模式键 or not 模式键) else 模式键)
         )
-        奖励经验值 = 10
+        评级 = str(self._载荷.get("评级", "F") or "F").strip().upper()
+        是否失败 = bool(self._载荷.get("失败", False)) or 评级 == "F"
+        奖励经验值 = 0 if 是否失败 else 10
 
         统计["游玩时长分钟"] = int(统计.get("游玩时长分钟", 0) or 0) + int(
             max(0, math.ceil(歌曲时长秒 / 60.0))
@@ -1189,7 +2156,9 @@ class 场景_结算(场景基类):
         模式进度 = dict(原模式进度)
         模式进度["累计首数"] = int(模式进度.get("累计首数", 0) or 0) + 1
         模式进度["累计歌曲"] = int(模式进度.get("累计歌曲", 0) or 0) + 1
-        当前经验 = float(模式进度.get("经验", 0.0) or 0.0) + 0.10
+        当前经验 = float(模式进度.get("经验", 0.0) or 0.0) + (
+            float(奖励经验值) / 100.0
+        )
         当前等级 = int(模式进度.get("等级", 1) or 1)
         while 当前经验 >= 1.0 and 当前等级 < 70:
             当前经验 -= 1.0
@@ -1230,10 +2199,34 @@ class 场景_结算(场景基类):
             ),
             "升级模式": 模式键,
             "花式": {
+                "原等级": int(
+                    (
+                        原模式进度 if 模式键 == "花式" else (花式进度 or {})
+                    ).get("等级", 1)
+                    or 1
+                ),
+                "原经验": float(
+                    (
+                        原模式进度 if 模式键 == "花式" else (花式进度 or {})
+                    ).get("经验", 0.0)
+                    or 0.0
+                ),
                 "等级": int((花式进度 or {}).get("等级", 1) or 1),
                 "经验": float((花式进度 or {}).get("经验", 0.0) or 0.0),
             },
             "竞速": {
+                "原等级": int(
+                    (
+                        原模式进度 if 模式键 == "竞速" else (竞速进度 or {})
+                    ).get("等级", 1)
+                    or 1
+                ),
+                "原经验": float(
+                    (
+                        原模式进度 if 模式键 == "竞速" else (竞速进度 or {})
+                    ).get("经验", 0.0)
+                    or 0.0
+                ),
                 "等级": int((竞速进度 or {}).get("等级", 1) or 1),
                 "经验": float((竞速进度 or {}).get("经验", 0.0) or 0.0),
             },

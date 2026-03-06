@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import pygame
 
@@ -12,6 +13,7 @@ except Exception:
 
 from ui.按钮特效 import 公用按钮点击特效, 公用按钮音效
 from ui.场景过渡 import 公用放大过渡器
+from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 
 
 class 视频循环播放器:
@@ -109,7 +111,6 @@ class 场景_登陆磁卡:
         self._背景视频 = 上下文.get("背景视频")
 
         # 通用资源
-        self._遮罩原图 = self._安全加载图片(资源["投币_遮罩"], 透明=True)
         self._联网原图 = self._安全加载图片(资源["投币_联网图标"], 透明=True)
 
         # 顶栏
@@ -211,6 +212,13 @@ class 场景_登陆磁卡:
         self._磁卡滑入开始 = 0.0
         self._拖拽中 = False
         self._拖拽偏移 = (0, 0)
+        self._hover_场景1游客 = False
+        self._hover_场景1vip = False
+        self._踏板选中项: str | None = None
+        self._自动刷卡中 = False
+        self._自动刷卡开始 = 0.0
+        self._自动刷卡起点 = (0.0, 0.0)
+        self._自动刷卡终点 = (0.0, 0.0)
         # ✅ 全屏放大过渡（320ms）
         self._全屏放大过渡 = 公用放大过渡器(总时长毫秒=320)
         self._正在放大切场景 = False
@@ -293,13 +301,9 @@ class 场景_登陆磁卡:
             return
         self._缓存尺寸 = (w, h)
 
-        # 遮罩
-        if self._遮罩原图:
-            self._遮罩图 = self._cover缩放(self._遮罩原图, w, h)
-        else:
-            暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
-            暗层.fill((0, 0, 0, 128))
-            self._遮罩图 = 暗层
+        暗层 = pygame.Surface((w, h), pygame.SRCALPHA)
+        暗层.fill((0, 0, 0, 128))
+        self._遮罩图 = 暗层
 
         # top栏
         self._rect_top栏, self._top栏图, self._rect_个人中心, self._个人中心图 = (
@@ -464,6 +468,11 @@ class 场景_登陆磁卡:
         # ===== 原逻辑：进入场景状态复位 =====
         self._子场景 = 1
         self._按钮消失中 = False
+        self._hover_场景1游客 = False
+        self._hover_场景1vip = False
+        self._踏板选中项 = None
+        self._自动刷卡中 = False
+        self._自动刷卡开始 = 0.0
 
         # ✅ 过渡状态复位
         self._正在放大切场景 = False
@@ -475,6 +484,26 @@ class 场景_登陆磁卡:
 
     def 退出(self):
         pygame.time.set_timer(self._事件_延迟切场景, 0)
+
+    def 更新(self):
+        if (self._子场景 != 2) or (not self._自动刷卡中):
+            return None
+
+        经过 = (time.time() - float(self._自动刷卡开始 or 0.0)) / 0.48
+        t = max(0.0, min(1.0, float(经过)))
+        k = 1.0 - (1.0 - t) ** 3
+
+        起点x, 起点y = self._自动刷卡起点
+        终点x, 终点y = self._自动刷卡终点
+        抛物线抬升 = math.sin(k * math.pi) * max(18.0, float(self._磁卡目标rect.h) * 0.14)
+        cx = 起点x + (终点x - 起点x) * k
+        cy = 起点y + (终点y - 起点y) * k - 抛物线抬升
+        self._磁卡当前rect.center = (int(cx), int(cy))
+
+        if t >= 1.0:
+            self._自动刷卡中 = False
+            return self._触发刷卡成功()
+        return None
 
     # ---------------- 绘制 ----------------
     def 绘制(self):
@@ -534,7 +563,33 @@ class 场景_登陆磁卡:
         else:
             scale = 1.0
 
+        游客高亮 = bool(self._hover_场景1游客 or self._踏板选中项 == "游客")
+        vip高亮 = bool(self._hover_场景1vip or self._踏板选中项 == "VIP")
+        呼吸 = 1.0 + 0.025 * math.sin(现在 * 8.0)
         游客scale = scale * float(self._场景1游客放大系数)
+        vipscale = scale
+
+        if 游客高亮:
+            游客scale *= 1.16 * 呼吸
+        if vip高亮:
+            vipscale *= 1.14 * 呼吸
+
+        if 游客高亮:
+            self._绘制_场景1高亮底光(
+                屏幕,
+                self._rect_场景1游客,
+                宽膨胀=0.18,
+                高膨胀=0.12,
+                颜色=(255, 255, 255, 34),
+            )
+        if vip高亮:
+            self._绘制_场景1高亮底光(
+                屏幕,
+                self._rect_场景1vip,
+                宽膨胀=0.14,
+                高膨胀=0.14,
+                颜色=(110, 180, 255, 42),
+            )
 
         if self._场景1游客图:
             self._绘制_按中心缩放(
@@ -542,11 +597,32 @@ class 场景_登陆磁卡:
             )
 
         if self._场景1vip图:
-            self._绘制_按中心缩放(屏幕, self._场景1vip图, self._rect_场景1vip, scale)
+            self._绘制_按中心缩放(
+                屏幕, self._场景1vip图, self._rect_场景1vip, vipscale
+            )
 
         if self._按钮消失中 and scale <= 0.001:
             self._按钮消失中 = False
             self._进入场景2()
+
+    def _绘制_场景1高亮底光(
+        self,
+        屏幕: pygame.Surface,
+        基准rect: pygame.Rect,
+        *,
+        宽膨胀: float,
+        高膨胀: float,
+        颜色: tuple[int, int, int, int],
+    ):
+        try:
+            glow_w = max(1, int(基准rect.w * (1.0 + float(宽膨胀))))
+            glow_h = max(1, int(基准rect.h * (1.0 + float(高膨胀))))
+            光晕 = pygame.Surface((glow_w, glow_h), pygame.SRCALPHA)
+            pygame.draw.ellipse(光晕, 颜色, 光晕.get_rect())
+            光晕rect = 光晕.get_rect(center=基准rect.center)
+            屏幕.blit(光晕, 光晕rect.topleft)
+        except Exception:
+            pass
 
     def _进入场景2(self):
         self._子场景 = 2
@@ -554,6 +630,8 @@ class 场景_登陆磁卡:
         self._闪烁开始 = time.time()
         self._磁卡滑入开始 = time.time()
         self._拖拽中 = False
+        self._自动刷卡中 = False
+        self._自动刷卡开始 = 0.0
 
         self._磁卡当前rect = self._磁卡目标rect.copy()
         self._磁卡当前rect.y = self._磁卡目标rect.y + int(self._磁卡目标rect.h * 0.35)
@@ -584,7 +662,7 @@ class 场景_登陆磁卡:
             屏幕.blit(内容图, self._rect_刷卡内容.topleft)
 
         if self._磁卡图:
-            if not self._拖拽中:
+            if (not self._拖拽中) and (not self._自动刷卡中):
                 t2 = (现在 - self._磁卡滑入开始) / 0.3
                 t2 = max(0.0, min(1.0, t2))
                 y0 = self._磁卡目标rect.y + int(self._磁卡目标rect.h * 0.35)
@@ -613,7 +691,91 @@ class 场景_登陆磁卡:
         缩 = pygame.transform.smoothscale(图, (ww, hh)).convert_alpha()
         屏幕.blit(缩, (x, y))
 
+    def _执行场景1选择(self, 选项: str):
+        if self._按钮消失中:
+            return None
+
+        选项 = str(选项 or "").strip().upper()
+        if 选项 == "游客".upper():
+            self.按钮音效.播放()
+            self._游客点击特效.触发()
+
+            起始rect = self._rect_场景1游客.copy()
+            k = float(self._场景1游客放大系数)
+            起始rect.size = (
+                max(1, int(起始rect.w * k)),
+                max(1, int(起始rect.h * k)),
+            )
+            起始rect.center = self._rect_场景1游客.center
+
+            起始图 = None
+            if self._场景1游客原图:
+                起始图 = pygame.transform.smoothscale(
+                    self._场景1游客原图, (起始rect.w, 起始rect.h)
+                ).convert_alpha()
+
+            self._开始放大切场景(起始图, 起始rect, "大模式")
+            return None
+
+        if 选项 == "VIP":
+            self.按钮音效.播放()
+            self._按钮消失中 = True
+            self._按钮消失开始 = time.time()
+        return None
+
+    def _开始自动刷卡(self):
+        if self._自动刷卡中 or self._全屏放大过渡.是否进行中():
+            return None
+        self._拖拽中 = False
+        self._自动刷卡中 = True
+        self._自动刷卡开始 = time.time()
+        self._自动刷卡起点 = (
+            float(self._磁卡当前rect.centerx),
+            float(self._磁卡当前rect.centery),
+        )
+        self._自动刷卡终点 = (
+            float(self._rect_刷卡背景.centerx),
+            float(self._rect_刷卡背景.centery),
+        )
+        return None
+
+    def _触发刷卡成功(self):
+        try:
+            self.刷卡音效.播放()
+        except Exception:
+            try:
+                self.按钮音效.播放()
+            except Exception:
+                pass
+
+        起始图 = self._磁卡图
+        起始rect = self._磁卡当前rect.copy()
+        self._开始放大切场景(起始图, 起始rect, "个人资料")
+        return None
+
     # ---------------- 事件 ----------------
+    def 处理全局踏板(self, 动作: str):
+        if self._全屏放大过渡.是否进行中():
+            return None
+
+        if self._子场景 == 1:
+            if 动作 == 踏板动作_左:
+                if self._踏板选中项 != "游客":
+                    self.按钮音效.播放()
+                self._踏板选中项 = "游客"
+                return None
+            if 动作 == 踏板动作_右:
+                if self._踏板选中项 != "VIP":
+                    self.按钮音效.播放()
+                self._踏板选中项 = "VIP"
+                return None
+            if 动作 == 踏板动作_确认 and self._踏板选中项:
+                return self._执行场景1选择(str(self._踏板选中项))
+            return None
+
+        if self._子场景 == 2 and 动作 == 踏板动作_确认:
+            return self._开始自动刷卡()
+        return None
 
     def 处理事件(self, 事件):
         if 事件.type == pygame.VIDEORESIZE:
@@ -632,6 +794,11 @@ class 场景_登陆磁卡:
         if self._全屏放大过渡.是否进行中():
             return None
 
+        if self._子场景 == 1 and 事件.type == pygame.MOUSEMOTION:
+            self._hover_场景1游客 = self._rect_场景1游客.collidepoint(事件.pos)
+            self._hover_场景1vip = self._rect_场景1vip.collidepoint(事件.pos)
+            return None
+
         if self._子场景 == 2:
             return self._处理事件_场景2(事件)
 
@@ -641,63 +808,33 @@ class 场景_登陆磁卡:
 
             # ✅ 场景1：游客 -> 放大过渡切到大模式
             if self._rect_场景1游客.collidepoint(事件.pos):
-                self.按钮音效.播放()
-                self._游客点击特效.触发()  # 你原来的保留
-
-                # 用“当前显示的游客按钮尺寸”作为起始 rect（考虑你游客放大系数）
-                起始rect = self._rect_场景1游客.copy()
-                k = float(self._场景1游客放大系数)
-                起始rect.size = (
-                    max(1, int(起始rect.w * k)),
-                    max(1, int(起始rect.h * k)),
-                )
-                起始rect.center = self._rect_场景1游客.center
-
-                起始图 = None
-                if self._场景1游客原图:
-                    起始图 = pygame.transform.smoothscale(
-                        self._场景1游客原图, (起始rect.w, 起始rect.h)
-                    ).convert_alpha()
-
-                self._开始放大切场景(起始图, 起始rect, "大模式")
-                return None
+                self._踏板选中项 = "游客"
+                return self._执行场景1选择("游客")
 
             # VIP：保持你原来的“消失->进入场景2”
             if self._rect_场景1vip.collidepoint(事件.pos):
-                self.按钮音效.播放()
-                self._按钮消失中 = True
-                self._按钮消失开始 = time.time()
-                return None
+                self._踏板选中项 = "VIP"
+                return self._执行场景1选择("VIP")
 
         return None
 
     def _处理事件_场景2(self, 事件):
+        if self._自动刷卡中:
+            return None
+
         if 事件.type == pygame.MOUSEBUTTONUP and 事件.button == 1:
             if self._rect_场景2游客.collidepoint(事件.pos):
                 self.按钮音效.播放()
                 self._子场景 = 1
                 self._按钮消失中 = False
                 self._拖拽中 = False
+                self._踏板选中项 = "游客"
                 return None
 
             if self._拖拽中:
                 self._拖拽中 = False
                 if self._磁卡当前rect.colliderect(self._rect_刷卡背景):
-                    # ✅ 刷卡成功：播放刷卡音效（不是按钮音效）
-                    try:
-                        self.刷卡音效.播放()
-                    except Exception:
-                        try:
-                            self.按钮音效.播放()
-                        except Exception:
-                            pass
-
-                    起始图 = self._磁卡图
-                    起始rect = self._磁卡当前rect.copy()
-
-                    # ✅ 改这里：刷卡登陆 -> 个人资料
-                    self._开始放大切场景(起始图, 起始rect, "个人资料")
-                    return None
+                    return self._触发刷卡成功()
 
         if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button == 1:
             if self._磁卡当前rect.collidepoint(事件.pos):

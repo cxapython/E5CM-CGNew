@@ -3260,6 +3260,7 @@ class 场景_谱面播放器(场景基类):
             )
 
         return {
+            "玩家序号": int(self._载荷.get("玩家序号", 1) or 1),
             "曲目名": str(self._歌曲名 or ""),
             "sm路径": str(self._载荷.get("sm路径", "") or ""),
             "模式": str(self._载荷.get("模式", self._载荷.get("大模式", "竞速")) or "竞速"),

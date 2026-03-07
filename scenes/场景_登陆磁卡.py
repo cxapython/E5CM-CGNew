@@ -495,7 +495,9 @@ class 场景_登陆磁卡:
 
         起点x, 起点y = self._自动刷卡起点
         终点x, 终点y = self._自动刷卡终点
-        抛物线抬升 = math.sin(k * math.pi) * max(18.0, float(self._磁卡目标rect.h) * 0.14)
+        抛物线抬升 = math.sin(k * math.pi) * max(
+            18.0, float(self._磁卡目标rect.h) * 0.14
+        )
         cx = 起点x + (终点x - 起点x) * k
         cy = 起点y + (终点y - 起点y) * k - 抛物线抬升
         self._磁卡当前rect.center = (int(cx), int(cy))
@@ -553,8 +555,70 @@ class 场景_登陆磁卡:
         if self._全屏放大过渡.是否进行中():
             self._全屏放大过渡.更新并绘制(屏幕)
 
+    def _缓动逼近(
+        self, 当前值: float, 目标值: float, 帧间隔: float, 速度: float
+    ) -> float:
+        try:
+            当前值 = float(当前值)
+        except Exception:
+            当前值 = 0.0
+
+        try:
+            目标值 = float(目标值)
+        except Exception:
+            目标值 = 0.0
+
+        try:
+            帧间隔 = float(帧间隔)
+        except Exception:
+            帧间隔 = 0.016
+
+        try:
+            速度 = float(速度)
+        except Exception:
+            速度 = 10.0
+
+        帧间隔 = max(0.0, min(0.05, 帧间隔))
+        速度 = max(0.0, 速度)
+
+        if abs(目标值 - 当前值) < 0.0001:
+            return 目标值
+
+        插值 = min(1.0, 帧间隔 * 速度)
+        return 当前值 + (目标值 - 当前值) * 插值
+
     def _绘制_场景1(self, 屏幕: pygame.Surface):
         现在 = time.time()
+
+        if not hasattr(self, "_场景1悬停插值_游客"):
+            self._场景1悬停插值_游客 = 0.0
+        if not hasattr(self, "_场景1悬停插值_vip"):
+            self._场景1悬停插值_vip = 0.0
+        if not hasattr(self, "_场景1悬停更新时间"):
+            self._场景1悬停更新时间 = 0.0
+
+        上次更新时间 = float(getattr(self, "_场景1悬停更新时间", 0.0) or 0.0)
+        if 上次更新时间 <= 0.0:
+            帧间隔 = 0.016
+        else:
+            帧间隔 = max(0.0, min(0.05, 现在 - 上次更新时间))
+        self._场景1悬停更新时间 = 现在
+
+        游客激活 = bool(self._hover_场景1游客 or self._踏板选中项 == "游客")
+        vip激活 = bool(self._hover_场景1vip or self._踏板选中项 == "VIP")
+
+        self._场景1悬停插值_游客 = self._缓动逼近(
+            float(getattr(self, "_场景1悬停插值_游客", 0.0) or 0.0),
+            1.0 if 游客激活 else 0.0,
+            帧间隔,
+            12.0 if 游客激活 else 14.0,
+        )
+        self._场景1悬停插值_vip = self._缓动逼近(
+            float(getattr(self, "_场景1悬停插值_vip", 0.0) or 0.0),
+            1.0 if vip激活 else 0.0,
+            帧间隔,
+            12.0 if vip激活 else 14.0,
+        )
 
         if self._按钮消失中:
             t = (现在 - self._按钮消失开始) / 0.2
@@ -563,42 +627,60 @@ class 场景_登陆磁卡:
         else:
             scale = 1.0
 
-        游客高亮 = bool(self._hover_场景1游客 or self._踏板选中项 == "游客")
-        vip高亮 = bool(self._hover_场景1vip or self._踏板选中项 == "VIP")
-        呼吸 = 1.0 + 0.025 * math.sin(现在 * 8.0)
-        游客scale = scale * float(self._场景1游客放大系数)
-        vipscale = scale
+        游客呼吸 = 1.0 + math.sin(现在 * 5.8) * 0.008 * float(self._场景1悬停插值_游客)
+        vip呼吸 = 1.0 + math.sin(现在 * 5.2 + 0.35) * 0.007 * float(
+            self._场景1悬停插值_vip
+        )
 
-        if 游客高亮:
-            游客scale *= 1.16 * 呼吸
-        if vip高亮:
-            vipscale *= 1.14 * 呼吸
+        游客scale = (
+            scale
+            * float(self._场景1游客放大系数)
+            * (1.0 + 0.045 * float(self._场景1悬停插值_游客))
+            * 游客呼吸
+        )
+        vipscale = scale * (1.0 + 0.040 * float(self._场景1悬停插值_vip)) * vip呼吸
 
-        if 游客高亮:
+        游客基准rect = self._rect_场景1游客.copy()
+        vip基准rect = self._rect_场景1vip.copy()
+
+        游客上浮 = -int(
+            self._rect_场景1游客.h * 0.018 * float(self._场景1悬停插值_游客)
+        )
+        vip上浮 = -int(self._rect_场景1vip.h * 0.015 * float(self._场景1悬停插值_vip))
+
+        游客基准rect.y += 游客上浮
+        vip基准rect.y += vip上浮
+
+        if float(self._场景1悬停插值_游客) > 0.01:
             self._绘制_场景1高亮底光(
                 屏幕,
-                self._rect_场景1游客,
-                宽膨胀=0.18,
-                高膨胀=0.12,
-                颜色=(255, 255, 255, 34),
+                游客基准rect,
+                强度=float(self._场景1悬停插值_游客),
+                主色=(150, 215, 255),
             )
-        if vip高亮:
+
+        if float(self._场景1悬停插值_vip) > 0.01:
             self._绘制_场景1高亮底光(
                 屏幕,
-                self._rect_场景1vip,
-                宽膨胀=0.14,
-                高膨胀=0.14,
-                颜色=(110, 180, 255, 42),
+                vip基准rect,
+                强度=float(self._场景1悬停插值_vip),
+                主色=(255, 215, 135),
             )
 
         if self._场景1游客图:
             self._绘制_按中心缩放(
-                屏幕, self._场景1游客图, self._rect_场景1游客, 游客scale
+                屏幕,
+                self._场景1游客图,
+                游客基准rect,
+                游客scale,
             )
 
         if self._场景1vip图:
             self._绘制_按中心缩放(
-                屏幕, self._场景1vip图, self._rect_场景1vip, vipscale
+                屏幕,
+                self._场景1vip图,
+                vip基准rect,
+                vipscale,
             )
 
         if self._按钮消失中 and scale <= 0.001:
@@ -610,19 +692,40 @@ class 场景_登陆磁卡:
         屏幕: pygame.Surface,
         基准rect: pygame.Rect,
         *,
-        宽膨胀: float,
-        高膨胀: float,
-        颜色: tuple[int, int, int, int],
+        强度: float,
+        主色: tuple[int, int, int],
     ):
         try:
-            glow_w = max(1, int(基准rect.w * (1.0 + float(宽膨胀))))
-            glow_h = max(1, int(基准rect.h * (1.0 + float(高膨胀))))
-            光晕 = pygame.Surface((glow_w, glow_h), pygame.SRCALPHA)
-            pygame.draw.ellipse(光晕, 颜色, 光晕.get_rect())
-            光晕rect = 光晕.get_rect(center=基准rect.center)
-            屏幕.blit(光晕, 光晕rect.topleft)
+            强度 = float(强度)
         except Exception:
-            pass
+            强度 = 0.0
+
+        if 强度 <= 0.001:
+            return
+
+        强度 = max(0.0, min(1.0, 强度))
+
+        glow_w = max(1, int(基准rect.w * (1.06 + 0.08 * 强度)))
+        glow_h = max(1, int(基准rect.h * (1.04 + 0.06 * 强度)))
+
+        光晕 = pygame.Surface((glow_w, glow_h), pygame.SRCALPHA)
+
+        外层rect = 光晕.get_rect().inflate(-int(glow_w * 0.04), -int(glow_h * 0.08))
+        中层rect = 光晕.get_rect().inflate(-int(glow_w * 0.16), -int(glow_h * 0.20))
+        内层rect = 光晕.get_rect().inflate(-int(glow_w * 0.30), -int(glow_h * 0.34))
+
+        外层颜色 = (主色[0], 主色[1], 主色[2], int(12 + 16 * 强度))
+        中层颜色 = (主色[0], 主色[1], 主色[2], int(18 + 22 * 强度))
+        内层颜色 = (255, 255, 255, int(6 + 10 * 强度))
+
+        pygame.draw.ellipse(光晕, 外层颜色, 外层rect)
+        pygame.draw.ellipse(光晕, 中层颜色, 中层rect)
+        pygame.draw.ellipse(光晕, 内层颜色, 内层rect)
+
+        光晕rect = 光晕.get_rect(
+            center=(基准rect.centerx, int(基准rect.centery + 基准rect.h * 0.02))
+        )
+        屏幕.blit(光晕, 光晕rect.topleft)
 
     def _进入场景2(self):
         self._子场景 = 2

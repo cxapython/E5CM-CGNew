@@ -31,7 +31,6 @@ from scenes.场景_谱面播放器 import 场景_谱面播放器
 
 from ui.点击特效 import 序列帧特效资源, 全局点击特效管理器
 from ui.场景过渡 import 公共黑屏过渡
-from ui.布局调试器 import 所见即所得布局调试器
 
 
 def _创建显示窗口(
@@ -445,12 +444,6 @@ def 主函数():
     过渡 = 公共黑屏过渡(渐入秒=0.1, 渐出秒=0.1)
     待切换目标场景名 = None
     待切换载荷 = None
-
-    布局保存文件 = os.path.join(
-        str(资源.get("根", "") or os.getcwd()), "_debug", "layout_overrides.json"
-    )
-    布局调试器 = 所见即所得布局调试器(上下文, 保存路径=布局保存文件)
-    布局调试器.绑定场景(当前场景)
 
     调试提示文本 = ""
     调试提示截止 = 0.0
@@ -884,7 +877,6 @@ def 主函数():
 
         待切换目标场景名 = None
         待切换载荷 = None
-        布局调试器.绑定场景(当前场景)
         非游戏菜单开启 = False
         非游戏菜单索引 = 0
         非游戏菜单等待投币键 = False
@@ -936,8 +928,6 @@ def 主函数():
             场景表[当前场景名] = 新类
             当前场景 = 新类(上下文)
             _安全进入场景(当前场景, None)
-
-            布局调试器.绑定场景(当前场景)
             _显示调试提示(f"F5 热重载成功：{当前场景名}", 1.2)
 
         except Exception as e:
@@ -1029,20 +1019,10 @@ def 主函数():
                 # ✅ 记录窗口尺寸，退出全屏时回到这里
                 上次窗口尺寸 = 屏幕.get_size()
 
-            if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_F6:
-                if not 过渡.是否进行中():
-                    布局调试器.切换开关()
-                continue
-
             if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_F5:
                 if not 过渡.是否进行中():
                     _热更新当前场景()
                 continue
-
-            if 布局调试器.是否开启:
-                是否吃掉 = 布局调试器.处理事件(事件)
-                if 是否吃掉:
-                    continue
 
             if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button == 1:
                 x, y = 事件.pos
@@ -1091,7 +1071,6 @@ def 主函数():
         当前场景.绘制()
         _绘制非游戏菜单()
         全局点击特效.更新并绘制(上下文["屏幕"])
-        布局调试器.更新并绘制(上下文["屏幕"])
 
         if 调试提示文本 and time.time() < 调试提示截止:
             try:

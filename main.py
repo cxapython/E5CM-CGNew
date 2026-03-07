@@ -330,6 +330,7 @@ def 主函数():
             return
         try:
             import ctypes
+
             User32 = ctypes.windll.user32
             hwnd = User32.GetForegroundWindow()
             SW_MAXIMIZE = 3

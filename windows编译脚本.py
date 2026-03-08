@@ -11,7 +11,6 @@ E5CM-CG (e舞成名) 项目编译脚本
     - dist/ (资源文件同级存放)
 """
 
-import os
 import sys
 import shutil
 import subprocess
@@ -350,7 +349,7 @@ def 链接检查(项目根: Path):
         if json_files:
             print(f"  检查 {len(json_files)} 个 JSON 配置文件...✓")
         else:
-            print(f"  ⚠ JSON 目录为空")
+            print("  ⚠ JSON 目录为空")
 
 
 def 清理临时编译文件(项目根: Path):

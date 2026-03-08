@@ -125,6 +125,55 @@ Next
         pass
 
 
+def _绘制opencv缺失提示(
+    屏幕: pygame.Surface,
+    字体对象,
+):
+    if cv2 is not None:
+        return
+    if 屏幕 is None:
+        return
+    if 字体对象 is None:
+        return
+
+    try:
+        提示文本 = "没装opencv"
+        阴影色 = (0, 0, 0)
+        前景色 = (255, 120, 120)
+        背景色 = (20, 20, 20, 170)
+
+        文本面 = 字体对象.render(提示文本, True, 前景色)
+        阴影面 = 字体对象.render(提示文本, True, 阴影色)
+
+        外边距x = 12
+        外边距y = 10
+        内边距x = 10
+        内边距y = 6
+
+        背景宽 = 文本面.get_width() + 内边距x * 2
+        背景高 = 文本面.get_height() + 内边距y * 2
+
+        背景面 = pygame.Surface((背景宽, 背景高), pygame.SRCALPHA)
+        pygame.draw.rect(
+            背景面,
+            背景色,
+            pygame.Rect(0, 0, 背景宽, 背景高),
+            border_radius=8,
+        )
+
+        屏幕.blit(背景面, (外边距x, 外边距y))
+        屏幕.blit(
+            阴影面,
+            (外边距x + 内边距x + 1, 外边距y + 内边距y + 1),
+        )
+        屏幕.blit(
+            文本面,
+            (外边距x + 内边距x, 外边距y + 内边距y),
+        )
+    except Exception:
+        pass
+
+
 def 主函数():
     def _安全进入场景(场景对象, 载荷):
         try:
@@ -316,7 +365,6 @@ def 主函数():
     屏幕 = _创建显示窗口((初始w, 初始h), pygame.RESIZABLE)
 
     # ✅ 窗口创建后立即再次切换输入法（因为 Pygame 窗口激活时会重置输入法）
-    import time
 
     time.sleep(0.15)
     _切换英文输入法()
@@ -1084,6 +1132,12 @@ def 主函数():
                 pass
 
         过渡.绘制(上下文["屏幕"])
+
+        _绘制opencv缺失提示(
+            屏幕=上下文["屏幕"],
+            字体对象=上下文["字体"].get("小字"),
+        )
+
         pygame.display.flip()
 
 

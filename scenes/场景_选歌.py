@@ -19,10 +19,8 @@ from ui.选歌设置菜单控件 import (
     设置参数文本提取值,
     设置菜单默认调速选项,
     设置菜单行显示名,
-    设置菜单行键列表,
     设置菜单行值,
     绘制_cover裁切预览,
-    设置页_箭头预览_内边距,
     计算设置页布局,
 )
 
@@ -323,20 +321,6 @@ def _在现有名称中匹配(现有名称列表: List[str], 候选名称: str) 
             return 现有名称
 
     return ""
-
-
-def _匹配子目录名(父目录: str, 候选名称列表: List[str]) -> str:
-    子目录列表 = _列出一级子目录(父目录)
-    if not 子目录列表:
-        return ""
-
-    for 候选名称 in 候选名称列表:
-        匹配结果 = _在现有名称中匹配(子目录列表, str(候选名称 or ""))
-        if 匹配结果:
-            return 匹配结果
-
-    return ""
-
 
 def _解析选歌入口参数(状态: dict, songs根目录: str) -> Tuple[str, str]:
     if not isinstance(状态, dict):
@@ -673,15 +657,10 @@ class 场景_选歌(场景基类):
                 str(资源.get("投币_BGM", "") or ""),
             )
 
-        logo路径 = _取第一个存在的文件(
-            os.path.join(资源根目录, "res", "logo", "base.png"),
-            os.path.join(_取运行根目录(), "res", "logo", "base.png"),
-        )
 
         self._选歌实例 = 选歌游戏(
             songs根目录=songs根目录,
             背景音乐路径=背景音乐路径,
-            logo路径=logo路径,
             指定类型名=类型名,
             指定模式名=模式名,
             玩家数=玩家数,
@@ -943,7 +922,7 @@ def 处理透明像素_用左上角作为背景(原图: pygame.Surface) -> pygam
 
 
 _UI原图缓存: Dict[str, Optional[pygame.Surface]] = {}
-_UI缩放缓存: Dict[Tuple[str, int, int, bool], Optional[pygame.Surface]] = {}
+# _UI缩放缓存: Dict[Tuple[str, int, int, bool], Optional[pygame.Surface]] = {}
 
 _缩略图_序号背景_缩放 = 1.5  # ✅ 背景整体缩放（相对“基准高”）
 _缩略图_序号背景_x偏移 = 20  # ✅ 背景基于锚点的x偏移（像素）
@@ -971,70 +950,66 @@ _详情大框贴图_y偏移 = 0.01
 _序号显示格式_缩略图 = "{:02d}"  # 01 02 03...
 _序号显示格式_大图 = "{:02d}"  # 想大图显示不一样也行
 
-_设置页_面板宽占比 = 0.88
-_设置页_面板高占比 = 0.78
-_设置页_面板整体缩放 = 1.00
-_设置页_面板_x偏移 = 0
-_设置页_面板_y偏移 = 0
 
-# 左侧“设置列表”大组
-_设置页_左区_x占比 = 0.1
-_设置页_左区_y占比 = 0.07
-_设置页_左区_宽占比 = 0.15
-_设置页_左区_行高占比 = 0.07
-_设置页_左区_行间距像素 = 10
+def _设置页_配置项定义() -> Dict[str, Dict[str, str]]:
+    return {
+        "调速": {
+            "索引属性": "设置_调速索引",
+            "选项属性": "设置_调速选项",
+            "参数键": "调速",
+            "值前缀": "X",
+        },
+        "变速": {
+            "索引属性": "设置_变速索引",
+            "选项属性": "设置_变速选项",
+            "参数键": "背景模式",
+            "兼容参数键": "变速",
+        },
+        "变速类型": {
+            "索引属性": "设置_谱面索引",
+            "选项属性": "设置_谱面选项",
+            "参数键": "谱面",
+            "兼容参数键": "变速类型",
+        },
+        "隐藏": {
+            "索引属性": "设置_隐藏索引",
+            "选项属性": "设置_隐藏选项",
+            "参数键": "隐藏",
+        },
+        "轨迹": {
+            "索引属性": "设置_轨迹索引",
+            "选项属性": "设置_轨迹选项",
+            "参数键": "轨迹",
+        },
+        "方向": {
+            "索引属性": "设置_方向索引",
+            "选项属性": "设置_方向选项",
+            "参数键": "方向",
+        },
+        "大小": {
+            "索引属性": "设置_大小索引",
+            "选项属性": "设置_大小选项",
+            "参数键": "大小",
+        },
+        "箭头": {
+            "索引属性": "设置_箭头索引",
+            "选项属性": "设置_箭头候选路径列表",
+            "参数键": "箭头",
+            "值类型": "文件名",
+        },
+        "背景": {
+            "索引属性": "设置_背景索引",
+            "选项属性": "设置_背景大图文件名列表",
+            "参数键": "背景",
+            "值类型": "原值",
+        },
+    }
 
-# ✅ 每一行单独微调（xy）
-_设置页_左区_行偏移覆盖 = {
-    "调速": (0, 0),
-    "变速": (0, 0),
-    "变速类型": (0, 0),  # 你这里叫“谱面”，我用“变速类型”避免和“变速”冲突；下面会映射
-    "隐藏": (0, 0),
-    "轨迹": (0, 0),
-    "方向": (0, 0),
-    "大小": (0, 0),
-    "箭头": (0, 0),
-}
-
-# 右侧“背景选择”大组
-_设置页_右区_x占比 = 0.52
-_设置页_右区_y占比 = 0.18
-_设置页_右区_宽占比 = 0.42
-_设置页_右区_高占比 = 0.70
-_设置页_右区_额外偏移 = (0, 0)
-
-# 右侧预览图边距（像素）
-_设置页_右区_预览内边距 = 10
-# 右侧预览框额外偏移（相对默认中心）
-_设置页_右区_预览框_偏移 = (0, 0)
-# 右侧预览框缩放（1.0=默认）
-_设置页_右区_预览框_宽缩放 = 1.0
-_设置页_右区_预览框_高缩放 = 1.0
-# 右侧大箭头（左右分别可调）
-_设置页_右区_左大箭头_偏移 = (0, 0)
-_设置页_右区_右大箭头_偏移 = (0, 0)
-_设置页_右区_左大箭头_缩放 = 1.0
-_设置页_右区_右大箭头_缩放 = 1.0
-
-# ✅ 设置页：箭头候选“左下预览框”（原版是一个大方框）
-_设置页_箭头预览_x占比 = 0.12
-_设置页_箭头预览_y占比 = 0.74
-_设置页_箭头预览_宽占比 = 0.1
-_设置页_箭头预览_高占比 = 0.20
-_设置页_箭头预览_额外偏移 = (0, 0)
-_设置页_箭头预览_内边距 = 0
-
-
-# =========================
-# ✅ 设置页：资源/布局/绘制/交互
-# =========================
 def _设置页_持久化文件路径(self) -> str:
     return os.path.join(_取运行根目录(), "json", "选歌设置.json")
 
-
 def _设置页_从参数文本提取(参数文本: str, 键名: str) -> str:
     return 设置参数文本提取值(str(参数文本 or ""), str(键名 or ""))
-
 
 def _设置页_构建参数文本(
     self,
@@ -1047,7 +1022,6 @@ def _设置页_构建参数文本(
         背景文件名=背景文件名,
         箭头文件名=箭头文件名,
     )
-
 
 def _设置页_读取持久化设置(self) -> dict:
     路径 = _设置页_持久化文件路径(self)
@@ -1062,7 +1036,6 @@ def _设置页_读取持久化设置(self) -> dict:
             continue
     return {}
 
-
 def _设置页_写入持久化设置(self, 数据: dict) -> bool:
     try:
         路径 = _设置页_持久化文件路径(self)
@@ -1075,152 +1048,146 @@ def _设置页_写入持久化设置(self, 数据: dict) -> bool:
     except Exception:
         return False
 
-
 def _设置页_加载持久化设置(self):
     数据 = _设置页_读取持久化设置(self)
-    if not isinstance(数据, dict) or not 数据:
+    if not isinstance(数据, dict) or (not 数据):
         return
 
+    配置定义 = _设置页_配置项定义()
     索引表 = 数据.get("索引", {})
     if not isinstance(索引表, dict):
         索引表 = {}
-
-    def _应用索引(属性名: str, 键名: str, 选项数量: int):
-        if 选项数量 <= 0:
-            return
-        try:
-            值 = int(索引表.get(键名, getattr(self, 属性名, 0)) or 0)
-        except Exception:
-            值 = int(getattr(self, 属性名, 0) or 0)
-        值 = max(0, min(选项数量 - 1, 值))
-        setattr(self, 属性名, 值)
-
-    _应用索引("设置_调速索引", "调速", len(getattr(self, "设置_调速选项", [])))
-    if "背景模式" not in 索引表 and "变速" in 索引表:
-        try:
-            索引表["背景模式"] = int(索引表.get("变速", 0) or 0)
-        except Exception:
-            pass
-    _应用索引("设置_变速索引", "背景模式", len(getattr(self, "设置_变速选项", [])))
-    _应用索引("设置_谱面索引", "谱面", len(getattr(self, "设置_谱面选项", [])))
-    _应用索引("设置_隐藏索引", "隐藏", len(getattr(self, "设置_隐藏选项", [])))
-    _应用索引("设置_轨迹索引", "轨迹", len(getattr(self, "设置_轨迹选项", [])))
-    _应用索引("设置_方向索引", "方向", len(getattr(self, "设置_方向选项", [])))
-    _应用索引("设置_大小索引", "大小", len(getattr(self, "设置_大小选项", [])))
-    _应用索引("设置_箭头索引", "箭头", len(getattr(self, "设置_箭头候选路径列表", [])))
-    _应用索引(
-        "设置_背景索引", "背景", len(getattr(self, "设置_背景大图文件名列表", []))
-    )
 
     参数 = 数据.get("设置参数", {})
     if not isinstance(参数, dict):
         参数 = {}
 
-    def _按值匹配(属性名: str, 选项列表: List[str], 候选值: str):
-        候选值 = str(候选值 or "").strip()
-        if (not 候选值) or (not 选项列表):
-            return
-        try:
-            idx = list(选项列表).index(候选值)
-            setattr(self, 属性名, int(idx))
-        except Exception:
-            pass
-
-    调速值 = str(参数.get("调速", "") or "").strip().replace("x", "X")
-    if 调速值.startswith("X"):
-        调速值 = 调速值[1:]
-    _按值匹配("设置_调速索引", list(getattr(self, "设置_调速选项", [])), 调速值)
-
-    _按值匹配(
-        "设置_变速索引",
-        list(getattr(self, "设置_变速选项", [])),
-        str(参数.get("背景模式", 参数.get("变速", "")) or ""),
-    )
-    _按值匹配(
-        "设置_谱面索引",
-        list(getattr(self, "设置_谱面选项", [])),
-        str(参数.get("谱面", 参数.get("变速类型", "")) or ""),
-    )
-    _按值匹配(
-        "设置_隐藏索引",
-        list(getattr(self, "设置_隐藏选项", [])),
-        str(参数.get("隐藏", "") or ""),
-    )
-    _按值匹配(
-        "设置_轨迹索引",
-        list(getattr(self, "设置_轨迹选项", [])),
-        str(参数.get("轨迹", "") or ""),
-    )
-    _按值匹配(
-        "设置_方向索引",
-        list(getattr(self, "设置_方向选项", [])),
-        str(参数.get("方向", "") or ""),
-    )
-    _按值匹配(
-        "设置_大小索引",
-        list(getattr(self, "设置_大小选项", [])),
-        str(参数.get("大小", "") or ""),
-    )
-
     参数文本 = str(数据.get("设置参数文本", "") or "")
     背景文件名 = str(数据.get("背景文件名", 参数.get("背景", "")) or "")
     箭头文件名 = str(数据.get("箭头文件名", 参数.get("箭头", "")) or "")
+
     if not 背景文件名:
         背景文件名 = _设置页_从参数文本提取(参数文本, "背景")
     if not 箭头文件名:
         箭头文件名 = _设置页_从参数文本提取(参数文本, "箭头")
 
-    背景列表 = list(getattr(self, "设置_背景大图文件名列表", []))
-    if 背景文件名 and 背景列表:
+    for 行键, 定义 in 配置定义.items():
+        索引属性 = str(定义.get("索引属性", "") or "")
+        选项属性 = str(定义.get("选项属性", "") or "")
+        参数键 = str(定义.get("参数键", "") or "")
+        兼容参数键 = str(定义.get("兼容参数键", "") or "")
+        值类型 = str(定义.get("值类型", "") or "")
+
+        选项列表 = list(getattr(self, 选项属性, []) or [])
+        if (not 索引属性) or (not 选项列表):
+            continue
+
+        默认索引 = int(getattr(self, 索引属性, 0) or 0)
+
         try:
-            self.设置_背景索引 = max(
-                0, min(len(背景列表) - 1, int(背景列表.index(背景文件名)))
-            )
+            索引值 = int(索引表.get(参数键, 索引表.get(兼容参数键, 默认索引)) or 默认索引)
+        except Exception:
+            索引值 = 默认索引
+        索引值 = max(0, min(len(选项列表) - 1, 索引值))
+        setattr(self, 索引属性, 索引值)
+
+        候选值 = ""
+        if 值类型 == "文件名":
+            候选值 = 箭头文件名
+        elif 值类型 == "原值":
+            候选值 = 背景文件名
+        else:
+            候选值 = str(参数.get(参数键, 参数.get(兼容参数键, "")) or "").strip()
+
+        if 参数键 == "调速":
+            候选值 = 候选值.replace("x", "X")
+            if 候选值.startswith("X"):
+                候选值 = 候选值[1:]
+
+        if not 候选值:
+            continue
+
+        if 值类型 == "文件名":
+            for 序号, 路径 in enumerate(选项列表):
+                if os.path.basename(str(路径 or "")) == 候选值:
+                    setattr(self, 索引属性, int(序号))
+                    break
+            continue
+
+        try:
+            命中索引 = 选项列表.index(候选值)
+            setattr(self, 索引属性, int(命中索引))
         except Exception:
             pass
 
-    箭头列表 = list(getattr(self, "设置_箭头候选路径列表", []))
-    if 箭头文件名 and 箭头列表:
-        for i, p in enumerate(箭头列表):
-            if os.path.basename(str(p or "")) == 箭头文件名:
-                self.设置_箭头索引 = int(i)
-                break
+#     设置参数 = dict(getattr(self, "设置_参数", {}) or {})
+#     背景文件名 = str(getattr(self, "设置_背景大图文件名", "") or "")
+#     箭头文件名 = str(getattr(self, "设置_箭头文件名", "") or "")
 
-
+#     数据 = {
+#         "设置参数": 设置参数,
+#         "背景文件名": 背景文件名,
+#         "箭头文件名": 箭头文件名,
+#         "设置参数文本": _设置页_构建参数文本(
+#             self, 设置参数=设置参数, 背景文件名=背景文件名, 箭头文件名=箭头文件名
+#         ),
+#         "索引": {
+#             "调速": int(getattr(self, "设置_调速索引", 0) or 0),
+#             "背景模式": int(getattr(self, "设置_变速索引", 0) or 0),
+#             "变速": int(getattr(self, "设置_变速索引", 0) or 0),
+#             "谱面": int(getattr(self, "设置_谱面索引", 0) or 0),
+#             "隐藏": int(getattr(self, "设置_隐藏索引", 0) or 0),
+#             "轨迹": int(getattr(self, "设置_轨迹索引", 0) or 0),
+#             "方向": int(getattr(self, "设置_方向索引", 0) or 0),
+#             "大小": int(getattr(self, "设置_大小索引", 0) or 0),
+#             "箭头": int(getattr(self, "设置_箭头索引", 0) or 0),
+#             "背景": int(getattr(self, "设置_背景索引", 0) or 0),
+#         },
+#     }
+#     return _设置页_写入持久化设置(self, 数据)
 def _设置页_保存持久化设置(self) -> bool:
+    配置定义 = _设置页_配置项定义()
+
     设置参数 = dict(getattr(self, "设置_参数", {}) or {})
     背景文件名 = str(getattr(self, "设置_背景大图文件名", "") or "")
     箭头文件名 = str(getattr(self, "设置_箭头文件名", "") or "")
+
+    索引表: Dict[str, int] = {}
+    for _行键, 定义 in 配置定义.items():
+        索引属性 = str(定义.get("索引属性", "") or "")
+        参数键 = str(定义.get("参数键", "") or "")
+        兼容参数键 = str(定义.get("兼容参数键", "") or "")
+        if (not 索引属性) or (not 参数键):
+            continue
+
+        try:
+            当前索引 = int(getattr(self, 索引属性, 0) or 0)
+        except Exception:
+            当前索引 = 0
+
+        索引表[参数键] = 当前索引
+        if 兼容参数键:
+            索引表[兼容参数键] = 当前索引
 
     数据 = {
         "设置参数": 设置参数,
         "背景文件名": 背景文件名,
         "箭头文件名": 箭头文件名,
         "设置参数文本": _设置页_构建参数文本(
-            self, 设置参数=设置参数, 背景文件名=背景文件名, 箭头文件名=箭头文件名
+            self,
+            设置参数=设置参数,
+            背景文件名=背景文件名,
+            箭头文件名=箭头文件名,
         ),
-        "索引": {
-            "调速": int(getattr(self, "设置_调速索引", 0) or 0),
-            "背景模式": int(getattr(self, "设置_变速索引", 0) or 0),
-            "变速": int(getattr(self, "设置_变速索引", 0) or 0),
-            "谱面": int(getattr(self, "设置_谱面索引", 0) or 0),
-            "隐藏": int(getattr(self, "设置_隐藏索引", 0) or 0),
-            "轨迹": int(getattr(self, "设置_轨迹索引", 0) or 0),
-            "方向": int(getattr(self, "设置_方向索引", 0) or 0),
-            "大小": int(getattr(self, "设置_大小索引", 0) or 0),
-            "箭头": int(getattr(self, "设置_箭头索引", 0) or 0),
-            "背景": int(getattr(self, "设置_背景索引", 0) or 0),
-        },
+        "索引": 索引表,
     }
     return _设置页_写入持久化设置(self, 数据)
-
 
 def _确保设置页资源(self):
     if getattr(self, "_设置页_资源已初始化", False):
         return
     self._设置页_资源已初始化 = True
 
-    # 状态
     self.是否设置页 = False
     self._设置页_打开开始时间 = 0.0
     self._设置页_关闭开始时间 = 0.0
@@ -1234,7 +1201,6 @@ def _确保设置页资源(self):
     self._设置页_上次屏幕尺寸 = (0, 0)
     self._设置页_布局缩放 = 1.0
 
-    # 选项
     self.设置_调速选项 = 设置菜单默认调速选项()
     self.设置_变速选项 = ["图片", "视频"]
     self.设置_谱面选项 = ["正常", "未知"]
@@ -1243,7 +1209,6 @@ def _确保设置页资源(self):
     self.设置_方向选项 = ["关闭", "反向"]
     self.设置_大小选项 = ["正常", "放大"]
 
-    # 默认索引
     self.设置_调速索引 = 0
     self.设置_变速索引 = 0
     self.设置_谱面索引 = 0
@@ -1251,21 +1216,21 @@ def _确保设置页资源(self):
     self.设置_轨迹索引 = 0
     self.设置_方向索引 = 0
     self.设置_大小索引 = 0
+    self.设置_箭头索引 = 0
+    self.设置_背景索引 = 0
 
-    # 箭头候选
     self.设置_箭头候选路径列表 = []
     self._设置页_箭头候选原图缓存 = {}
     箭头候选目录 = _资源路径("UI-img", "选歌界面资源", "设置", "设置-箭头候选")
     if os.path.isdir(箭头候选目录):
         for 文件名 in sorted(os.listdir(箭头候选目录)):
-            if 文件名.lower().endswith(".png"):
+            if str(文件名 or "").lower().endswith(".png"):
                 self.设置_箭头候选路径列表.append(os.path.join(箭头候选目录, 文件名))
-    self.设置_箭头索引 = 0
 
-    # 背景候选
     self.设置_背景缩略图路径列表 = []
     self.设置_背景大图文件名列表 = []
     self._设置页_背景缩略图原图缓存 = {}
+
     背景目录 = _资源路径("冷资源", "backimages", "背景图")
     if os.path.isdir(背景目录):
         支持后缀 = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -1278,23 +1243,23 @@ def _确保设置页资源(self):
                 continue
             self.设置_背景缩略图路径列表.append(绝对路径)
             self.设置_背景大图文件名列表.append(str(文件名))
-    self.设置_背景索引 = 0
 
-    # 参数输出
     self.设置_参数 = {}
     self.设置_背景大图文件名 = ""
     self.设置_箭头文件名 = ""
+
     try:
         self._设置页_加载持久化设置()
     except Exception:
         pass
+
     self._设置页_同步参数()
+
     try:
         self._设置页_保存持久化设置()
     except Exception:
         pass
 
-    # 资源图
     self._设置页_缩放缓存 = {}
     self._设置页_背景图原图 = 安全加载图片(
         _资源路径("UI-img", "选歌界面资源", "设置", "设置背景图.png"),
@@ -1333,7 +1298,6 @@ def _确保设置页资源(self):
         except Exception:
             self._设置页_右大箭头原图 = None
 
-    # 布局缓存
     self._设置页_行矩形表 = {}
     self._设置页_控件矩形表 = {}
     self._设置页_背景区矩形 = pygame.Rect(0, 0, 10, 10)
@@ -1342,41 +1306,56 @@ def _确保设置页资源(self):
         "右": pygame.Rect(0, 0, 1, 1),
         "预览": pygame.Rect(0, 0, 1, 1),
     }
-
     self._设置页_箭头预览矩形 = pygame.Rect(0, 0, 10, 10)
     self._设置页_箭头预览控件矩形 = {
         "左": pygame.Rect(0, 0, 1, 1),
         "右": pygame.Rect(0, 0, 1, 1),
     }
 
-    # 背景缩放缓存
     self._设置页_背景缩放缓存图 = None
     self._设置页_背景缩放缓存尺寸 = (0, 0)
 
-
 def _设置页_同步参数(self):
-    # ✅ 你要“存变量”，这里统一写入 self.设置_参数 + 单独的背景/箭头文件名
-    self.设置_参数 = {
-        "调速": f"X{self.设置_调速选项[self.设置_调速索引]}",
-        "背景模式": self.设置_变速选项[self.设置_变速索引],
-        "谱面": self.设置_谱面选项[self.设置_谱面索引],
-        "隐藏": self.设置_隐藏选项[self.设置_隐藏索引],
-        "轨迹": self.设置_轨迹选项[self.设置_轨迹索引],
-        "方向": self.设置_方向选项[self.设置_方向索引],
-        "大小": self.设置_大小选项[self.设置_大小索引],
-    }
+    配置定义 = _设置页_配置项定义()
+    输出参数: Dict[str, str] = {}
 
-    if self.设置_箭头候选路径列表:
-        当前箭头路径 = self.设置_箭头候选路径列表[self.设置_箭头索引]
-        self.设置_箭头文件名 = os.path.basename(当前箭头路径)
-    else:
+    for 行键, 定义 in 配置定义.items():
+        索引属性 = str(定义.get("索引属性", "") or "")
+        选项属性 = str(定义.get("选项属性", "") or "")
+        参数键 = str(定义.get("参数键", "") or "")
+        值前缀 = str(定义.get("值前缀", "") or "")
+        值类型 = str(定义.get("值类型", "") or "")
+
+        选项列表 = list(getattr(self, 选项属性, []) or [])
+        if (not 参数键) or (not 选项列表):
+            continue
+
+        try:
+            当前索引 = int(getattr(self, 索引属性, 0) or 0)
+        except Exception:
+            当前索引 = 0
+        当前索引 = max(0, min(len(选项列表) - 1, 当前索引))
+
+        当前值 = 选项列表[当前索引]
+
+        if 值类型 == "文件名":
+            当前值 = os.path.basename(str(当前值 or ""))
+        else:
+            当前值 = str(当前值 or "")
+
+        if 参数键 == "箭头":
+            self.设置_箭头文件名 = 当前值
+        elif 参数键 == "背景":
+            self.设置_背景大图文件名 = 当前值
+        else:
+            输出参数[参数键] = f"{值前缀}{当前值}" if 值前缀 else 当前值
+
+    if not hasattr(self, "设置_箭头文件名"):
         self.设置_箭头文件名 = ""
-
-    if self.设置_背景大图文件名列表:
-        self.设置_背景大图文件名 = self.设置_背景大图文件名列表[self.设置_背景索引]
-    else:
+    if not hasattr(self, "设置_背景大图文件名"):
         self.设置_背景大图文件名 = ""
 
+    self.设置_参数 = 输出参数
 
 def _设置页_取缩放图(
     self, 缓存键前缀: str, 原图: Optional[pygame.Surface], 目标宽: int, 目标高: int
@@ -1398,36 +1377,6 @@ def _设置页_取缩放图(
     self._设置页_缩放缓存[缓存键] = 缩放图
     return 缩放图
 
-
-def _重算设置页布局(self):
-    self._确保设置页资源()
-
-    当前屏宽, 当前屏高 = self.屏幕.get_size()
-    if (
-        getattr(self, "_设置页_上次屏幕尺寸", (0, 0)) == (当前屏宽, 当前屏高)
-        and self._设置页_面板基础矩形.w > 20
-    ):
-        return
-    self._设置页_上次屏幕尺寸 = (当前屏宽, 当前屏高)
-
-    try:
-        布局结果 = 计算设置页布局(当前屏宽, 当前屏高)
-    except Exception:
-        return
-
-    try:
-        self._设置页_布局缩放 = float(布局结果.get("布局缩放", 1.0) or 1.0)
-        self._设置页_面板基础矩形 = 布局结果["面板基础矩形"]
-        self._设置页_行矩形表 = 布局结果["行矩形表"]
-        self._设置页_控件矩形表 = 布局结果["控件矩形表"]
-        self._设置页_背景区矩形 = 布局结果["背景区矩形"]
-        self._设置页_背景控件矩形 = 布局结果["背景控件矩形"]
-        self._设置页_箭头预览矩形 = 布局结果["箭头预览矩形"]
-        self._设置页_箭头预览控件矩形 = 布局结果["箭头预览控件矩形"]
-    except Exception:
-        return
-
-
 def _设置页_缓出(self, 进度: float) -> float:
     try:
         进度 = float(进度)
@@ -1440,7 +1389,6 @@ def _设置页_缓出(self, 进度: float) -> float:
     # easeOutQuad
     return 1.0 - (1.0 - 进度) * (1.0 - 进度)
 
-
 def _设置页_缓入(self, 进度: float) -> float:
     try:
         进度 = float(进度)
@@ -1452,12 +1400,10 @@ def _设置页_缓入(self, 进度: float) -> float:
         进度 = 1.0
     return 进度 * 进度 * 进度
 
-
 def _设置页_立即隐藏(self):
     self.是否设置页 = False
     self._设置页_动画状态 = "closed"
     self._设置页_最后绘制表面 = None
-
 
 def _设置页_取动画参数(self) -> dict:
     if not bool(getattr(self, "是否设置页", False)):
@@ -1519,7 +1465,6 @@ def _设置页_取动画参数(self) -> dict:
         "y偏移": int((1.0 - 缓进度) * 24),
     }
 
-
 def _设置页_点在有效面板区域(self, 屏幕点) -> bool:
     面板绘制矩形 = getattr(self, "_设置页_面板绘制矩形", None)
     if not isinstance(面板绘制矩形, pygame.Rect):
@@ -1556,23 +1501,14 @@ def 绘制设置页(self):
         return
 
     try:
-        布局缩放 = float(getattr(self, "_设置页_布局缩放", 1.0) or 1.0)
+        from ui import 选歌设置菜单控件 as 设置模块
+        箭头预览内边距 = max(
+            0,
+            int(getattr(设置模块, "设置页_箭头预览_内边距", 0) or 0),
+        )
     except Exception:
-        布局缩放 = 1.0
-    布局缩放 = max(0.68, min(1.15, 布局缩放))
+        箭头预览内边距 = 0
 
-    def _缩放像素(值: int, 最小值: int | None = None, 最大值: int | None = None) -> int:
-        try:
-            新值 = int(round(float(值) * float(布局缩放)))
-        except Exception:
-            新值 = int(值)
-        if 最小值 is not None:
-            新值 = max(int(最小值), 新值)
-        if 最大值 is not None:
-            新值 = min(int(最大值), 新值)
-        return 新值
-
-    # 遮罩
     遮罩 = pygame.Surface((self.宽, self.高), pygame.SRCALPHA)
     遮罩.fill(
         (
@@ -1587,7 +1523,6 @@ def 绘制设置页(self):
     面板矩形 = self._设置页_面板基础矩形
     面板画布 = pygame.Surface((面板矩形.w, 面板矩形.h), pygame.SRCALPHA)
 
-    # 背景图
     if self._设置页_背景图原图 is not None:
         目标尺寸 = (面板矩形.w, 面板矩形.h)
         if (
@@ -1608,18 +1543,20 @@ def 绘制设置页(self):
     else:
         面板画布.fill((10, 20, 40, 235))
 
-    示例行 = next(iter(self._设置页_行矩形表.values()), pygame.Rect(0, 0, 200, 50))
-    标签字号 = max(12, _缩放像素(int(示例行.h * 0.46), 最小值=12))
-    选项字号 = max(12, _缩放像素(int(示例行.h * 0.50), 最小值=12))
-    小字字号 = max(10, _缩放像素(int(示例行.h * 0.34), 最小值=10))
-    内容内边距 = _缩放像素(10, 最小值=4)
-    名称下移 = _缩放像素(1, 最小值=0)
+    视觉参数 = dict(getattr(self, "_设置页_视觉参数", {}) or {})
+
+    标签字号 = int(视觉参数.get("标签字号", 24) or 24)
+    选项字号 = int(视觉参数.get("选项字号", 26) or 26)
+    小字字号 = int(视觉参数.get("小字字号", 16) or 16)
+    内容内边距 = int(视觉参数.get("内容内边距", 10) or 10)
+    名称下移 = int(视觉参数.get("名称下移", 1) or 1)
+    箭头名称上间距 = int(视觉参数.get("箭头名称上间距", 18) or 18)
+    底部保护边距 = int(视觉参数.get("底部保护边距", 6) or 6)
 
     标签字体 = 获取字体(标签字号, 是否粗体=False)
     选项字体 = 获取字体(选项字号, 是否粗体=True)
     小字字体 = 获取字体(小字字号, 是否粗体=False)
 
-    # 左侧每行：小箭头 + 文字
     for 行键, 控件 in self._设置页_控件矩形表.items():
         左箭 = 控件["左"]
         右箭 = 控件["右"]
@@ -1658,7 +1595,6 @@ def 绘制设置页(self):
             对齐="midright",
         )
 
-    # 左下：箭头候选预览 + 左右切换
     预览框 = getattr(self, "_设置页_箭头预览矩形", pygame.Rect(0, 0, 10, 10))
     if isinstance(预览框, pygame.Rect) and 预览框.w > 10 and 预览框.h > 10:
         当前候选路径 = None
@@ -1673,7 +1609,7 @@ def 绘制设置页(self):
                 self._设置页_箭头候选原图缓存[当前候选路径] = 候选图
 
         if 候选图 is not None:
-            内边距 = _缩放像素(int(设置页_箭头预览_内边距), 最小值=0)
+            内边距 = max(0, int(箭头预览内边距))
             可用 = 预览框.inflate(-内边距 * 2, -内边距 * 2)
             ow, oh = 候选图.get_size()
             比例 = min(可用.w / max(1, ow), 可用.h / max(1, oh))
@@ -1727,8 +1663,8 @@ def 绘制设置页(self):
                     (
                         预览框.centerx,
                         min(
-                            面板画布.get_height() - _缩放像素(6, 最小值=4),
-                            预览框.bottom + _缩放像素(18, 最小值=10),
+                            面板画布.get_height() - 底部保护边距,
+                            预览框.bottom + 箭头名称上间距,
                         ),
                     ),
                     对齐="midtop",
@@ -1736,7 +1672,6 @@ def 绘制设置页(self):
         except Exception:
             pass
 
-    # 右侧背景选择：大箭头 + 缩略图预览
     背景控件 = self._设置页_背景控件矩形
     左大箭 = 背景控件["左"]
     右大箭 = 背景控件["右"]
@@ -1806,10 +1741,10 @@ def 绘制设置页(self):
     绘制矩形 = 面板画布2.get_rect()
     绘制矩形.center = 面板矩形.center
     绘制矩形.y += int(动画参数.get("y偏移", 0) or 0)
+
     self._设置页_面板绘制矩形 = 绘制矩形
     self._设置页_最后绘制表面 = 面板画布2
     self.屏幕.blit(面板画布2, 绘制矩形.topleft)
-
 
 def 打开设置页(self):
     self._确保设置页资源()
@@ -1820,17 +1755,16 @@ def 打开设置页(self):
     except Exception:
         pass
 
-    try:
-        self._设置页_上次屏幕尺寸 = (0, 0)
-    except Exception:
-        pass
+    self._设置页_上次屏幕尺寸 = (0, 0)
+    self._设置页_面板绘制矩形 = pygame.Rect(0, 0, 10, 10)
+    self._设置页_最后绘制表面 = None
+    self._设置页_最后缩放 = 1.0
 
-    self._重算设置页布局()
+    self._重算设置页布局(强制=True)
     self.是否设置页 = True
     self._设置页_动画状态 = "opening"
     self._设置页_打开开始时间 = time.time()
     self._设置页_关闭开始时间 = 0.0
-
 
 def 关闭设置页(self, 立即: bool = False):
     self._确保设置页资源()
@@ -1844,9 +1778,9 @@ def 关闭设置页(self, 立即: bool = False):
     self._设置页_动画状态 = "closing"
     self._设置页_关闭开始时间 = time.time()
 
-
 def _设置页_切换选项(self, 行键: str, 方向: int):
     self._确保设置页资源()
+
     try:
         方向 = int(方向)
     except Exception:
@@ -1854,73 +1788,68 @@ def _设置页_切换选项(self, 行键: str, 方向: int):
     if 方向 == 0:
         return
 
-    # 行键 -> 实际索引/选项表
-    if 行键 == "调速":
-        总数 = len(self.设置_调速选项)
-        if 总数 > 0:
-            self.设置_调速索引 = (self.设置_调速索引 + 方向) % 总数
+    配置定义 = _设置页_配置项定义()
+    定义 = 配置定义.get(str(行键 or ""), None)
+    if not isinstance(定义, dict):
+        return
 
-    elif 行键 == "变速":
-        总数 = len(self.设置_变速选项)
-        if 总数 > 0:
-            self.设置_变速索引 = (self.设置_变速索引 + 方向) % 总数
+    索引属性 = str(定义.get("索引属性", "") or "")
+    选项属性 = str(定义.get("选项属性", "") or "")
+    if (not 索引属性) or (not 选项属性):
+        return
 
-    elif 行键 == "变速类型":
-        总数 = len(self.设置_谱面选项)
-        if 总数 > 0:
-            self.设置_谱面索引 = (self.设置_谱面索引 + 方向) % 总数
+    选项列表 = list(getattr(self, 选项属性, []) or [])
+    总数 = len(选项列表)
+    if 总数 <= 0:
+        return
 
-    elif 行键 == "隐藏":
-        总数 = len(self.设置_隐藏选项)
-        if 总数 > 0:
-            self.设置_隐藏索引 = (self.设置_隐藏索引 + 方向) % 总数
+    try:
+        当前索引 = int(getattr(self, 索引属性, 0) or 0)
+    except Exception:
+        当前索引 = 0
 
-    elif 行键 == "轨迹":
-        总数 = len(self.设置_轨迹选项)
-        if 总数 > 0:
-            self.设置_轨迹索引 = (self.设置_轨迹索引 + 方向) % 总数
-
-    elif 行键 == "方向":
-        总数 = len(self.设置_方向选项)
-        if 总数 > 0:
-            self.设置_方向索引 = (self.设置_方向索引 + 方向) % 总数
-
-    elif 行键 == "大小":
-        总数 = len(self.设置_大小选项)
-        if 总数 > 0:
-            self.设置_大小索引 = (self.设置_大小索引 + 方向) % 总数
-
-    elif 行键 == "箭头":
-        总数 = len(self.设置_箭头候选路径列表)
-        if 总数 > 0:
-            self.设置_箭头索引 = (self.设置_箭头索引 + 方向) % 总数
+    当前索引 = (当前索引 + 方向) % 总数
+    setattr(self, 索引属性, 当前索引)
 
     self._设置页_同步参数()
+
     try:
         self._设置页_保存持久化设置()
     except Exception:
         pass
+
+    self._设置页_上次屏幕尺寸 = (0, 0)
+    self._设置页_最后绘制表面 = None
+    self._设置页_最后缩放 = 1.0
+    self._重算设置页布局(强制=True)
 
 
 def _设置页_切换背景(self, 方向: int):
     self._确保设置页资源()
+
     try:
         方向 = int(方向)
     except Exception:
         方向 = 0
     if 方向 == 0:
         return
+
     总数 = len(self.设置_背景缩略图路径列表)
     if 总数 <= 0:
         return
+
     self.设置_背景索引 = (self.设置_背景索引 + 方向) % 总数
     self._设置页_同步参数()
+
     try:
         self._设置页_保存持久化设置()
     except Exception:
         pass
 
-
+    self._设置页_上次屏幕尺寸 = (0, 0)
+    self._设置页_最后绘制表面 = None
+    self._设置页_最后缩放 = 1.0
+    self._重算设置页布局(强制=True)
 
 
 def _设置页_处理事件(self, 事件):
@@ -1995,11 +1924,9 @@ def _设置页_处理事件(self, 事件):
             self._设置页_切换选项(行键, +1)
             return
 
-
 def _资源路径(*片段: str) -> str:
     脚本目录 = _取项目根目录()
     return os.path.join(脚本目录, *片段)
-
 
 def 获取UI原图(路径: str, 透明: bool = True) -> Optional[pygame.Surface]:
     if not 路径:
@@ -2010,30 +1937,6 @@ def 获取UI原图(路径: str, 透明: bool = True) -> Optional[pygame.Surface]
     图 = 安全加载图片(路径, 透明=透明)
     _UI原图缓存[key] = 图
     return 图
-
-
-def 获取UI缩放图(
-    路径: str, 目标宽: int, 目标高: int, 透明: bool = True
-) -> Optional[pygame.Surface]:
-    if (not 路径) or 目标宽 <= 0 or 目标高 <= 0:
-        return None
-    key = (f"{路径}|{'A' if 透明 else 'O'}", int(目标宽), int(目标高), bool(透明))
-    if key in _UI缩放缓存:
-        return _UI缩放缓存[key]
-
-    原图 = 获取UI原图(路径, 透明=透明)
-    if 原图 is None:
-        _UI缩放缓存[key] = None
-        return None
-
-    try:
-        缩放 = pygame.transform.smoothscale(原图, (int(目标宽), int(目标高)))
-        缩放 = 缩放.convert_alpha() if 透明 else 缩放.convert()
-    except Exception:
-        缩放 = None
-
-    _UI缩放缓存[key] = 缩放
-    return 缩放
 
 
 _UI容器缓存: Dict[Tuple[str, int, int, bool, str], Optional[pygame.Surface]] = {}
@@ -4054,10 +3957,6 @@ class 歌曲卡片:
         self.踏板高亮 = False
         self.封面矩形 = pygame.Rect(0, 0, 1, 1)
 
-    def _计算封面矩形(self, 锚点矩形: pygame.Rect, 屏宽: int, 屏高: int) -> pygame.Rect:
-        布局 = 计算框体槽位布局(锚点矩形, 是否大图=False)
-        return 布局["封面矩形"]
-
     def 更新布局(self, 矩形: pygame.Rect):
         self.矩形 = 矩形
 
@@ -4261,7 +4160,7 @@ class 歌曲卡片:
                 if vip图 is not None:
                     vipw, viph = vip图.get_size()
                     vx = 局部框矩形.right - vipw - max(2, int(vipw * 0.06))
-                    vy = 局部框矩形.top - max(2, int(viph * 0.18))
+                    vy = 局部框矩形.top - max(2, int(viph * -0.020))
                     局部画布.blit(vip图, (vx, vy))
 
         try:
@@ -4305,7 +4204,6 @@ class 选歌游戏:
         self,
         songs根目录: str,
         背景音乐路径: str,
-        logo路径: str,
         指定类型名: str = "",
         指定模式名: str = "",
         玩家数: int = 1,
@@ -4335,7 +4233,6 @@ class 选歌游戏:
             self.songs根目录 = _取songs根目录()
 
         self.背景音乐路径 = 背景音乐路径
-        self.logo路径 = logo路径
         self.玩家数 = 2 if 玩家数 == 2 else 1
         self.指定类型名 = str(指定类型名 or "").strip()
         self.指定模式名 = str(指定模式名 or "").strip()
@@ -4391,27 +4288,18 @@ class 选歌游戏:
         self.正文字体 = 获取字体(24)
         self.正文字体粗 = 获取字体(26)
         self.小字体 = 获取字体(18)
-
         self.顶部高 = 78
         self.底部高 = 220
-
         self.当前页 = 0
         self.每页数量 = 8
-
         self.是否详情页 = False
         self.当前选择原始索引 = 0
         self.详情大框矩形 = pygame.Rect(0, 0, 0, 0)
-
         self.是否星级筛选页 = False
         self.当前筛选星级: Optional[int] = None
         self.星级按钮列表: List[Tuple[int, 按钮]] = []
         self.筛选页面板矩形 = pygame.Rect(0, 0, 0, 0)
 
-        self.是否模式选择页 = False
-        self.模式选择面板矩形 = pygame.Rect(0, 0, 0, 0)
-        self.按钮_选择花式 = 按钮("Fancy 花式", pygame.Rect(0, 0, 0, 0))
-        self.按钮_选择竞速 = 按钮("Speed 竞速", pygame.Rect(0, 0, 0, 0))
-        self.按钮_关闭模式选择 = 按钮("返回", pygame.Rect(0, 0, 0, 0))
 
         self.图缓存 = 图像缓存()
         self.预加载队列 = []
@@ -5452,40 +5340,6 @@ class 选歌游戏:
         宽占比 = max(0.20, min(0.98, 宽占比))
         高占比 = max(0.20, min(0.98, 高占比))
 
-        面板宽 = min(最大宽, int(self.宽 * 宽占比))
-        面板高 = min(最大高, int(self.高 * 高占比))
-        面板x = (self.宽 - 面板宽) // 2
-        面板y = (self.高 - 面板高) // 2
-        self.模式选择面板矩形 = pygame.Rect(面板x, 面板y, 面板宽, 面板高)
-
-        内边距 = self._取布局像素("模式选择面板.内边距", 28, 最小=0, 最大=9999)
-        区域 = self.模式选择面板矩形.inflate(-内边距 * 2, -内边距 * 2)
-
-        按钮高 = self._取布局像素("模式选择面板.按钮高", 120, 最小=40, 最大=9999)
-        按钮间距 = self._取布局像素("模式选择面板.按钮间距", 18, 最小=0, 最大=9999)
-        标题下移 = self._取布局像素("模式选择面板.标题下移", 120, 最小=0, 最大=9999)
-
-        按钮宽 = max(10, (区域.w - 按钮间距) // 2)
-        bx = 区域.x
-        by = 区域.y + 标题下移
-
-        self.按钮_选择花式.矩形 = pygame.Rect(bx, by, 按钮宽, 按钮高)
-        self.按钮_选择竞速.矩形 = pygame.Rect(
-            bx + 按钮宽 + 按钮间距, by, 按钮宽, 按钮高
-        )
-
-        关闭宽 = self._取布局像素("模式选择面板.关闭按钮宽", 180, 最小=60, 最大=9999)
-        关闭高 = self._取布局像素("模式选择面板.关闭按钮高", 60, 最小=30, 最大=9999)
-        关闭下边距 = self._取布局像素(
-            "模式选择面板.关闭按钮下边距", 86, 最小=0, 最大=9999
-        )
-        self.按钮_关闭模式选择.矩形 = pygame.Rect(
-            self.模式选择面板矩形.centerx - 关闭宽 // 2,
-            self.模式选择面板矩形.bottom - 关闭下边距,
-            关闭宽,
-            关闭高,
-        )
-
         # ========= 卡片网格（保留原逻辑） =========
         try:
             列数 = int(self._取布局值("卡片网格.列数", 4))
@@ -5942,86 +5796,6 @@ class 选歌游戏:
                 )
 
         return 卡片列表
-
-    def 打开模式选择页(self):
-        if self.是否详情页 or self.是否星级筛选页 or self.动画中:
-            return
-        self.是否模式选择页 = True
-
-    def 关闭模式选择页(self):
-        self.是否模式选择页 = False
-
-    def _切换到类型(self, 目标类型关键字: str):
-        """
-        目标类型关键字：'花式' 或 '竞速'
-        尽量在 self.类型列表 中找到匹配项并切换。
-        """
-        if not self.类型列表:
-            return
-
-        def _归一(s: str) -> str:
-            return re.sub(r"\s+", "", str(s or "")).strip().lower()
-
-        关键 = _归一(目标类型关键字)
-        命中索引 = None
-
-        for i, t in enumerate(self.类型列表):
-            if 关键 in _归一(t):
-                命中索引 = i
-                break
-
-        # 兜底：常见英文命名
-        if 命中索引 is None:
-            if 关键 == _归一("花式"):
-                备选 = ["fancy"]
-            else:
-                备选 = ["speed"]
-            for i, t in enumerate(self.类型列表):
-                tt = _归一(t)
-                if any(b in tt for b in 备选):
-                    命中索引 = i
-                    break
-
-        if 命中索引 is None:
-            return
-
-        self.当前类型索引 = 命中索引
-
-        当前类型 = self.当前类型名()
-        self.模式列表 = sorted(self.数据树.get(当前类型, {}).keys())
-        self.当前模式索引 = 0
-
-        # 重置筛选/页码/卡片
-        self.当前筛选星级 = None
-        self.当前页 = 0
-        self.当前页卡片 = self.生成指定页卡片(self.当前页)
-        self.安排预加载(基准页=self.当前页)
-
-    def 绘制模式选择页(self):
-        # 半透明遮罩
-        暗层 = pygame.Surface((self.宽, self.高), pygame.SRCALPHA)
-        暗层.fill((0, 0, 0, 180))
-        self.屏幕.blit(暗层, (0, 0))
-
-        面板 = self.模式选择面板矩形
-        面板底 = pygame.Surface((面板.w, 面板.h), pygame.SRCALPHA)
-        面板底.fill((10, 20, 40, 230))
-        self.屏幕.blit(面板底, 面板.topleft)
-        绘制圆角矩形(self.屏幕, 面板, (180, 220, 255), 圆角=18, 线宽=3)
-
-        绘制超粗文本(
-            self.屏幕,
-            "选择模式",
-            获取字体(40),
-            (255, 240, 80),
-            (面板.centerx, 面板.y + 52),
-            对齐="center",
-            粗细=3,
-        )
-
-        self.按钮_选择花式.绘制(self.屏幕, 获取字体(34))
-        self.按钮_选择竞速.绘制(self.屏幕, 获取字体(34))
-        self.按钮_关闭模式选择.绘制(self.屏幕, 获取字体(26))
 
     def _计算保留key集合(self, 基准页: int) -> Set[Tuple[str, int, int, int, str]]:
         刷新选歌布局常量()
@@ -8243,12 +8017,11 @@ def main():
     资源根目录 = _取项目根目录()
     songs根目录 = _取songs根目录()
     背景音乐路径 = os.path.join(资源根目录, "冷资源", "backsound", "devil.mp3")
-    logo路径 = os.path.join(_取运行根目录(), "res", "logo", "base.png")
+
 
     游戏 = 选歌游戏(
         songs根目录=songs根目录,
         背景音乐路径=背景音乐路径,
-        logo路径=logo路径,
         是否继承已有窗口=False,
     )
     游戏.主循环()
@@ -8256,12 +8029,10 @@ def main():
 
 def 运行选歌(玩家数: int, 类型名: str, 模式名: str, 背景音乐路径: str):
     songs根目录 = _取songs根目录()
-    logo路径 = os.path.join(_取运行根目录(), "res", "logo", "base.png")
 
     游戏 = 选歌游戏(
         songs根目录=songs根目录,
         背景音乐路径=背景音乐路径,
-        logo路径=logo路径,
         指定类型名=类型名,
         指定模式名=模式名,
         玩家数=玩家数,

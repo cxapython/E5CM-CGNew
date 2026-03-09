@@ -7,7 +7,6 @@ import pygame
 from core.歌曲记录 import 取歌曲记录
 from core.工具 import 绘制底部联网与信用
 from scenes.场景基类 import 场景基类
-from ui.选歌设置菜单控件 import 构建设置参数文本
 
 
 _项目根目录_缓存: str | None = None

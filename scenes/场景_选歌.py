@@ -14,16 +14,6 @@ from ui.top栏 import 生成top栏
 import pygame
 from scenes.场景基类 import 场景基类
 
-from ui.选歌设置菜单控件 import (
-    构建设置参数文本,
-    设置参数文本提取值,
-    设置菜单默认调速选项,
-    设置菜单行显示名,
-    设置菜单行值,
-    绘制_cover裁切预览,
-    计算设置页布局,
-)
-
 def 确保项目根目录在模块路径里():
     当前文件 = os.path.abspath(__file__)
     场景目录 = os.path.dirname(当前文件)
@@ -31,10 +21,7 @@ def 确保项目根目录在模块路径里():
     if 项目根目录 not in sys.path:
         sys.path.insert(0, 项目根目录)
 
-
 确保项目根目录在模块路径里()
-
-
 
 _项目根目录_缓存: str | None = None
 _运行根目录_缓存: str | None = None
@@ -924,29 +911,24 @@ def 处理透明像素_用左上角作为背景(原图: pygame.Surface) -> pygam
 _UI原图缓存: Dict[str, Optional[pygame.Surface]] = {}
 # _UI缩放缓存: Dict[Tuple[str, int, int, bool], Optional[pygame.Surface]] = {}
 
-_缩略图_序号背景_缩放 = 1.5  # ✅ 背景整体缩放（相对“基准高”）
-_缩略图_序号背景_x偏移 = 20  # ✅ 背景基于锚点的x偏移（像素）
-_缩略图_序号背景_y偏移 = -20  # ✅ 背景基于锚点的y偏移（像素）←想上移就更负
-
-_缩略图_序号数字_缩放 = 1.6  # ✅ 数字大小缩放（相对“数字高”）
-_缩略图_序号数字_x偏移 = -20  # ✅ 数字基于“右下对齐位置”的x偏移（像素）
-_缩略图_序号数字_y偏移 = -20  # ✅ 数字基于“右下对齐位置”的y偏移（像素）
-_缩略图_序号数字_右内边距占比 = 0.12  # ✅ 右下对齐时的“右侧内边距”
-_缩略图_序号数字_下内边距占比 = 0.12  # ✅ 右下对齐时的“下侧内边距”
-
+_缩略图_序号背景_缩放 = 1.5  
+_缩略图_序号背景_x偏移 = 20  
+_缩略图_序号背景_y偏移 = -20  
+_缩略图_序号数字_缩放 = 1.6  
+_缩略图_序号数字_x偏移 = -20 
+_缩略图_序号数字_y偏移 = -20 
+_缩略图_序号数字_右内边距占比 = 0.12  
+_缩略图_序号数字_下内边距占比 = 0.12  
 _大图_序号背景_缩放 = 1.70
 _大图_序号背景_x偏移 = 0
 _大图_序号背景_y偏移 = 0
-
 _大图_序号数字_缩放 = 1.00
 _大图_序号数字_x偏移 = 10
 _大图_序号数字_y偏移 = 10
-
 _详情大框贴图_宽缩放 = 1.07
 _详情大框贴图_高缩放 = 1.02
 _详情大框贴图_x偏移 = 0
 _详情大框贴图_y偏移 = 0.01
-
 _序号显示格式_缩略图 = "{:02d}"  # 01 02 03...
 _序号显示格式_大图 = "{:02d}"  # 想大图显示不一样也行
 
@@ -1120,31 +1102,6 @@ def _设置页_加载持久化设置(self):
         except Exception:
             pass
 
-#     设置参数 = dict(getattr(self, "设置_参数", {}) or {})
-#     背景文件名 = str(getattr(self, "设置_背景大图文件名", "") or "")
-#     箭头文件名 = str(getattr(self, "设置_箭头文件名", "") or "")
-
-#     数据 = {
-#         "设置参数": 设置参数,
-#         "背景文件名": 背景文件名,
-#         "箭头文件名": 箭头文件名,
-#         "设置参数文本": _设置页_构建参数文本(
-#             self, 设置参数=设置参数, 背景文件名=背景文件名, 箭头文件名=箭头文件名
-#         ),
-#         "索引": {
-#             "调速": int(getattr(self, "设置_调速索引", 0) or 0),
-#             "背景模式": int(getattr(self, "设置_变速索引", 0) or 0),
-#             "变速": int(getattr(self, "设置_变速索引", 0) or 0),
-#             "谱面": int(getattr(self, "设置_谱面索引", 0) or 0),
-#             "隐藏": int(getattr(self, "设置_隐藏索引", 0) or 0),
-#             "轨迹": int(getattr(self, "设置_轨迹索引", 0) or 0),
-#             "方向": int(getattr(self, "设置_方向索引", 0) or 0),
-#             "大小": int(getattr(self, "设置_大小索引", 0) or 0),
-#             "箭头": int(getattr(self, "设置_箭头索引", 0) or 0),
-#             "背景": int(getattr(self, "设置_背景索引", 0) or 0),
-#         },
-#     }
-#     return _设置页_写入持久化设置(self, 数据)
 def _设置页_保存持久化设置(self) -> bool:
     配置定义 = _设置页_配置项定义()
 
@@ -1182,6 +1139,7 @@ def _设置页_保存持久化设置(self) -> bool:
         "索引": 索引表,
     }
     return _设置页_写入持久化设置(self, 数据)
+
 
 def _确保设置页资源(self):
     if getattr(self, "_设置页_资源已初始化", False):
@@ -1314,6 +1272,11 @@ def _确保设置页资源(self):
 
     self._设置页_背景缩放缓存图 = None
     self._设置页_背景缩放缓存尺寸 = (0, 0)
+
+    self._设置页_调试器 = 设置页布局调试器(
+        os.path.join(_取运行根目录(), "json", "选歌设置页调试.json")
+    )
+    
 
 def _设置页_同步参数(self):
     配置定义 = _设置页_配置项定义()
@@ -1491,7 +1454,6 @@ def _设置页_点在有效面板区域(self, 屏幕点) -> bool:
     except Exception:
         return True
 
-
 def 绘制设置页(self):
     self._确保设置页资源()
     self._重算设置页布局()
@@ -1500,14 +1462,8 @@ def 绘制设置页(self):
     if not bool(动画参数.get("是否可见", False)):
         return
 
-    try:
-        from ui import 选歌设置菜单控件 as 设置模块
-        箭头预览内边距 = max(
-            0,
-            int(getattr(设置模块, "设置页_箭头预览_内边距", 0) or 0),
-        )
-    except Exception:
-        箭头预览内边距 = 0
+    视觉参数 = dict(getattr(self, "_设置页_视觉参数", {}) or {})
+    箭头预览内边距 = max(0, int(视觉参数.get("箭头预览内边距", 0) or 0))
 
     遮罩 = pygame.Surface((self.宽, self.高), pygame.SRCALPHA)
     遮罩.fill(
@@ -1543,8 +1499,6 @@ def 绘制设置页(self):
     else:
         面板画布.fill((10, 20, 40, 235))
 
-    视觉参数 = dict(getattr(self, "_设置页_视觉参数", {}) or {})
-
     标签字号 = int(视觉参数.get("标签字号", 24) or 24)
     选项字号 = int(视觉参数.get("选项字号", 26) or 26)
     小字字号 = int(视觉参数.get("小字字号", 16) or 16)
@@ -1553,14 +1507,22 @@ def 绘制设置页(self):
     箭头名称上间距 = int(视觉参数.get("箭头名称上间距", 18) or 18)
     底部保护边距 = int(视觉参数.get("底部保护边距", 6) or 6)
 
-    标签字体 = 获取字体(标签字号, 是否粗体=False)
-    选项字体 = 获取字体(选项字号, 是否粗体=True)
-    小字字体 = 获取字体(小字字号, 是否粗体=False)
-
     for 行键, 控件 in self._设置页_控件矩形表.items():
         左箭 = 控件["左"]
         右箭 = 控件["右"]
         内容 = 控件["内容"]
+
+        行文字缩放 = 1.0
+        try:
+            if getattr(self, "_设置页_调试器", None) is not None:
+                行文字缩放 = float(self._设置页_调试器.取行文字缩放(行键))
+        except Exception:
+            行文字缩放 = 1.0
+        行文字缩放 = max(0.50, min(3.00, 行文字缩放))
+
+        行标签字体 = 获取字体(max(8, int(round(标签字号 * 行文字缩放))), 是否粗体=False)
+        行选项字体 = 获取字体(max(8, int(round(选项字号 * 行文字缩放))), 是否粗体=True)
+        小字字体 = 获取字体(小字字号, 是否粗体=False)
 
         左箭图 = self._设置页_取缩放图(
             f"设置_左小_{行键}", self._设置页_左小箭头原图, 左箭.w, 左箭.h
@@ -1580,7 +1542,7 @@ def 绘制设置页(self):
         绘制文本(
             面板画布,
             显示名,
-            标签字体,
+            行标签字体,
             (235, 245, 255),
             (内容.x + 内容内边距, 内容.centery + 名称下移),
             对齐="midleft",
@@ -1589,13 +1551,15 @@ def 绘制设置页(self):
         绘制文本(
             面板画布,
             值,
-            选项字体,
+            行选项字体,
             (255, 255, 255),
             (内容.right - 内容内边距, 内容.centery),
             对齐="midright",
         )
 
     预览框 = getattr(self, "_设置页_箭头预览矩形", pygame.Rect(0, 0, 10, 10))
+    小字字体 = 获取字体(小字字号, 是否粗体=False)
+
     if isinstance(预览框, pygame.Rect) and 预览框.w > 10 and 预览框.h > 10:
         当前候选路径 = None
         if self.设置_箭头候选路径列表:
@@ -1715,6 +1679,12 @@ def 绘制设置页(self):
             对齐="center",
         )
 
+    try:
+        if getattr(self, "_设置页_调试器", None) is not None:
+            self._设置页_调试器.绘制覆盖(self, 面板画布)
+    except Exception:
+        pass
+
     动画缩放 = float(动画参数.get("缩放", 1.0) or 1.0)
     动画透明 = int(255 * float(动画参数.get("透明度", 1.0) or 1.0))
     动画透明 = max(0, min(255, 动画透明))
@@ -1745,7 +1715,7 @@ def 绘制设置页(self):
     self._设置页_面板绘制矩形 = 绘制矩形
     self._设置页_最后绘制表面 = 面板画布2
     self.屏幕.blit(面板画布2, 绘制矩形.topleft)
-
+    
 def 打开设置页(self):
     self._确保设置页资源()
 
@@ -1823,7 +1793,6 @@ def _设置页_切换选项(self, 行键: str, 方向: int):
     self._设置页_最后缩放 = 1.0
     self._重算设置页布局(强制=True)
 
-
 def _设置页_切换背景(self, 方向: int):
     self._确保设置页资源()
 
@@ -1851,10 +1820,28 @@ def _设置页_切换背景(self, 方向: int):
     self._设置页_最后缩放 = 1.0
     self._重算设置页布局(强制=True)
 
-
 def _设置页_处理事件(self, 事件):
     self._确保设置页资源()
     self._重算设置页布局()
+
+    if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_F6:
+        try:
+            self._设置页_调试器.切换启用()
+            if hasattr(self, "显示消息提示"):
+                if bool(self._设置页_调试器.是否启用):
+                    self.显示消息提示("设置页调试器：已开启", 持续秒=1.2)
+                else:
+                    self.显示消息提示("设置页调试器：已关闭", 持续秒=1.2)
+        except Exception:
+            pass
+        return
+
+    try:
+        if getattr(self, "_设置页_调试器", None) is not None and bool(self._设置页_调试器.是否启用):
+            if self._设置页_调试器.处理事件(self, 事件):
+                return
+    except Exception:
+        pass
 
     if str(getattr(self, "_设置页_动画状态", "") or "") == "closing":
         return
@@ -1871,23 +1858,19 @@ def _设置页_处理事件(self, 事件):
         局部y = int((屏幕点[1] - 面板绘制矩形.y) / 当前缩放)
         return (局部x, 局部y)
 
-    # ESC：关闭设置页
     if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_ESCAPE:
         self.关闭设置页()
         return
 
-    # 只处理左键点击
     if 事件.type != pygame.MOUSEBUTTONDOWN or 事件.button != 1:
         return
 
-    # 点到面板外或透明像素：关闭
     if not self._设置页_点在有效面板区域(事件.pos):
         self.关闭设置页()
         return
 
     局部点 = _转局部坐标(事件.pos)
 
-    # ✅ 左下：箭头预览左右切换
     try:
         控件 = getattr(self, "_设置页_箭头预览控件矩形", None)
         if isinstance(控件, dict):
@@ -1902,7 +1885,6 @@ def _设置页_处理事件(self, 事件):
     except Exception:
         pass
 
-    # ✅ 右侧：背景大箭头
     背景控件 = self._设置页_背景控件矩形
     if 背景控件["左"].collidepoint(局部点):
         self._播放按钮音效()
@@ -1913,7 +1895,6 @@ def _设置页_处理事件(self, 事件):
         self._设置页_切换背景(+1)
         return
 
-    # ✅ 左侧：每行的小箭头
     for 行键, 控件 in self._设置页_控件矩形表.items():
         if 控件["左"].collidepoint(局部点):
             self._播放按钮音效()
@@ -1923,6 +1904,7 @@ def _设置页_处理事件(self, 事件):
             self._播放按钮音效()
             self._设置页_切换选项(行键, +1)
             return
+
 
 def _资源路径(*片段: str) -> str:
     脚本目录 = _取项目根目录()
@@ -1938,9 +1920,7 @@ def 获取UI原图(路径: str, 透明: bool = True) -> Optional[pygame.Surface]
     _UI原图缓存[key] = 图
     return 图
 
-
 _UI容器缓存: Dict[Tuple[str, int, int, bool, str], Optional[pygame.Surface]] = {}
-
 
 def 获取UI容器图(
     路径: str, 目标宽: int, 目标高: int, 缩放模式: str = "stretch", 透明: bool = True
@@ -2254,9 +2234,7 @@ def 刷新选歌布局常量():
 
 刷新选歌布局常量()
 
-# ===== 按高度缩放缓存（新增：放在 _按高等比缩放 上方也行）=====
 _按高缩放缓存: Dict[Tuple[int, int], Optional[pygame.Surface]] = {}
-
 
 def _按高等比缩放(图: pygame.Surface, 目标高: int) -> Optional[pygame.Surface]:
     if 图 is None:
@@ -2294,7 +2272,6 @@ def _按高等比缩放(图: pygame.Surface, 目标高: int) -> Optional[pygame.
         _按高缩放缓存.clear()
 
     return 缩放图
-
 
 def 绘制序号标签_图片(
     屏幕: pygame.Surface,
@@ -2468,7 +2445,6 @@ def 绘制序号标签_图片(
         if i != len(数字图列表) - 1:
             x += 间距
 
-
 def 绘制星星行_图片(
     屏幕: pygame.Surface,
     区域: pygame.Rect,
@@ -2606,11 +2582,8 @@ def 绘制星星行_图片(
 
         屏幕.blit(光图, (光x, 光y), special_flags=pygame.BLEND_RGBA_ADD)
 
-
-# ===== 字体缓存（新增：放在 获取字体 函数上方也行）=====
 _字体对象缓存: Dict[Tuple[str, int, bool], pygame.font.Font] = {}
-_字体默认路径缓存: Dict[bool, str] = {}  # key: 是否粗体 -> 路径（空串表示用默认字体）
-
+_字体默认路径缓存: Dict[bool, str] = {}  
 
 def 获取字体(字号: int, 是否粗体: bool = False) -> pygame.font.Font:
     # ✅ 只初始化一次
@@ -2674,12 +2647,10 @@ def 获取字体(字号: int, 是否粗体: bool = False) -> pygame.font.Font:
     _字体对象缓存[缓存键] = 字体
     return 字体
 
-
 def 绘制圆角矩形(
     屏幕: pygame.Surface, 矩形: pygame.Rect, 颜色, 圆角: int, 线宽: int = 0
 ):
     pygame.draw.rect(屏幕, 颜色, 矩形, width=线宽, border_radius=圆角)
-
 
 def 绘制超粗文本(
     屏幕: pygame.Surface,
@@ -2709,7 +2680,6 @@ def 绘制超粗文本(
     屏幕.blit(文本面, 文本矩形)
     return 文本矩形
 
-
 def 绘制文本(
     屏幕: pygame.Surface,
     文本: str,
@@ -2723,7 +2693,6 @@ def 绘制文本(
     setattr(文本矩形, 对齐, 位置)
     屏幕.blit(文本面, 文本矩形)
     return 文本矩形
-
 
 def 渲染紧凑文本(
     文本: str,
@@ -2760,7 +2729,6 @@ def 渲染紧凑文本(
 
     return 画布
 
-
 def 安全读取文本(文件路径: str) -> str:
     for 编码 in ("utf-8-sig", "utf-8", "gbk"):
         try:
@@ -2770,7 +2738,6 @@ def 安全读取文本(文件路径: str) -> str:
             continue
     with open(文件路径, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
-
 
 def 解析显示BPM(sm文本: str) -> Optional[int]:
     匹配 = re.search(r"#DISPLAYBPM\s*:\s*([^;]+)\s*;", sm文本, flags=re.IGNORECASE)
@@ -2785,13 +2752,11 @@ def 解析显示BPM(sm文本: str) -> Optional[int]:
     except Exception:
         return None
 
-
 def 解析SM标题(sm文本: str) -> str:
     匹配 = re.search(r"#TITLE\s*:\s*([^;]+)\s*;", sm文本, flags=re.IGNORECASE)
     if not 匹配:
         return ""
     return str(匹配.group(1) or "").strip()
-
 
 def 从文件夹名解析歌名星级(文件夹名: str) -> Tuple[str, int]:
     """
@@ -2838,7 +2803,6 @@ def 从文件夹名解析歌名星级(文件夹名: str) -> Tuple[str, int]:
 
     return 歌名, 星级
 
-
 def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Optional["歌曲信息"]:
     if (not sm路径) or (not os.path.isfile(sm路径)):
         return None
@@ -2875,7 +2839,6 @@ def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Opti
         游玩次数=0,
     )
 
-
 def 找文件(目录: str, 扩展名集合: Tuple[str, ...]) -> Optional[str]:
     if not os.path.isdir(目录):
         return None
@@ -2884,7 +2847,6 @@ def 找文件(目录: str, 扩展名集合: Tuple[str, ...]) -> Optional[str]:
         if any(低.endswith(ext) for ext in 扩展名集合):
             return os.path.join(目录, 文件名)
     return None
-
 
 def 找封面(歌曲路径: str) -> Optional[str]:
     """
@@ -2902,7 +2864,6 @@ def 找封面(歌曲路径: str) -> Optional[str]:
         ):
             return os.path.join(歌曲路径, 文件名)
     return 找文件(歌曲路径, (".jpg", ".jpeg", ".png", ".webp"))
-
 
 def 扫描songs目录(songs根目录: str) -> Dict[str, Dict[str, List[歌曲信息]]]:
     结果: Dict[str, Dict[str, List[歌曲信息]]] = {}
@@ -2959,7 +2920,6 @@ def 扫描songs目录(songs根目录: str) -> Dict[str, Dict[str, List[歌曲信
         结果[类型名][模式名] = 列表
 
     return 结果
-
 
 def 扫描songs_指定路径(
     songs根目录: str, 类型名: str, 模式名: str
@@ -3053,7 +3013,6 @@ def 扫描songs_指定路径(
 
     return 结果
 
-
 class 图像缓存:
     def __init__(self):
         self._缓存: Dict[Tuple[str, int, int, int, str], pygame.Surface] = {}
@@ -3082,7 +3041,6 @@ class 图像缓存:
             except Exception:
                 pass
 
-
 def 生成圆角蒙版(宽: int, 高: int, 圆角: int) -> pygame.Surface:
     蒙版 = pygame.Surface((宽, 高), pygame.SRCALPHA)
     蒙版.fill((0, 0, 0, 0))
@@ -3090,7 +3048,6 @@ def 生成圆角蒙版(宽: int, 高: int, 圆角: int) -> pygame.Surface:
         蒙版, (255, 255, 255, 255), pygame.Rect(0, 0, 宽, 高), border_radius=圆角
     )
     return 蒙版
-
 
 def 载入并缩放封面(
     路径: str, 目标宽: int, 目标高: int, 圆角: int, 模式: str
@@ -3168,7 +3125,6 @@ def 载入并缩放封面(
         return 结果图
     except Exception:
         return None
-
 
 def 计算框体槽位布局(框体矩形: pygame.Rect, 是否大图: bool) -> dict:
     """
@@ -3368,7 +3324,6 @@ def 计算缩略图小框矩形(
 
     return 框矩形
 
-
 class 渐隐放大点击特效:
     """
     0.5s 渐隐放大（alpha: 0->255），scale: 0.92 -> 1.06 -> 1.00
@@ -3437,7 +3392,6 @@ class 渐隐放大点击特效:
         except Exception:
             # 兜底：不让异常打断主循环
             pass
-
 
 class 按钮:
     def __init__(self, 名称: str, 矩形: pygame.Rect):
@@ -3538,7 +3492,6 @@ class 按钮:
             self.矩形.center,
             对齐="center",
         )
-
 
 class 星级筛选按钮:
     """
@@ -3691,7 +3644,6 @@ class 星级筛选按钮:
             except Exception:
                 pass
 
-
 class 图片按钮:
     def __init__(
         self,
@@ -3777,7 +3729,6 @@ class 图片按钮:
             叠层 = pygame.Surface((self.矩形.w, self.矩形.h), pygame.SRCALPHA)
             叠层.fill((0, 0, 0, 85) if self.按下 else (255, 255, 255, 18))
             屏幕.blit(叠层, self.矩形.topleft)
-
 
 class 底部图文按钮:
     def __init__(
@@ -3947,7 +3898,6 @@ class 底部图文按钮:
                 屏幕.blit(白字, 文矩形.topleft)
             except Exception:
                 pass
-
 
 class 歌曲卡片:
     def __init__(self, 歌曲: 歌曲信息, 矩形: pygame.Rect):
@@ -4196,7 +4146,6 @@ class 歌曲卡片:
             pass
 
         屏幕.blit(局部画布, 框矩形.topleft)
-
 
 class 选歌游戏:
 
@@ -7598,6 +7547,1178 @@ class 选歌游戏:
                                 lambda: self.设置星级筛选(None),
                             )
 
+class 设置页布局调试器:
+    def __init__(self, 保存路径: str):
+        self.保存路径 = str(保存路径 or "")
+        self.是否启用 = False
+        self.当前选中键: str = ""
+        self.当前悬停键: str = ""
+        self.拖拽中 = False
+        self.拖拽起点局部 = (0, 0)
+        self.拖拽起点矩形 = pygame.Rect(0, 0, 0, 0)
+        self.当前组件矩形表: Dict[str, pygame.Rect] = {}
+        self.覆盖数据: Dict[str, dict] = {}
+        self.文字缩放数据: Dict[str, float] = {}
+        self._读取保存数据()
+
+    def 切换启用(self):
+        self.是否启用 = not bool(self.是否启用)
+        self.拖拽中 = False
+        self.当前悬停键 = ""
+
+    def _读取保存数据(self):
+        if (not self.保存路径) or (not os.path.isfile(self.保存路径)):
+            self.覆盖数据 = {}
+            self.文字缩放数据 = {}
+            return
+
+        for 编码 in ("utf-8-sig", "utf-8", "gbk"):
+            try:
+                with open(self.保存路径, "r", encoding=编码) as 文件:
+                    数据 = json.load(文件)
+                if isinstance(数据, dict):
+                    组件 = 数据.get("组件", {})
+                    文字 = 数据.get("文字缩放", {})
+                    self.覆盖数据 = dict(组件) if isinstance(组件, dict) else {}
+                    self.文字缩放数据 = dict(文字) if isinstance(文字, dict) else {}
+                    return
+            except Exception:
+                continue
+
+        self.覆盖数据 = {}
+        self.文字缩放数据 = {}
+
+    def 保存到文件(self, 面板宽: int, 面板高: int) -> bool:
+        try:
+            面板宽 = max(1, int(面板宽))
+            面板高 = max(1, int(面板高))
+        except Exception:
+            return False
+
+        输出组件 = {}
+        for 键名, 矩形 in self.当前组件矩形表.items():
+            if not isinstance(矩形, pygame.Rect):
+                continue
+            输出组件[str(键名)] = {
+                "x": float(矩形.x) / float(面板宽),
+                "y": float(矩形.y) / float(面板高),
+                "w": float(矩形.w) / float(面板宽),
+                "h": float(矩形.h) / float(面板高),
+            }
+
+        数据 = {
+            "版本": 2,
+            "基准": "设置背景图.png",
+            "组件": 输出组件,
+            "文字缩放": dict(self.文字缩放数据 or {}),
+        }
+
+        try:
+            os.makedirs(os.path.dirname(self.保存路径), exist_ok=True)
+            with open(self.保存路径, "w", encoding="utf-8") as 文件:
+                json.dump(数据, 文件, ensure_ascii=False, indent=2)
+            self.覆盖数据 = dict(输出组件)
+            return True
+        except Exception:
+            return False
+
+    def _记录转矩形(self, 记录: dict, 面板宽: int, 面板高: int) -> Optional[pygame.Rect]:
+        if not isinstance(记录, dict):
+            return None
+
+        try:
+            x = int(round(float(记录.get("x", 0.0)) * float(面板宽)))
+            y = int(round(float(记录.get("y", 0.0)) * float(面板高)))
+            w = int(round(float(记录.get("w", 0.0)) * float(面板宽)))
+            h = int(round(float(记录.get("h", 0.0)) * float(面板高)))
+        except Exception:
+            return None
+
+        w = max(1, w)
+        h = max(1, h)
+        return pygame.Rect(x, y, w, h)
+
+    def _归属行键(self, 组件键: str) -> str:
+        键 = str(组件键 or "")
+        if 键.startswith("行:"):
+            return 键.split(":", 1)[1]
+        if 键.startswith("控件:"):
+            片段 = 键.split(":")
+            if len(片段) >= 3:
+                return str(片段[1])
+        return ""
+
+    def 取行文字缩放(self, 行键: str) -> float:
+        try:
+            值 = float((self.文字缩放数据 or {}).get(str(行键 or ""), 1.0) or 1.0)
+        except Exception:
+            值 = 1.0
+        return max(0.50, min(3.00, 值))
+
+    def _调整当前选中文字缩放(self, 滚轮方向: int):
+        if not self.当前选中键:
+            return
+
+        行键 = self._归属行键(self.当前选中键)
+        if not 行键:
+            return
+
+        当前值 = self.取行文字缩放(行键)
+        新值 = 当前值 + (0.05 if int(滚轮方向) > 0 else -0.05)
+        新值 = max(0.50, min(3.00, 新值))
+        self.文字缩放数据[str(行键)] = float(round(新值, 2))
+
+    def _收集当前组件(self, 宿主):
+        组件表: Dict[str, pygame.Rect] = {}
+
+        try:
+            for 行键, 矩形 in dict(getattr(宿主, "_设置页_行矩形表", {}) or {}).items():
+                if isinstance(矩形, pygame.Rect):
+                    组件表[f"行:{行键}"] = 矩形.copy()
+        except Exception:
+            pass
+
+        try:
+            for 行键, 控件字典 in dict(getattr(宿主, "_设置页_控件矩形表", {}) or {}).items():
+                if not isinstance(控件字典, dict):
+                    continue
+                for 子键 in ("左", "右", "内容"):
+                    矩形 = 控件字典.get(子键)
+                    if isinstance(矩形, pygame.Rect):
+                        组件表[f"控件:{行键}:{子键}"] = 矩形.copy()
+        except Exception:
+            pass
+
+        try:
+            背景区 = getattr(宿主, "_设置页_背景区矩形", None)
+            if isinstance(背景区, pygame.Rect):
+                组件表["背景区"] = 背景区.copy()
+        except Exception:
+            pass
+
+        try:
+            背景控件 = dict(getattr(宿主, "_设置页_背景控件矩形", {}) or {})
+            for 子键 in ("左", "右", "预览"):
+                矩形 = 背景控件.get(子键)
+                if isinstance(矩形, pygame.Rect):
+                    组件表[f"背景控件:{子键}"] = 矩形.copy()
+        except Exception:
+            pass
+
+        try:
+            箭头预览 = getattr(宿主, "_设置页_箭头预览矩形", None)
+            if isinstance(箭头预览, pygame.Rect):
+                组件表["箭头预览区"] = 箭头预览.copy()
+        except Exception:
+            pass
+
+        try:
+            箭头控件 = dict(getattr(宿主, "_设置页_箭头预览控件矩形", {}) or {})
+            for 子键 in ("左", "右"):
+                矩形 = 箭头控件.get(子键)
+                if isinstance(矩形, pygame.Rect):
+                    组件表[f"箭头预览控件:{子键}"] = 矩形.copy()
+        except Exception:
+            pass
+
+        self.当前组件矩形表 = 组件表
+
+    def _写回宿主(self, 宿主):
+        for 键名, 矩形 in self.当前组件矩形表.items():
+            if not isinstance(矩形, pygame.Rect):
+                continue
+
+            if str(键名).startswith("行:"):
+                行键 = str(键名).split(":", 1)[1]
+                if 行键 in getattr(宿主, "_设置页_行矩形表", {}):
+                    宿主._设置页_行矩形表[行键] = 矩形.copy()
+                continue
+
+            if str(键名).startswith("控件:"):
+                _, 行键, 子键 = str(键名).split(":", 2)
+                控件表 = getattr(宿主, "_设置页_控件矩形表", {})
+                if 行键 in 控件表 and isinstance(控件表.get(行键), dict):
+                    控件表[行键][子键] = 矩形.copy()
+                continue
+
+            if 键名 == "背景区":
+                宿主._设置页_背景区矩形 = 矩形.copy()
+                continue
+
+            if str(键名).startswith("背景控件:"):
+                子键 = str(键名).split(":", 1)[1]
+                宿主._设置页_背景控件矩形[子键] = 矩形.copy()
+                continue
+
+            if 键名 == "箭头预览区":
+                宿主._设置页_箭头预览矩形 = 矩形.copy()
+                continue
+
+            if str(键名).startswith("箭头预览控件:"):
+                子键 = str(键名).split(":", 1)[1]
+                宿主._设置页_箭头预览控件矩形[子键] = 矩形.copy()
+                continue
+
+    def _屏幕点转面板局部(self, 宿主, 屏幕点) -> Tuple[int, int]:
+        面板绘制矩形 = getattr(宿主, "_设置页_面板绘制矩形", pygame.Rect(0, 0, 1, 1))
+        当前缩放 = float(getattr(宿主, "_设置页_最后缩放", 1.0) or 1.0)
+        当前缩放 = max(0.001, 当前缩放)
+        局部x = int((屏幕点[0] - 面板绘制矩形.x) / 当前缩放)
+        局部y = int((屏幕点[1] - 面板绘制矩形.y) / 当前缩放)
+        return (局部x, 局部y)
+
+    def _命中测试(self, 局部点) -> str:
+        候选键列表 = []
+        for 键名, 矩形 in self.当前组件矩形表.items():
+            if isinstance(矩形, pygame.Rect) and 矩形.collidepoint(局部点):
+                候选键列表.append((矩形.w * 矩形.h, str(键名)))
+
+        if not 候选键列表:
+            return ""
+
+        候选键列表.sort(key=lambda 项: 项[0])
+        return 候选键列表[0][1]
+
+    def _钳制当前选中矩形(self, 宿主):
+        if not self.当前选中键:
+            return
+        if self.当前选中键 not in self.当前组件矩形表:
+            return
+        self.当前组件矩形表[self.当前选中键] = _设置页_钳制矩形到面板(
+            宿主, self.当前组件矩形表[self.当前选中键]
+        )
+
+    def _调整当前选中矩形尺寸(self, 宿主, 滚轮方向: int, 是否调宽: bool, 是否调高: bool):
+        if not self.当前选中键:
+            return
+        if self.当前选中键 not in self.当前组件矩形表:
+            return
+
+        旧矩形 = self.当前组件矩形表[self.当前选中键].copy()
+
+        缩放倍数 = 1.05 if int(滚轮方向) > 0 else 0.95
+        新宽 = int(round(float(旧矩形.w) * 缩放倍数))
+        新高 = int(round(float(旧矩形.h) * 缩放倍数))
+
+        if 是否调宽 and (not 是否调高):
+            新高 = 旧矩形.h
+        elif 是否调高 and (not 是否调宽):
+            新宽 = 旧矩形.w
+
+        新宽 = max(8, 新宽)
+        新高 = max(8, 新高)
+
+        新矩形 = pygame.Rect(0, 0, 新宽, 新高)
+        新矩形.center = 旧矩形.center
+
+        self.当前组件矩形表[self.当前选中键] = _设置页_钳制矩形到面板(宿主, 新矩形)
+        self._写回宿主(宿主)
+
+    def _微调当前选中矩形(self, 宿主, dx: int, dy: int):
+        if not self.当前选中键:
+            return
+        if self.当前选中键 not in self.当前组件矩形表:
+            return
+
+        新矩形 = self.当前组件矩形表[self.当前选中键].copy()
+        新矩形.x += int(dx)
+        新矩形.y += int(dy)
+        self.当前组件矩形表[self.当前选中键] = _设置页_钳制矩形到面板(宿主, 新矩形)
+        self._写回宿主(宿主)
+
+    def 应用保存覆盖(self, 宿主):
+        self._收集当前组件(宿主)
+
+        try:
+            面板矩形 = getattr(宿主, "_设置页_面板基础矩形", pygame.Rect(0, 0, 1, 1))
+            面板宽 = max(1, int(面板矩形.w))
+            面板高 = max(1, int(面板矩形.h))
+        except Exception:
+            面板宽 = 1
+            面板高 = 1
+
+        for 键名, 记录 in dict(self.覆盖数据 or {}).items():
+            if 键名 not in self.当前组件矩形表:
+                continue
+            新矩形 = self._记录转矩形(记录, 面板宽, 面板高)
+            if isinstance(新矩形, pygame.Rect):
+                self.当前组件矩形表[键名] = _设置页_钳制矩形到面板(宿主, 新矩形)
+
+        self._写回宿主(宿主)
+
+    def 处理事件(self, 宿主, 事件) -> bool:
+        if not bool(self.是否启用):
+            return False
+
+        self._收集当前组件(宿主)
+
+        if 事件.type == pygame.KEYDOWN:
+            if 事件.key == pygame.K_s and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                try:
+                    面板矩形 = getattr(宿主, "_设置页_面板基础矩形", pygame.Rect(0, 0, 1, 1))
+                    保存成功 = self.保存到文件(int(面板矩形.w), int(面板矩形.h))
+                    if 保存成功 and hasattr(宿主, "显示消息提示"):
+                        宿主.显示消息提示("设置页调试器：布局已保存", 持续秒=1.6)
+                except Exception:
+                    pass
+                return True
+
+            if 事件.key == pygame.K_UP:
+                self._微调当前选中矩形(宿主, 0, -1)
+                return True
+            if 事件.key == pygame.K_DOWN:
+                self._微调当前选中矩形(宿主, 0, 1)
+                return True
+            if 事件.key == pygame.K_LEFT:
+                self._微调当前选中矩形(宿主, -1, 0)
+                return True
+            if 事件.key == pygame.K_RIGHT:
+                self._微调当前选中矩形(宿主, 1, 0)
+                return True
+
+        if 事件.type == pygame.MOUSEMOTION:
+            局部点 = self._屏幕点转面板局部(宿主, 事件.pos)
+            self.当前悬停键 = self._命中测试(局部点)
+
+            if self.拖拽中 and self.当前选中键 in self.当前组件矩形表:
+                dx = int(局部点[0] - self.拖拽起点局部[0])
+                dy = int(局部点[1] - self.拖拽起点局部[1])
+
+                新矩形 = self.拖拽起点矩形.copy()
+                新矩形.x += dx
+                新矩形.y += dy
+                self.当前组件矩形表[self.当前选中键] = _设置页_钳制矩形到面板(宿主, 新矩形)
+                self._写回宿主(宿主)
+            return True
+
+        if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button == 1:
+            局部点 = self._屏幕点转面板局部(宿主, 事件.pos)
+            命中键 = self._命中测试(局部点)
+            self.当前选中键 = str(命中键 or "")
+            if self.当前选中键 and self.当前选中键 in self.当前组件矩形表:
+                self.拖拽中 = True
+                self.拖拽起点局部 = (int(局部点[0]), int(局部点[1]))
+                self.拖拽起点矩形 = self.当前组件矩形表[self.当前选中键].copy()
+            else:
+                self.拖拽中 = False
+            return True
+
+        if 事件.type == pygame.MOUSEBUTTONUP and 事件.button == 1:
+            self.拖拽中 = False
+            return True
+
+        if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button in (4, 5):
+            局部点 = self._屏幕点转面板局部(宿主, 事件.pos)
+            命中键 = self._命中测试(局部点)
+            if 命中键:
+                self.当前选中键 = str(命中键)
+
+            if not self.当前选中键:
+                return True
+
+            滚轮方向 = 1 if int(事件.button) == 4 else -1
+            按键状态 = pygame.key.get_mods()
+            是否Ctrl = bool(按键状态 & pygame.KMOD_CTRL)
+            是否Shift = bool(按键状态 & pygame.KMOD_SHIFT)
+            是否Alt = bool(按键状态 & pygame.KMOD_ALT)
+
+            if 是否Alt:
+                self._调整当前选中文字缩放(滚轮方向)
+                return True
+
+            if 是否Ctrl:
+                self._调整当前选中矩形尺寸(宿主, 滚轮方向, 是否调宽=False, 是否调高=True)
+            elif 是否Shift:
+                self._调整当前选中矩形尺寸(宿主, 滚轮方向, 是否调宽=True, 是否调高=False)
+            else:
+                self._调整当前选中矩形尺寸(宿主, 滚轮方向, 是否调宽=True, 是否调高=True)
+            return True
+
+        return False
+
+    def 绘制覆盖(self, 宿主, 面板画布: pygame.Surface):
+        if not bool(self.是否启用):
+            return
+
+        self._收集当前组件(宿主)
+
+        try:
+            字体 = 获取字体(18, 是否粗体=True)
+            小字体 = 获取字体(14, 是否粗体=False)
+        except Exception:
+            return
+
+        for 键名, 矩形 in self.当前组件矩形表.items():
+            if not isinstance(矩形, pygame.Rect):
+                continue
+
+            if str(键名) == str(self.当前选中键):
+                边框色 = (255, 120, 80, 255)
+                填充色 = (255, 120, 80, 28)
+                线宽 = 1
+            elif str(键名) == str(self.当前悬停键):
+                边框色 = (80, 220, 255, 255)
+                填充色 = (80, 220, 255, 20)
+                线宽 = 1
+            else:
+                边框色 = (120, 255, 140, 170)
+                填充色 = (120, 255, 140, 10)
+                线宽 = 1
+
+            try:
+                填充面 = pygame.Surface((矩形.w, 矩形.h), pygame.SRCALPHA)
+                填充面.fill(填充色)
+                面板画布.blit(填充面, 矩形.topleft)
+                pygame.draw.rect(面板画布, 边框色, 矩形, width=线宽, border_radius=2)
+            except Exception:
+                pass
+
+            try:
+                if str(键名) == str(self.当前选中键) or str(键名) == str(self.当前悬停键):
+                    标签面 = 字体.render(str(键名), True, (255, 255, 255))
+                    标签底 = pygame.Surface(
+                        (标签面.get_width() + 8, 标签面.get_height() + 4), pygame.SRCALPHA
+                    )
+                    标签底.fill((0, 0, 0, 150))
+                    标签x = max(0, 矩形.x)
+                    标签y = max(0, 矩形.y - 标签底.get_height())
+                    面板画布.blit(标签底, (标签x, 标签y))
+                    面板画布.blit(标签面, (标签x + 4, 标签y + 2))
+            except Exception:
+                pass
+
+        try:
+            提示文本 = "F6开关调试 | 拖动移动 | 滚轮等比缩放 | Ctrl+滚轮改高 | Shift+滚轮改宽 | Alt+滚轮改字 | 方向键1px微调 | Ctrl+S保存"
+            提示面 = 小字体.render(提示文本, True, (255, 255, 255))
+            提示底 = pygame.Surface((提示面.get_width() + 12, 提示面.get_height() + 8), pygame.SRCALPHA)
+            提示底.fill((0, 0, 0, 170))
+            面板画布.blit(提示底, (8, 8))
+            面板画布.blit(提示面, (14, 12))
+        except Exception:
+            pass
+
+
+
+
+def 设置页_布局基准配置() -> dict:
+    return {
+        "设计宽": 2048,
+        "设计高": 1152,
+        "布局缩放最小": 0.68,
+        "布局缩放最大": 1.18,
+
+        "面板宽占比": 0.82,
+        "面板高占比": 0.76,
+        "面板最小边距": 24,
+        "面板最大宽": 1540,
+        "面板最大高": 860,
+        "面板最小宽": 1160,
+        "面板最小高": 640,
+
+        "内容左边距": 64,
+        "内容右边距": 58,
+        "内容上边距": 56,
+        "内容下边距": 42,
+        "左右列间距": 72,
+
+        "左列宽占比": 0.34,
+        "左列上偏移": 18,
+        "左列行区高占比": 0.64,
+
+        "行列表": ["调速", "变速", "变速类型", "隐藏", "轨迹", "方向", "大小"],
+        "行间距": 16,
+        "行高最小": 54,
+        "行高最大": 86,
+
+        "行内左右边距": 8,
+        "小箭头宽": 28,
+        "小箭头高占行高": 0.54,
+        "内容左右内边距": 12,
+
+        "右列顶部预留": 6,
+        "右列上下分区间距": 28,
+        "右列上区高占比": 0.58,
+
+        "背景区左右箭头宽": 60,
+        "背景区左右箭头高": 118,
+        "背景区箭头与预览间距": 18,
+        "背景区预览上下内边距": 20,
+        "背景区左右内边距": 12,
+
+        "箭头预览左右箭头宽": 56,
+        "箭头预览左右箭头高": 108,
+        "箭头预览箭头间距": 18,
+        "箭头预览上下内边距": 10,
+        "箭头预览底部文字间距": 18,
+        "箭头预览底部保护边距": 6,
+        "箭头预览内边距": 0,
+
+        "标签字号占行高": 0.44,
+        "选项字号占行高": 0.48,
+        "小字字号占行高": 0.31,
+        "名称下移": 1,
+    }
+
+def 计算设置页布局(屏幕宽: int, 屏幕高: int) -> dict:
+    配置 = 设置页_布局基准配置()
+
+    try:
+        屏幕宽 = int(屏幕宽)
+    except Exception:
+        屏幕宽 = 1280
+
+    try:
+        屏幕高 = int(屏幕高)
+    except Exception:
+        屏幕高 = 720
+
+    屏幕宽 = max(960, 屏幕宽)
+    屏幕高 = max(600, 屏幕高)
+
+    设计宽 = float(配置.get("设计宽", 2048) or 2048)
+    设计高 = float(配置.get("设计高", 1152) or 1152)
+
+    布局缩放 = min(float(屏幕宽) / 设计宽, float(屏幕高) / 设计高)
+    布局缩放 = max(
+        float(配置.get("布局缩放最小", 0.68) or 0.68),
+        min(float(配置.get("布局缩放最大", 1.18) or 1.18), float(布局缩放)),
+    )
+
+    def _夹紧浮点(值, 最小值: float, 最大值: float) -> float:
+        try:
+            值 = float(值)
+        except Exception:
+            值 = float(最小值)
+        return max(float(最小值), min(float(最大值), 值))
+
+    def _夹紧整数(值, 最小值: int, 最大值: int) -> int:
+        try:
+            值 = int(round(float(值)))
+        except Exception:
+            值 = int(最小值)
+        return max(int(最小值), min(int(最大值), 值))
+
+    def _源像素转屏幕像素(值) -> int:
+        try:
+            return int(round(float(值) * float(布局缩放)))
+        except Exception:
+            return 0
+
+    def _局部矩形(x: int, y: int, w: int, h: int) -> pygame.Rect:
+        return pygame.Rect(int(x), int(y), max(1, int(w)), max(1, int(h)))
+
+    面板宽占比 = _夹紧浮点(配置.get("面板宽占比", 0.82), 0.20, 1.20)
+    面板高占比 = _夹紧浮点(配置.get("面板高占比", 0.76), 0.20, 1.20)
+
+    面板宽 = int(round(屏幕宽 * 面板宽占比))
+    面板高 = int(round(屏幕高 * 面板高占比))
+
+    面板边距 = max(12, _源像素转屏幕像素(配置.get("面板最小边距", 24)))
+    面板最小宽 = _源像素转屏幕像素(配置.get("面板最小宽", 1160))
+    面板最小高 = _源像素转屏幕像素(配置.get("面板最小高", 640))
+    面板最大宽 = _源像素转屏幕像素(配置.get("面板最大宽", 1540))
+    面板最大高 = _源像素转屏幕像素(配置.get("面板最大高", 860))
+
+    面板宽 = _夹紧整数(
+        面板宽,
+        面板最小宽,
+        min(max(面板最小宽, 屏幕宽 - 面板边距 * 2), 面板最大宽),
+    )
+    面板高 = _夹紧整数(
+        面板高,
+        面板最小高,
+        min(max(面板最小高, 屏幕高 - 面板边距 * 2), 面板最大高),
+    )
+
+    面板矩形 = pygame.Rect(0, 0, 面板宽, 面板高)
+    面板矩形.center = (屏幕宽 // 2, 屏幕高 // 2)
+
+    if 面板矩形.left < 面板边距:
+        面板矩形.x = 面板边距
+    if 面板矩形.top < 面板边距:
+        面板矩形.y = 面板边距
+    if 面板矩形.right > 屏幕宽 - 面板边距:
+        面板矩形.x = 屏幕宽 - 面板边距 - 面板矩形.w
+    if 面板矩形.bottom > 屏幕高 - 面板边距:
+        面板矩形.y = 屏幕高 - 面板边距 - 面板矩形.h
+
+    内容左边距 = _源像素转屏幕像素(配置.get("内容左边距", 64))
+    内容右边距 = _源像素转屏幕像素(配置.get("内容右边距", 58))
+    内容上边距 = _源像素转屏幕像素(配置.get("内容上边距", 56))
+    内容下边距 = _源像素转屏幕像素(配置.get("内容下边距", 42))
+    左右列间距 = _源像素转屏幕像素(配置.get("左右列间距", 72))
+
+    内容区矩形 = pygame.Rect(
+        面板矩形.x + 内容左边距,
+        面板矩形.y + 内容上边距,
+        max(1, 面板矩形.w - 内容左边距 - 内容右边距),
+        max(1, 面板矩形.h - 内容上边距 - 内容下边距),
+    )
+
+    左列宽占比 = _夹紧浮点(配置.get("左列宽占比", 0.34), 0.15, 0.70)
+    左列宽 = int(round(内容区矩形.w * 左列宽占比))
+    左列宽 = max(_源像素转屏幕像素(280), min(左列宽, 内容区矩形.w - 左右列间距 - _源像素转屏幕像素(260)))
+
+    右列宽 = max(1, 内容区矩形.w - 左列宽 - 左右列间距)
+
+    左列矩形 = pygame.Rect(
+        内容区矩形.x,
+        内容区矩形.y + _源像素转屏幕像素(配置.get("左列上偏移", 18)),
+        左列宽,
+        max(1, 内容区矩形.h - _源像素转屏幕像素(配置.get("左列上偏移", 18))),
+    )
+
+    右列矩形 = pygame.Rect(
+        左列矩形.right + 左右列间距,
+        内容区矩形.y + _源像素转屏幕像素(配置.get("右列顶部预留", 6)),
+        右列宽,
+        max(1, 内容区矩形.h - _源像素转屏幕像素(配置.get("右列顶部预留", 6))),
+    )
+
+    行键列表 = list(配置.get("行列表", []) or [])
+    行数量 = max(1, len(行键列表))
+    行间距 = max(0, _源像素转屏幕像素(配置.get("行间距", 16)))
+    行高最小 = max(24, _源像素转屏幕像素(配置.get("行高最小", 54)))
+    行高最大 = max(行高最小, _源像素转屏幕像素(配置.get("行高最大", 86)))
+
+    左列行区高占比 = _夹紧浮点(配置.get("左列行区高占比", 0.64), 0.20, 1.00)
+    左列可用高 = max(1, int(round(左列矩形.h * 左列行区高占比)))
+    行高 = (左列可用高 - (行数量 - 1) * 行间距) // 行数量
+    行高 = max(行高最小, min(行高最大, 行高))
+
+    小箭头宽 = max(12, _源像素转屏幕像素(配置.get("小箭头宽", 28)))
+    小箭头高 = max(18, int(round(float(行高) * float(配置.get("小箭头高占行高", 0.54) or 0.54))))
+    行内左右边距 = max(4, _源像素转屏幕像素(配置.get("行内左右边距", 8)))
+    内容左右内边距 = max(4, _源像素转屏幕像素(配置.get("内容左右内边距", 12)))
+
+    行矩形表: Dict[str, pygame.Rect] = {}
+    控件矩形表: Dict[str, Dict[str, pygame.Rect]] = {}
+
+    for 行序号, 行键 in enumerate(行键列表):
+        行x = 左列矩形.x
+        行y = 左列矩形.y + 行序号 * (行高 + 行间距)
+        行矩形 = _局部矩形(行x, 行y, 左列矩形.w, 行高)
+        行矩形表[行键] = 行矩形
+
+        左箭矩形 = _局部矩形(
+            行矩形.x + 行内左右边距,
+            行矩形.centery - 小箭头高 // 2,
+            小箭头宽,
+            小箭头高,
+        )
+        右箭矩形 = _局部矩形(
+            行矩形.right - 行内左右边距 - 小箭头宽,
+            行矩形.centery - 小箭头高 // 2,
+            小箭头宽,
+            小箭头高,
+        )
+
+        内容左 = 左箭矩形.right + 内容左右内边距
+        内容右 = 右箭矩形.x - 内容左右内边距
+        内容矩形 = _局部矩形(
+            内容左,
+            行矩形.y,
+            max(12, 内容右 - 内容左),
+            行矩形.h,
+        )
+
+        控件矩形表[行键] = {
+            "左": 左箭矩形,
+            "右": 右箭矩形,
+            "内容": 内容矩形,
+        }
+
+    右列上下分区间距 = max(0, _源像素转屏幕像素(配置.get("右列上下分区间距", 28)))
+    右列上区高占比 = _夹紧浮点(配置.get("右列上区高占比", 0.58), 0.20, 0.85)
+
+    背景区高 = int(round((右列矩形.h - 右列上下分区间距) * 右列上区高占比))
+    背景区高 = max(_源像素转屏幕像素(220), min(背景区高, right_h := max(1, 右列矩形.h - 右列上下分区间距 - _源像素转屏幕像素(140))))
+    箭头区高 = max(1, 右列矩形.h - 背景区高 - 右列上下分区间距)
+
+    背景区矩形 = pygame.Rect(
+        右列矩形.x,
+        右列矩形.y,
+        右列矩形.w,
+        背景区高,
+    )
+    箭头预览矩形 = pygame.Rect(
+        右列矩形.x,
+        背景区矩形.bottom + 右列上下分区间距,
+        右列矩形.w,
+        箭头区高,
+    )
+
+    背景箭头宽 = max(18, _源像素转屏幕像素(配置.get("背景区左右箭头宽", 60)))
+    背景箭头高 = max(28, _源像素转屏幕像素(配置.get("背景区左右箭头高", 118)))
+    背景箭间距 = max(8, _源像素转屏幕像素(配置.get("背景区箭头与预览间距", 18)))
+    背景上下内边距 = max(0, _源像素转屏幕像素(配置.get("背景区预览上下内边距", 20)))
+    背景左右内边距 = max(0, _源像素转屏幕像素(配置.get("背景区左右内边距", 12)))
+
+    背景左箭矩形 = _局部矩形(
+        背景区矩形.x + 背景左右内边距,
+        背景区矩形.centery - 背景箭头高 // 2,
+        背景箭头宽,
+        背景箭头高,
+    )
+    背景右箭矩形 = _局部矩形(
+        背景区矩形.right - 背景左右内边距 - 背景箭头宽,
+        背景区矩形.centery - 背景箭头高 // 2,
+        背景箭头宽,
+        背景箭头高,
+    )
+
+    背景预览矩形 = _局部矩形(
+        背景左箭矩形.right + 背景箭间距,
+        背景区矩形.y + 背景上下内边距,
+        max(40, 背景右箭矩形.x - 背景箭间距 - (背景左箭矩形.right + 背景箭间距)),
+        max(40, 背景区矩形.h - 背景上下内边距 * 2),
+    )
+
+    箭头箭头宽 = max(18, _源像素转屏幕像素(配置.get("箭头预览左右箭头宽", 56)))
+    箭头箭头高 = max(28, _源像素转屏幕像素(配置.get("箭头预览左右箭头高", 108)))
+    箭头箭间距 = max(8, _源像素转屏幕像素(配置.get("箭头预览箭头间距", 18)))
+    箭头上下内边距 = max(0, _源像素转屏幕像素(配置.get("箭头预览上下内边距", 10)))
+
+    箭头左箭矩形 = _局部矩形(
+        箭头预览矩形.x + 背景左右内边距,
+        箭头预览矩形.centery - 箭头箭头高 // 2,
+        箭头箭头宽,
+        箭头箭头高,
+    )
+    箭头右箭矩形 = _局部矩形(
+        箭头预览矩形.right - 背景左右内边距 - 箭头箭头宽,
+        箭头预览矩形.centery - 箭头箭头高 // 2,
+        箭头箭头宽,
+        箭头箭头高,
+    )
+
+    中间预览宽 = max(60, 箭头右箭矩形.x - 箭头箭间距 - (箭头左箭矩形.right + 箭头箭间距))
+    中间预览高 = max(60, 箭头预览矩形.h - 箭头上下内边距 * 2)
+    预览边长 = min(中间预览宽, 中间预览高)
+
+    箭头预览核心矩形 = _局部矩形(
+        箭头预览矩形.centerx - 预览边长 // 2,
+        箭头预览矩形.y + 箭头上下内边距,
+        预览边长,
+        预览边长,
+    )
+
+    标签字号 = max(14, int(round(行高 * float(配置.get("标签字号占行高", 0.44) or 0.44))))
+    选项字号 = max(16, int(round(行高 * float(配置.get("选项字号占行高", 0.48) or 0.48))))
+    小字字号 = max(12, int(round(行高 * float(配置.get("小字字号占行高", 0.31) or 0.31))))
+
+    视觉参数 = {
+        "标签字号": 标签字号,
+        "选项字号": 选项字号,
+        "小字字号": 小字字号,
+        "内容内边距": max(4, 内容左右内边距),
+        "名称下移": _源像素转屏幕像素(配置.get("名称下移", 1)),
+        "箭头名称上间距": max(6, _源像素转屏幕像素(配置.get("箭头预览底部文字间距", 18))),
+        "底部保护边距": max(4, _源像素转屏幕像素(配置.get("箭头预览底部保护边距", 6))),
+        "箭头预览内边距": max(0, _源像素转屏幕像素(配置.get("箭头预览内边距", 0))),
+    }
+
+    return {
+        "布局缩放": float(布局缩放),
+        "面板基础矩形": 面板矩形,
+        "行矩形表": 行矩形表,
+        "控件矩形表": 控件矩形表,
+        "背景区矩形": 背景区矩形,
+        "背景控件矩形": {
+            "左": 背景左箭矩形,
+            "右": 背景右箭矩形,
+            "预览": 背景预览矩形,
+        },
+        "箭头预览矩形": 箭头预览核心矩形,
+        "箭头预览控件矩形": {
+            "左": 箭头左箭矩形,
+            "右": 箭头右箭矩形,
+        },
+        "视觉参数": 视觉参数,
+    }
+
+def 设置菜单行键列表() -> List[str]:
+    """
+    选歌设置菜单左侧可调行（保留旧布局顺序，兼容旧 json 偏移）。
+    """
+    return ["调速", "变速", "变速类型", "隐藏", "轨迹", "方向", "大小"]
+
+
+
+
+
+def 设置菜单默认调速选项() -> List[str]:
+    # 固定档位：3.0 ~ 7.0（步进 0.5）
+    return ["3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5", "7.0"]
+
+
+
+
+def 设置菜单行显示名(行键: str) -> str:
+    键 = str(行键 or "")
+    if 键 == "变速":
+        return "背景"
+    if 键 == "变速类型":
+        return "谱面"
+    return 键
+
+
+def 设置菜单行值(
+    行键: str,
+    设置参数: Optional[Dict[str, str]] = None,
+) -> str:
+    参数 = dict(设置参数 or {})
+    键 = str(行键 or "")
+    if 键 == "变速":
+        return str(参数.get("背景模式", "图片") or "图片")
+    if 键 == "变速类型":
+        return str(参数.get("谱面", "正常") or "正常")
+    if 键 == "隐藏":
+        return str(参数.get("隐藏", "关闭") or "关闭")
+    if 键 == "轨迹":
+        return str(参数.get("轨迹", "正常") or "正常")
+    if 键 == "方向":
+        return str(参数.get("方向", "关闭") or "关闭")
+    if 键 == "大小":
+        return str(参数.get("大小", "正常") or "正常")
+    if 键 == "调速":
+        return str(参数.get("调速", "X4.0") or "X4.0")
+    return ""
+
+
+def 设置参数文本提取值(参数文本: str, 键名: str) -> str:
+    try:
+        文本 = str(参数文本 or "")
+        m = re.search(rf"{re.escape(str(键名))}\s*=\s*([^\s]+)", 文本)
+        if not m:
+            return ""
+        return str(m.group(1)).strip()
+    except Exception:
+        return ""
+
+
+def 构建设置参数文本(
+    设置参数: Optional[Dict[str, object]] = None,
+    背景文件名: str = "",
+    箭头文件名: str = "",
+) -> str:
+    参数 = dict(设置参数 or {})
+    参数片段: List[str] = []
+    顺序键 = ["调速", "背景模式", "谱面", "隐藏", "轨迹", "方向", "大小"]
+    if ("背景模式" not in 参数) and ("变速" in 参数):
+        参数["背景模式"] = 参数.get("变速")
+
+    try:
+        for 键 in 顺序键:
+            if 键 in 参数:
+                参数片段.append(f"{键}={参数.get(键)}")
+        for 键, 值 in 参数.items():
+            if 键 in 顺序键:
+                continue
+            参数片段.append(f"{键}={值}")
+    except Exception:
+        参数片段 = []
+
+    if 背景文件名:
+        参数片段.append(f"背景={背景文件名}")
+    if 箭头文件名:
+        参数片段.append(f"箭头={箭头文件名}")
+    return "设置参数：" + ("  ".join(参数片段) if 参数片段 else "默认")
+
+
+def 取非透明裁切矩形(图: pygame.Surface) -> pygame.Rect:
+    """
+    返回图像 alpha>0 的最小包围盒；若无 alpha 或找不到，则返回整图。
+    """
+    try:
+        w, h = 图.get_size()
+    except Exception:
+        return pygame.Rect(0, 0, 1, 1)
+    if w <= 0 or h <= 0:
+        return pygame.Rect(0, 0, 1, 1)
+
+    try:
+        mask = pygame.mask.from_surface(图, threshold=1)
+        bbox = mask.get_bounding_rects()
+        if bbox:
+            # 合并所有 rect，避免多块分离导致裁切不全
+            out = bbox[0].copy()
+            for r in bbox[1:]:
+                out = out.union(r)
+            if out.w > 0 and out.h > 0:
+                return out
+    except Exception:
+        pass
+    return pygame.Rect(0, 0, int(w), int(h))
+
+
+def 绘制_cover裁切预览(
+    目标面: pygame.Surface,
+    原图: Optional[pygame.Surface],
+    目标区域: pygame.Rect,
+) -> bool:
+    """
+    在目标区域内按 cover 方式绘制并裁切，保证超出部分不外溢。
+    """
+    if 原图 is None or (not isinstance(目标区域, pygame.Rect)):
+        return False
+    if 目标区域.w <= 0 or 目标区域.h <= 0:
+        return False
+
+    try:
+        裁切源 = 取非透明裁切矩形(原图)
+        ow, oh = int(裁切源.w), int(裁切源.h)
+    except Exception:
+        return False
+    if ow <= 0 or oh <= 0:
+        return False
+
+    比例 = max(float(目标区域.w) / float(ow), float(目标区域.h) / float(oh))
+    nw = max(1, int(round(float(ow) * 比例)))
+    nh = max(1, int(round(float(oh) * 比例)))
+
+    try:
+        源图 = 原图.subsurface(裁切源).copy().convert_alpha()
+        图 = pygame.transform.smoothscale(源图, (nw, nh)).convert_alpha()
+    except Exception:
+        try:
+            源图 = 原图.subsurface(裁切源).copy().convert_alpha()
+            图 = pygame.transform.scale(源图, (nw, nh)).convert_alpha()
+        except Exception:
+            return False
+
+    src_x = max(0, (nw - 目标区域.w) // 2)
+    src_y = max(0, (nh - 目标区域.h) // 2)
+    src = pygame.Rect(src_x, src_y, int(目标区域.w), int(目标区域.h))
+    src = src.clip(pygame.Rect(0, 0, nw, nh))
+
+    try:
+        目标面.blit(图, 目标区域.topleft, area=src)
+        return True
+    except Exception:
+        return False
+
+def _设置页_钳制矩形到面板(self, 矩形: pygame.Rect) -> pygame.Rect:
+    if not isinstance(矩形, pygame.Rect):
+        return pygame.Rect(0, 0, 1, 1)
+
+    try:
+        面板矩形 = getattr(self, "_设置页_面板基础矩形", pygame.Rect(0, 0, 1, 1))
+        面板宽 = max(1, int(面板矩形.w))
+        面板高 = max(1, int(面板矩形.h))
+    except Exception:
+        面板宽 = 1
+        面板高 = 1
+
+    新矩形 = 矩形.copy()
+    新矩形.w = max(1, int(新矩形.w))
+    新矩形.h = max(1, int(新矩形.h))
+
+    if 新矩形.w > 面板宽:
+        新矩形.w = 面板宽
+    if 新矩形.h > 面板高:
+        新矩形.h = 面板高
+
+    新矩形.x = max(0, min(int(新矩形.x), max(0, 面板宽 - 新矩形.w)))
+    新矩形.y = max(0, min(int(新矩形.y), max(0, 面板高 - 新矩形.h)))
+    return 新矩形
+
+def _设置页_统一行按钮尺寸(self):
+    行键列表 = ["调速", "变速", "变速类型", "隐藏", "轨迹", "方向", "大小"]
+
+    try:
+        调速控件 = dict(getattr(self, "_设置页_控件矩形表", {}) or {}).get("调速", {})
+    except Exception:
+        调速控件 = {}
+
+    标准左 = 调速控件.get("左")
+    if not isinstance(标准左, pygame.Rect):
+        return
+
+    标准宽 = max(1, int(标准左.w))
+    标准高 = max(1, int(标准左.h))
+
+    控件表 = getattr(self, "_设置页_控件矩形表", {})
+    if not isinstance(控件表, dict):
+        return
+
+    for 行键 in 行键列表:
+        行控件 = 控件表.get(行键)
+        if not isinstance(行控件, dict):
+            continue
+
+        左矩形 = 行控件.get("左")
+        右矩形 = 行控件.get("右")
+
+        if isinstance(左矩形, pygame.Rect):
+            新左 = 左矩形.copy()
+            新左.size = (标准宽, 标准高)
+            新左.y = 左矩形.centery - 标准高 // 2
+            行控件["左"] = _设置页_钳制矩形到面板(self, 新左)
+
+        if isinstance(右矩形, pygame.Rect):
+            新右 = 右矩形.copy()
+            新右.size = (标准宽, 标准高)
+            新右.y = 右矩形.centery - 标准高 // 2
+            行控件["右"] = _设置页_钳制矩形到面板(self, 新右)
+
+def _设置页_钳制全部控件到面板(self):
+    try:
+        行矩形表 = getattr(self, "_设置页_行矩形表", {})
+        if isinstance(行矩形表, dict):
+            for 行键, 矩形 in list(行矩形表.items()):
+                if isinstance(矩形, pygame.Rect):
+                    行矩形表[行键] = _设置页_钳制矩形到面板(self, 矩形)
+    except Exception:
+        pass
+
+    try:
+        控件矩形表 = getattr(self, "_设置页_控件矩形表", {})
+        if isinstance(控件矩形表, dict):
+            for 行键, 控件 in list(控件矩形表.items()):
+                if not isinstance(控件, dict):
+                    continue
+                for 子键 in ("左", "右", "内容"):
+                    矩形 = 控件.get(子键)
+                    if isinstance(矩形, pygame.Rect):
+                        控件[子键] = _设置页_钳制矩形到面板(self, 矩形)
+    except Exception:
+        pass
+
+    try:
+        背景区 = getattr(self, "_设置页_背景区矩形", None)
+        if isinstance(背景区, pygame.Rect):
+            self._设置页_背景区矩形 = _设置页_钳制矩形到面板(self, 背景区)
+    except Exception:
+        pass
+
+    try:
+        背景控件 = getattr(self, "_设置页_背景控件矩形", {})
+        if isinstance(背景控件, dict):
+            for 子键 in ("左", "右", "预览"):
+                矩形 = 背景控件.get(子键)
+                if isinstance(矩形, pygame.Rect):
+                    背景控件[子键] = _设置页_钳制矩形到面板(self, 矩形)
+    except Exception:
+        pass
+
+    try:
+        箭头预览区 = getattr(self, "_设置页_箭头预览矩形", None)
+        if isinstance(箭头预览区, pygame.Rect):
+            self._设置页_箭头预览矩形 = _设置页_钳制矩形到面板(self, 箭头预览区)
+    except Exception:
+        pass
+
+    try:
+        箭头预览控件 = getattr(self, "_设置页_箭头预览控件矩形", {})
+        if isinstance(箭头预览控件, dict):
+            for 子键 in ("左", "右"):
+                矩形 = 箭头预览控件.get(子键)
+                if isinstance(矩形, pygame.Rect):
+                    箭头预览控件[子键] = _设置页_钳制矩形到面板(self, 矩形)
+    except Exception:
+        pass
+
+
+def 重算设置页布局(self, 强制: bool = False):
+    self._确保设置页资源()
+
+    try:
+        当前尺寸 = (int(getattr(self, "宽", 0) or 0), int(getattr(self, "高", 0) or 0))
+    except Exception:
+        当前尺寸 = (0, 0)
+
+    if (not 强制) and 当前尺寸 == tuple(getattr(self, "_设置页_上次屏幕尺寸", (0, 0))):
+        return
+
+    self._设置页_上次屏幕尺寸 = 当前尺寸
+
+    屏幕宽 = max(1, int(当前尺寸[0] or 0))
+    屏幕高 = max(1, int(当前尺寸[1] or 0))
+
+    布局 = 计算设置页布局(屏幕宽, 屏幕高)
+    if not isinstance(布局, dict):
+        布局 = {}
+
+    self._设置页_布局缩放 = float(布局.get("布局缩放", 1.0) or 1.0)
+
+    面板矩形 = 布局.get("面板基础矩形", pygame.Rect(0, 0, 10, 10))
+    if not isinstance(面板矩形, pygame.Rect):
+        面板矩形 = pygame.Rect(0, 0, 10, 10)
+    self._设置页_面板基础矩形 = 面板矩形
+
+    行矩形表 = 布局.get("行矩形表", {})
+    if not isinstance(行矩形表, dict):
+        行矩形表 = {}
+    self._设置页_行矩形表 = 行矩形表
+
+    控件矩形表 = 布局.get("控件矩形表", {})
+    if not isinstance(控件矩形表, dict):
+        控件矩形表 = {}
+    self._设置页_控件矩形表 = 控件矩形表
+
+    背景区矩形 = 布局.get("背景区矩形", pygame.Rect(0, 0, 10, 10))
+    if not isinstance(背景区矩形, pygame.Rect):
+        背景区矩形 = pygame.Rect(0, 0, 10, 10)
+    self._设置页_背景区矩形 = 背景区矩形
+
+    背景控件矩形 = 布局.get("背景控件矩形", {})
+    if not isinstance(背景控件矩形, dict):
+        背景控件矩形 = {}
+
+    self._设置页_背景控件矩形 = {
+        "左": 背景控件矩形.get("左", pygame.Rect(0, 0, 1, 1))
+        if isinstance(背景控件矩形.get("左", None), pygame.Rect)
+        else pygame.Rect(0, 0, 1, 1),
+        "右": 背景控件矩形.get("右", pygame.Rect(0, 0, 1, 1))
+        if isinstance(背景控件矩形.get("右", None), pygame.Rect)
+        else pygame.Rect(0, 0, 1, 1),
+        "预览": 背景控件矩形.get("预览", pygame.Rect(0, 0, 1, 1))
+        if isinstance(背景控件矩形.get("预览", None), pygame.Rect)
+        else pygame.Rect(0, 0, 1, 1),
+    }
+
+    箭头预览矩形 = 布局.get("箭头预览矩形", pygame.Rect(0, 0, 10, 10))
+    if not isinstance(箭头预览矩形, pygame.Rect):
+        箭头预览矩形 = pygame.Rect(0, 0, 10, 10)
+    self._设置页_箭头预览矩形 = 箭头预览矩形
+
+    箭头预览控件矩形 = 布局.get("箭头预览控件矩形", {})
+    if not isinstance(箭头预览控件矩形, dict):
+        箭头预览控件矩形 = {}
+
+    self._设置页_箭头预览控件矩形 = {
+        "左": 箭头预览控件矩形.get("左", pygame.Rect(0, 0, 1, 1))
+        if isinstance(箭头预览控件矩形.get("左", None), pygame.Rect)
+        else pygame.Rect(0, 0, 1, 1),
+        "右": 箭头预览控件矩形.get("右", pygame.Rect(0, 0, 1, 1))
+        if isinstance(箭头预览控件矩形.get("右", None), pygame.Rect)
+        else pygame.Rect(0, 0, 1, 1),
+    }
+
+    视觉参数 = 布局.get("视觉参数", {})
+    if not isinstance(视觉参数, dict):
+        视觉参数 = {}
+    self._设置页_视觉参数 = 视觉参数
+
+    self._设置页_面板绘制矩形 = 面板矩形.copy()
+
+    try:
+        if getattr(self, "_设置页_调试器", None) is not None:
+            self._设置页_调试器.应用保存覆盖(self)
+    except Exception:
+        pass
+
+    try:
+        _设置页_统一行按钮尺寸(self)
+    except Exception:
+        pass
+
+    try:
+        _设置页_钳制全部控件到面板(self)
+    except Exception:
+        pass
+
 
 def 绑定设置页方法到选歌游戏类():
     选歌游戏._设置页_持久化文件路径 = _设置页_持久化文件路径
@@ -7610,7 +8731,7 @@ def 绑定设置页方法到选歌游戏类():
     选歌游戏._确保设置页资源 = _确保设置页资源
     选歌游戏._设置页_同步参数 = _设置页_同步参数
     选歌游戏._设置页_取缩放图 = _设置页_取缩放图
-    选歌游戏._重算设置页布局 = _重算设置页布局
+    选歌游戏._重算设置页布局 = 重算设置页布局
     选歌游戏._设置页_缓入 = _设置页_缓入
     选歌游戏._设置页_缓出 = _设置页_缓出
     选歌游戏._设置页_点在有效面板区域 = _设置页_点在有效面板区域
@@ -8011,7 +9132,6 @@ def 绑定场景化方法到选歌游戏类():
     选歌游戏.处理事件_外部 = 选歌_处理事件_外部
 
 绑定场景化方法到选歌游戏类()
-
 
 def main():
     资源根目录 = _取项目根目录()

@@ -14,6 +14,7 @@ from ui.top栏 import 生成top栏
 import pygame
 from scenes.场景基类 import 场景基类
 
+
 def 确保项目根目录在模块路径里():
     当前文件 = os.path.abspath(__file__)
     场景目录 = os.path.dirname(当前文件)

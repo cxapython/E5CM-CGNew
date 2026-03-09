@@ -173,8 +173,8 @@ def _安全读json(路径: str):
 def _读取加载页载荷json() -> dict:
     try:
         候选路径列表 = [
-            os.path.join(_取运行根目录(), "json", "加载页.json"),
-            os.path.join(_取项目根目录(), "json", "加载页.json"),
+            os.path.join(_取运行根目录(), "json", "选歌设置.json"),
+            os.path.join(_取项目根目录(), "json", "选歌设置.json"),
         ]
         for 路径 in 候选路径列表:
             数据 = _安全读json(路径)
@@ -1131,7 +1131,7 @@ class 场景_谱面播放器(场景基类):
         self._调试血条不透明度: float = 0.5
         self._调试血条晃荡速度: float = 2.7
         self._调试血条晃荡幅度: float = 5.0
-        self._调试暴走血条速度: float = 150.0
+        self._调试暴走血条速度: float = 300.0
         self._调试暴走血条不透明度: float = 1.0
         self._调试暴走血条羽化: float = 8.0
         self._调试头像框特效速度: float = 30.0
@@ -1891,14 +1891,23 @@ class 场景_谱面播放器(场景基类):
             os.path.join(_取运行根目录(), "json", "电视跟跳设置.json")
         )
 
-    def _读取电视跟跳开关(self) -> bool:
+
+    def _读取电视跟跳设置(self) -> dict:
         路径 = self._取电视跟跳设置路径()
 
         try:
             数据 = _安全读json(路径)
-            if not isinstance(数据, dict):
-                return False
+            if isinstance(数据, dict):
+                return dict(数据)
+        except Exception:
+            pass
 
+        return {}
+
+    def _读取电视跟跳开关(self) -> bool:
+        数据 = self._读取电视跟跳设置()
+
+        try:
             if "开启" in 数据:
                 return bool(数据.get("开启", False))
 
@@ -1907,35 +1916,85 @@ class 场景_谱面播放器(场景基类):
 
             if "电视跟跳开启" in 数据:
                 return bool(数据.get("电视跟跳开启", False))
-
-            return False
         except Exception:
-            return False
+            pass
 
-    def _保存电视跟跳开关(self, 是否开启: bool):
+        return False
+
+    def _读取电视跟跳背景遮罩alpha(self) -> Optional[int]:
+        数据 = self._读取电视跟跳设置()
+
+        try:
+            if "背景遮罩alpha" not in 数据:
+                return None
+            数值 = int(数据.get("背景遮罩alpha", 0) or 0)
+            return int(max(0, min(255, 数值)))
+        except Exception:
+            return None
+
+    def _读取电视跟跳性能模式(self) -> Optional[bool]:
+        数据 = self._读取电视跟跳设置()
+
+        try:
+            if "性能模式" not in 数据:
+                return None
+            return bool(数据.get("性能模式", False))
+        except Exception:
+            return None
+
+    def _保存电视跟跳开关(
+        self,
+        是否开启: Optional[bool] = None,
+        背景遮罩alpha: Optional[int] = None,
+        性能模式: Optional[bool] = None,
+    ):
         路径 = self._取电视跟跳设置路径()
+        原数据 = self._读取电视跟跳设置()
+        if not isinstance(原数据, dict):
+            原数据 = {}
 
-        数据 = {
-            "开启": bool(是否开启),
-            "无踏板电视跟跳": bool(是否开启),
-            "电视跟跳开启": bool(是否开启),
-            "更新时间": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-        }
+        新数据 = dict(原数据)
+
+        if 是否开启 is not None:
+            新数据["开启"] = bool(是否开启)
+            新数据["无踏板电视跟跳"] = bool(是否开启)
+            新数据["电视跟跳开启"] = bool(是否开启)
+
+        if 背景遮罩alpha is not None:
+            try:
+                新数据["背景遮罩alpha"] = int(
+                    max(0, min(255, int(背景遮罩alpha or 0)))
+                )
+            except Exception:
+                pass
+
+        if 性能模式 is not None:
+            新数据["性能模式"] = bool(性能模式)
+
+        新数据["更新时间"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
         try:
             os.makedirs(os.path.dirname(路径), exist_ok=True)
             临时路径 = 路径 + ".tmp"
             with open(临时路径, "w", encoding="utf-8") as 文件:
-                json.dump(数据, 文件, ensure_ascii=False, indent=2)
+                json.dump(新数据, 文件, ensure_ascii=False, indent=2)
             os.replace(临时路径, 路径)
         except Exception:
             pass
 
         try:
-            self._载荷["无踏板电视跟跳"] = bool(是否开启)
-            self._载荷["电视跟跳开启"] = bool(是否开启)
+            if 是否开启 is not None:
+                self._载荷["无踏板电视跟跳"] = bool(是否开启)
+                self._载荷["电视跟跳开启"] = bool(是否开启)
+            if 背景遮罩alpha is not None:
+                self._载荷["背景遮罩alpha"] = int(
+                    max(0, min(255, int(背景遮罩alpha or 0)))
+                )
+            if 性能模式 is not None:
+                self._载荷["性能模式"] = bool(性能模式)
         except Exception:
             pass
+        
 
     def _同步电视跟跳状态(self):
         持久开关已开启 = bool(getattr(self, "_电视跟跳开启", False))
@@ -2041,7 +2100,15 @@ class 场景_谱面播放器(场景基类):
         新值 = int(max(0, min(255, int(档位[新索引]))))
         self._背景暗层alpha = int(新值)
         self._背景暗层缓存alpha = -1
-        self._保存背景遮罩alpha到设置()
+
+        try:
+            self._载荷["背景遮罩alpha"] = int(新值)
+        except Exception:
+            pass
+
+        self._保存电视跟跳开关(背景遮罩alpha=int(新值))
+
+
 
     def _刷新双踏板强制判定线y(self):
         if not bool(getattr(self, "_是否双踏板模式", False)):
@@ -2166,12 +2233,25 @@ class 场景_谱面播放器(场景基类):
             默认背景遮罩alpha = int(round(255.0 * 0.70))
 
         self._电视跟跳开启 = bool(self._读取电视跟跳开关())
+
+        电视跟跳背景遮罩alpha = self._读取电视跟跳背景遮罩alpha()
+        if 电视跟跳背景遮罩alpha is not None:
+            默认背景遮罩alpha = int(
+                max(0, min(255, int(电视跟跳背景遮罩alpha)))
+            )
+
+        电视跟跳性能模式 = self._读取电视跟跳性能模式()
+
         载荷自动模式 = bool(
             self._载荷.get("自动播放", self._载荷.get("自动模式", False))
         )
         self._是否自动模式 = bool(self._电视跟跳开启 or 载荷自动模式)
 
-        self._性能模式 = bool(self._载荷.get("性能模式", False))
+        if 电视跟跳性能模式 is not None:
+            self._性能模式 = bool(电视跟跳性能模式)
+        else:
+            self._性能模式 = bool(self._载荷.get("性能模式", False))
+
         self._视频背景关闭 = bool(self._载荷.get("关闭视频背景", False))
         try:
             self._背景暗层alpha = int(
@@ -3275,6 +3355,7 @@ class 场景_谱面播放器(场景基类):
         if 选项索引 == 7:
             self._性能模式 = not bool(self._性能模式)
             self._载荷["性能模式"] = bool(self._性能模式)
+            self._保存电视跟跳开关(性能模式=bool(self._性能模式))
             self._应用背景视频状态()
             if bool(self._性能模式):
                 self._圆环频谱舞台装饰 = None

@@ -1,19 +1,16 @@
 import os
 import pygame
-
+from core.常量与路径 import 拼路径
 
 def 获取字体(
     字号: int, 是否粗体: bool = False, 字体文件路径: str | None = None, **额外参数
 ):
     """
     统一字体入口：
-    - 默认使用：<项目根>/冷资源/字体/方正黑体简体.TTF
-    - 若不存在：降级用 pygame 默认字体（避免崩）
-    - 带缓存：避免每帧创建 Font 对象导致卡顿
+    - 默认使用：<运行根目录>/冷资源/字体/方正黑体简体.TTF
+    - 若不存在：降级用 pygame 默认字体
+    - 带缓存：避免重复创建 Font 对象
     """
-    import os
-    import pygame
-
     try:
         字号 = int(字号)
     except Exception:
@@ -21,26 +18,21 @@ def 获取字体(
     字号 = max(8, min(200, 字号))
     是否粗体 = bool(是否粗体)
 
-    # --- 函数级静态缓存（避免改模块全局） ---
     if not hasattr(获取字体, "_缓存"):
         获取字体._缓存 = {}
     if not hasattr(获取字体, "_已提示缺字体"):
         获取字体._已提示缺字体 = False
 
-    # --- 计算默认字体路径 ---
-    项目根 = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    默认字体 = os.path.join(项目根, "冷资源", "字体", "方正黑体简体.TTF")
-
-    目标字体 = 字体文件路径 or 默认字体
-    目标字体 = str(目标字体)
+    默认字体 = 拼路径("冷资源", "字体", "方正黑体简体.TTF")
+    目标字体 = str(字体文件路径 or 默认字体)
 
     键 = (目标字体, 字号, 是否粗体)
-    已有 = 获取字体._缓存.get(键)
-    if isinstance(已有, pygame.font.Font):
-        return 已有
+    已有字体对象 = 获取字体._缓存.get(键)
+    if isinstance(已有字体对象, pygame.font.Font):
+        return 已有字体对象
 
-    # --- 创建 Font ---
     字体对象 = None
+
     if os.path.isfile(目标字体):
         try:
             字体对象 = pygame.font.Font(目标字体, 字号)
@@ -55,11 +47,9 @@ def 获取字体(
                 pass
 
     if 字体对象 is None:
-        # 降级：pygame 默认字体
         try:
             字体对象 = pygame.font.Font(None, 字号)
         except Exception:
-            # 极端兜底
             pygame.font.init()
             字体对象 = pygame.font.Font(None, 字号)
 
@@ -70,7 +60,6 @@ def 获取字体(
 
     获取字体._缓存[键] = 字体对象
     return 字体对象
-
 
 def 绘制文本(屏幕, 文本, 字体, 颜色, 位置, 对齐="center"):
     面 = 字体.render(文本, True, 颜色)

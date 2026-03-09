@@ -155,7 +155,7 @@ class 场景_投币:
 
         self._选择动画进行中 = True
         self._选择动画结束时间 = time.time() + 0.32
-        self._待切换结果 = {"切换到": "登陆磁卡", "禁用黑屏过渡": True}
+        self._待切换结果 = {"切换到": "登陆磁卡", "禁用黑屏过渡": False}
         return None
 
     def 处理全局踏板(self, 动作: str):

@@ -10,7 +10,7 @@ try:
 except Exception:
     cv2 = None
 
-from core.常量与路径 import 默认资源路径
+from core.常量与路径 import 默认资源路径, 取运行根目录
 from core.对局状态 import 取每局所需信用
 from core.踏板控制 import 解析踏板动作
 from core.工具 import 获取字体
@@ -27,7 +27,7 @@ from scenes.场景_结算 import 场景_结算
 from scenes.场景_中转提示 import 场景_中转提示
 from scenes.场景_谱面播放器 import 场景_谱面播放器
 from ui.点击特效 import 序列帧特效资源, 全局点击特效管理器
-from ui.场景过渡 import 公共黑屏过渡
+from ui.场景过渡 import 公共黑屏过渡,公共丝滑入场
 
 
 def _创建显示窗口(
@@ -214,19 +214,7 @@ def 主函数():
             raise
 
     def _取运行根目录() -> str:
-        try:
-            if getattr(sys, "frozen", False):
-                return os.path.dirname(os.path.abspath(sys.executable))
-        except Exception:
-            pass
-
-        try:
-            return os.path.dirname(os.path.abspath(__file__))
-        except Exception:
-            try:
-                return os.path.abspath(os.getcwd())
-            except Exception:
-                return "."
+        return 取运行根目录()
 
     def _切换全屏():
         nonlocal 是否全屏, 上次窗口尺寸, 屏幕
@@ -252,101 +240,327 @@ def 主函数():
 
         上下文["屏幕"] = 屏幕
 
-    def _播放开场动画_cv2(视频路径: str):
-        if (not 视频路径) or (not os.path.isfile(视频路径)):
-            return
-        if cv2 is None:
+    # def _播放开场动画_cv2(视频路径: str):
+    #     if (not 视频路径) or (not os.path.isfile(视频路径)):
+    #         return
+    #     if cv2 is None:
+    #         return
+
+    #     try:
+    #         捕获 = cv2.VideoCapture(视频路径)
+    #     except Exception:
+    #         return
+
+    #     if not 捕获 or (not 捕获.isOpened()):
+    #         try:
+    #             捕获.release()
+    #         except Exception:
+    #             pass
+    #         return
+
+    #     try:
+    #         fps = 捕获.get(getattr(cv2, "CAP_PROP_FPS", 5))
+    #         fps = float(fps) if fps and fps > 1 else 30.0
+    #     except Exception:
+    #         fps = 30.0
+
+    #     每帧秒 = 1.0 / max(1.0, fps)
+    #     上次帧系统秒 = time.perf_counter()
+
+    #     while True:
+    #         for 事件 in pygame.event.get():
+    #             if 事件.type == pygame.QUIT:
+    #                 try:
+    #                     捕获.release()
+    #                 except Exception:
+    #                     pass
+    #                 pygame.quit()
+    #                 sys.exit(0)
+
+    #             if 事件.type == pygame.KEYDOWN:
+    #                 if 事件.key == pygame.K_ESCAPE:
+    #                     try:
+    #                         捕获.release()
+    #                     except Exception:
+    #                         pass
+    #                     pygame.quit()
+    #                     sys.exit(0)
+
+    #                 if 事件.key == pygame.K_F11:
+    #                     _切换全屏()
+
+    #         现在 = time.perf_counter()
+    #         if 现在 - 上次帧系统秒 < 每帧秒:
+    #             time.sleep(0.001)
+    #             continue
+    #         上次帧系统秒 = 现在
+
+    #         ok, 帧 = 捕获.read()
+    #         if (not ok) or (帧 is None):
+    #             break
+
+    #         try:
+    #             帧 = cv2.cvtColor(帧, cv2.COLOR_BGR2RGB)
+    #         except Exception:
+    #             pass
+
+    #         try:
+    #             帧高, 帧宽 = 帧.shape[0], 帧.shape[1]
+    #         except Exception:
+    #             continue
+
+    #         try:
+    #             帧面 = pygame.image.frombuffer(帧.tobytes(), (帧宽, 帧高), "RGB")
+    #         except Exception:
+    #             continue
+
+    #         屏幕w, 屏幕h = 上下文["屏幕"].get_size()
+    #         比例 = min(屏幕w / max(1, 帧宽), 屏幕h / max(1, 帧高))
+    #         新宽 = max(1, int(帧宽 * 比例))
+    #         新高 = max(1, int(帧高 * 比例))
+
+    #         try:
+    #             帧面缩放 = pygame.transform.smoothscale(帧面, (新宽, 新高))
+    #         except Exception:
+    #             帧面缩放 = 帧面
+
+    #         x = (屏幕w - 新宽) // 2
+    #         y = (屏幕h - 新高) // 2
+
+    #         上下文["屏幕"].fill((0, 0, 0))
+    #         上下文["屏幕"].blit(帧面缩放, (x, y))
+    #         pygame.display.flip()
+
+    #     try:
+    #         捕获.release()
+    #     except Exception:
+    #         pass
+
+    def _播放开场幻灯片(图片目录: str):
+        if (not 图片目录) or (not os.path.isdir(图片目录)):
             return
 
+        图片路径列表 = []
         try:
-            捕获 = cv2.VideoCapture(视频路径)
+            for 文件名 in sorted(os.listdir(图片目录)):
+                小写名 = str(文件名).lower()
+                if 小写名.endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp")):
+                    图片路径列表.append(os.path.join(图片目录, 文件名))
         except Exception:
+            图片路径列表 = []
+
+        if not 图片路径列表:
             return
 
-        if not 捕获 or (not 捕获.isOpened()):
+        def _加载并缩放图片(图片路径: str, 目标尺寸: tuple[int, int]) -> pygame.Surface | None:
             try:
-                捕获.release()
+                原图 = pygame.image.load(图片路径)
+            except Exception:
+                return None
+
+            try:
+                if 原图.get_alpha() is not None:
+                    原图 = 原图.convert_alpha()
+                else:
+                    原图 = 原图.convert()
             except Exception:
                 pass
-            return
 
-        try:
-            fps = 捕获.get(getattr(cv2, "CAP_PROP_FPS", 5))
-            fps = float(fps) if fps and fps > 1 else 30.0
-        except Exception:
-            fps = 30.0
+            try:
+                原宽, 原高 = 原图.get_size()
+                目标宽, 目标高 = 目标尺寸
+                if 原宽 <= 0 or 原高 <= 0 or 目标宽 <= 0 or 目标高 <= 0:
+                    return 原图
 
-        每帧秒 = 1.0 / max(1.0, fps)
-        上次帧系统秒 = time.perf_counter()
+                缩放比例 = min(目标宽 / 原宽, 目标高 / 原高)
+                新宽 = max(1, int(round(原宽 * 缩放比例)))
+                新高 = max(1, int(round(原高 * 缩放比例)))
 
-        while True:
+                if 新宽 == 原宽 and 新高 == 原高:
+                    return 原图
+
+                return pygame.transform.smoothscale(原图, (新宽, 新高))
+            except Exception:
+                return 原图
+
+        def _绘制居中图片(屏幕面: pygame.Surface, 图片面: pygame.Surface, 透明度: int):
+            if 图片面 is None:
+                return
+            try:
+                图片副本 = 图片面.copy()
+                图片副本.set_alpha(max(0, min(255, int(透明度))))
+            except Exception:
+                图片副本 = 图片面
+
+            屏幕宽, 屏幕高 = 屏幕面.get_size()
+            图片宽, 图片高 = 图片副本.get_size()
+            位置x = (屏幕宽 - 图片宽) // 2
+            位置y = (屏幕高 - 图片高) // 2
+            屏幕面.blit(图片副本, (位置x, 位置y))
+
+        def _处理开场事件():
             for 事件 in pygame.event.get():
                 if 事件.type == pygame.QUIT:
-                    try:
-                        捕获.release()
-                    except Exception:
-                        pass
                     pygame.quit()
                     sys.exit(0)
 
                 if 事件.type == pygame.KEYDOWN:
                     if 事件.key == pygame.K_ESCAPE:
-                        try:
-                            捕获.release()
-                        except Exception:
-                            pass
                         pygame.quit()
                         sys.exit(0)
-
                     if 事件.key == pygame.K_F11:
                         _切换全屏()
 
-            现在 = time.perf_counter()
-            if 现在 - 上次帧系统秒 < 每帧秒:
-                time.sleep(0.001)
-                continue
-            上次帧系统秒 = 现在
+        渐显秒 = 2.0
+        停留秒 = 1.0
+        切换秒 = 0.9
+        收尾渐隐秒 = 1.5
+        
+        播放时钟 = pygame.time.Clock()
+        已缓存图片 = {}
+        当前屏幕尺寸 = 上下文["屏幕"].get_size()
 
-            ok, 帧 = 捕获.read()
-            if (not ok) or (帧 is None):
+        def _取缓存图片(图片路径: str) -> pygame.Surface | None:
+            nonlocal 当前屏幕尺寸
+            最新尺寸 = 上下文["屏幕"].get_size()
+            if 最新尺寸 != 当前屏幕尺寸:
+                当前屏幕尺寸 = 最新尺寸
+                已缓存图片.clear()
+
+            缓存键 = f"{图片路径}|{当前屏幕尺寸[0]}x{当前屏幕尺寸[1]}"
+            if 缓存键 in 已缓存图片:
+                return 已缓存图片[缓存键]
+
+            图片面 = _加载并缩放图片(图片路径, 当前屏幕尺寸)
+            if 图片面 is not None:
+                已缓存图片[缓存键] = 图片面
+            return 图片面
+
+        if len(图片路径列表) == 1:
+            当前图片路径 = 图片路径列表[0]
+            开始时间 = time.perf_counter()
+            while True:
+                _处理开场事件()
+                已过秒 = time.perf_counter() - 开始时间
+                总秒 = 渐显秒 + 停留秒 + 收尾渐隐秒
+
+                if 已过秒 >= 总秒:
+                    break
+
+                if 已过秒 < 渐显秒:
+                    透明度 = int(255 * (已过秒 / max(0.001, 渐显秒)))
+                elif 已过秒 < 渐显秒 + 停留秒:
+                    透明度 = 255
+                else:
+                    收尾进度 = (已过秒 - 渐显秒 - 停留秒) / max(0.001, 收尾渐隐秒)
+                    透明度 = int(255 * (1.0 - 收尾进度))
+
+                当前图片面 = _取缓存图片(当前图片路径)
+
+                上下文["屏幕"].fill((0, 0, 0))
+                if 当前图片面 is not None:
+                    _绘制居中图片(上下文["屏幕"], 当前图片面, 透明度)
+                pygame.display.flip()
+                播放时钟.tick(60)
+            return
+
+        第一个图片路径 = 图片路径列表[0]
+        开始时间 = time.perf_counter()
+
+        while True:
+            _处理开场事件()
+            已过秒 = time.perf_counter() - 开始时间
+            if 已过秒 >= 渐显秒 + 停留秒:
                 break
 
-            try:
-                帧 = cv2.cvtColor(帧, cv2.COLOR_BGR2RGB)
-            except Exception:
-                pass
+            if 已过秒 < 渐显秒:
+                当前透明度 = int(255 * (已过秒 / max(0.001, 渐显秒)))
+            else:
+                当前透明度 = 255
 
-            try:
-                帧高, 帧宽 = 帧.shape[0], 帧.shape[1]
-            except Exception:
-                continue
-
-            try:
-                帧面 = pygame.image.frombuffer(帧.tobytes(), (帧宽, 帧高), "RGB")
-            except Exception:
-                continue
-
-            屏幕w, 屏幕h = 上下文["屏幕"].get_size()
-            比例 = min(屏幕w / max(1, 帧宽), 屏幕h / max(1, 帧高))
-            新宽 = max(1, int(帧宽 * 比例))
-            新高 = max(1, int(帧高 * 比例))
-
-            try:
-                帧面缩放 = pygame.transform.smoothscale(帧面, (新宽, 新高))
-            except Exception:
-                帧面缩放 = 帧面
-
-            x = (屏幕w - 新宽) // 2
-            y = (屏幕h - 新高) // 2
+            当前图片面 = _取缓存图片(第一个图片路径)
 
             上下文["屏幕"].fill((0, 0, 0))
-            上下文["屏幕"].blit(帧面缩放, (x, y))
+            if 当前图片面 is not None:
+                _绘制居中图片(上下文["屏幕"], 当前图片面, 当前透明度)
             pygame.display.flip()
+            播放时钟.tick(60)
 
-        try:
-            捕获.release()
-        except Exception:
-            pass
+        for 索引 in range(len(图片路径列表) - 1):
+            当前图片路径 = 图片路径列表[索引]
+            下一张图片路径 = 图片路径列表[索引 + 1]
+
+            当前图片面 = _取缓存图片(当前图片路径)
+            下一张图片面 = _取缓存图片(下一张图片路径)
+
+            切换开始时间 = time.perf_counter()
+            while True:
+                _处理开场事件()
+                已过秒 = time.perf_counter() - 切换开始时间
+                if 已过秒 >= 切换秒:
+                    break
+
+                进度 = max(0.0, min(1.0, 已过秒 / max(0.001, 切换秒)))
+                当前透明度 = int(255 * (1.0 - 进度))
+                下一张透明度 = int(255 * 进度)
+
+                上下文["屏幕"].fill((0, 0, 0))
+                if 当前图片面 is not None:
+                    _绘制居中图片(上下文["屏幕"], 当前图片面, 当前透明度)
+                if 下一张图片面 is not None:
+                    _绘制居中图片(上下文["屏幕"], 下一张图片面, 下一张透明度)
+                pygame.display.flip()
+                播放时钟.tick(60)
+
+            if 索引 + 1 < len(图片路径列表) - 1:
+                停留开始时间 = time.perf_counter()
+                while True:
+                    _处理开场事件()
+                    已过秒 = time.perf_counter() - 停留开始时间
+                    if 已过秒 >= 停留秒:
+                        break
+
+                    下一张图片面 = _取缓存图片(下一张图片路径)
+                    上下文["屏幕"].fill((0, 0, 0))
+                    if 下一张图片面 is not None:
+                        _绘制居中图片(上下文["屏幕"], 下一张图片面, 255)
+                    pygame.display.flip()
+                    播放时钟.tick(60)
+
+        最后一张图片路径 = 图片路径列表[-1]
+        结尾停留开始时间 = time.perf_counter()
+        while True:
+            _处理开场事件()
+            已过秒 = time.perf_counter() - 结尾停留开始时间
+            if 已过秒 >= 停留秒:
+                break
+
+            最后一张图片面 = _取缓存图片(最后一张图片路径)
+            上下文["屏幕"].fill((0, 0, 0))
+            if 最后一张图片面 is not None:
+                _绘制居中图片(上下文["屏幕"], 最后一张图片面, 255)
+            pygame.display.flip()
+            播放时钟.tick(60)
+
+        收尾开始时间 = time.perf_counter()
+        while True:
+            _处理开场事件()
+            已过秒 = time.perf_counter() - 收尾开始时间
+            if 已过秒 >= 收尾渐隐秒:
+                break
+
+            收尾进度 = max(0.0, min(1.0, 已过秒 / max(0.001, 收尾渐隐秒)))
+            最后一张透明度 = int(255 * (1.0 - 收尾进度))
+
+            最后一张图片面 = _取缓存图片(最后一张图片路径)
+            上下文["屏幕"].fill((0, 0, 0))
+            if 最后一张图片面 is not None:
+                _绘制居中图片(上下文["屏幕"], 最后一张图片面, 最后一张透明度)
+            pygame.display.flip()
+            播放时钟.tick(60)
+
+        上下文["屏幕"].fill((0, 0, 0))
+        pygame.display.flip()
 
     def _退出程序():
         音乐.停止()
@@ -390,7 +604,7 @@ def 主函数():
 
     时钟 = pygame.time.Clock()
     资源 = 默认资源路径()
-    运行根目录 = _取运行根目录()
+    运行根目录 = 取运行根目录()
 
     音乐 = 音乐管理()
     字体 = {
@@ -438,12 +652,18 @@ def 主函数():
         "背景视频": None,
     }
 
+    # backmovies目录 = 资源.get(
+    #     "backmovies目录", os.path.join(资源.get("根", os.getcwd()), "backmovies")
+    # )
+    # 开场视频 = os.path.join(backmovies目录, "002.开场动画.mp4")
+    # _播放开场动画_cv2(开场视频)
+
     backmovies目录 = 资源.get(
         "backmovies目录", os.path.join(资源.get("根", os.getcwd()), "backmovies")
     )
-    开场视频 = os.path.join(backmovies目录, "002.开场动画.mp4")
-    _播放开场动画_cv2(开场视频)
-
+    开场动画目录 = os.path.join(backmovies目录, "开场动画")
+    _播放开场幻灯片(开场动画目录)
+    
     强制视频 = os.path.join(backmovies目录, "003.mp4")
     if os.path.isfile(强制视频):
         视频路径 = 强制视频
@@ -473,7 +693,9 @@ def 主函数():
     当前场景 = 场景表[当前场景名](上下文)
     _安全进入场景(当前场景, None)
 
-    过渡 = 公共黑屏过渡(渐入秒=0.1, 渐出秒=0.1)
+    过渡 = 公共黑屏过渡(渐入秒=0.2,渐出秒=0)
+    入场 = 公共丝滑入场(保持黑屏秒=0.03, 渐出秒=0.3)
+    
     待切换目标场景名 = None
     待切换载荷 = None
 
@@ -496,49 +718,7 @@ def 主函数():
     投币快捷键 = int(pygame.K_f)
     投币快捷键显示 = "F"
     全局设置路径 = os.path.join(运行根目录, "json", "全局设置.json")
-    残余币值路径 = os.path.join(运行根目录, "json", "残余币值.json")
 
-    def _读取残余币值() -> int:
-        数据 = {}
-        try:
-            if os.path.isfile(残余币值路径):
-                with open(残余币值路径, "r", encoding="utf-8") as 文件:
-                    对象 = json.load(文件)
-                if isinstance(对象, dict):
-                    数据 = 对象
-        except Exception:
-            数据 = {}
-
-        for 键名 in ("投币数", "残余币值", "credit"):
-            try:
-                值 = int(数据.get(键名, 0) or 0)
-                return max(0, 值)
-            except Exception:
-                continue
-        return 0
-
-    def _保存残余币值():
-        try:
-            os.makedirs(os.path.dirname(残余币值路径), exist_ok=True)
-        except Exception:
-            pass
-
-        try:
-            当前投币数 = max(0, int(状态.get("投币数", 0) or 0))
-        except Exception:
-            当前投币数 = 0
-
-        数据 = {
-            "投币数": int(当前投币数),
-            "残余币值": int(当前投币数),
-            "credit": str(int(当前投币数)),
-        }
-
-        try:
-            with open(残余币值路径, "w", encoding="utf-8") as 文件:
-                json.dump(数据, 文件, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
 
     def _格式化按键名(键值: int) -> str:
         try:
@@ -555,36 +735,71 @@ def 主函数():
         except Exception:
             pass
 
-        数据 = {
-            "投币快捷键": int(投币快捷键),
-            "投币快捷键显示": str(投币快捷键显示),
-        }
         try:
-            with open(全局设置路径, "w", encoding="utf-8") as f:
-                json.dump(数据, f, ensure_ascii=False, indent=2)
+            当前投币数 = max(0, int(状态.get("投币数", 0) or 0))
+        except Exception:
+            当前投币数 = 0
+
+        旧数据 = {}
+        try:
+            if os.path.isfile(全局设置路径):
+                with open(全局设置路径, "r", encoding="utf-8") as 文件:
+                    已有对象 = json.load(文件)
+                if isinstance(已有对象, dict):
+                    旧数据 = 已有对象
+        except Exception:
+            旧数据 = {}
+
+        新数据 = dict(旧数据)
+        新数据.update(
+            {
+                "投币快捷键": int(投币快捷键),
+                "投币快捷键显示": str(投币快捷键显示),
+                "投币数": int(当前投币数),
+            }
+        )
+
+        新数据.pop("残余币值", None)
+        新数据.pop("credit", None)
+
+        try:
+            with open(全局设置路径, "w", encoding="utf-8") as 文件:
+                json.dump(新数据, 文件, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
+
     def _加载全局设置():
         nonlocal 投币快捷键, 投币快捷键显示
+
         数据 = {}
         try:
             if os.path.isfile(全局设置路径):
-                with open(全局设置路径, "r", encoding="utf-8") as f:
-                    obj = json.load(f)
-                if isinstance(obj, dict):
-                    数据 = obj
+                with open(全局设置路径, "r", encoding="utf-8") as 文件:
+                    对象 = json.load(文件)
+                if isinstance(对象, dict):
+                    数据 = 对象
         except Exception:
             数据 = {}
 
         try:
-            值 = int(数据.get("投币快捷键", pygame.K_f))
-            投币快捷键 = int(max(0, min(4096, 值)))
+            键值 = int(数据.get("投币快捷键", pygame.K_f))
+            投币快捷键 = int(max(0, min(4096, 键值)))
         except Exception:
             投币快捷键 = int(pygame.K_f)
+
         投币快捷键显示 = _格式化按键名(int(投币快捷键))
         状态["投币快捷键"] = int(投币快捷键)
         状态["投币快捷键显示"] = str(投币快捷键显示)
+
+        try:
+            当前投币数 = max(0, int(数据.get("投币数", 0) or 0))
+        except Exception:
+            当前投币数 = 0
+
+        状态["投币数"] = int(当前投币数)
+        状态["credit"] = str(int(当前投币数))
+        
 
     def _显示调试提示(文本: str, 秒: float = 1.2):
         nonlocal 调试提示文本, 调试提示截止
@@ -596,17 +811,13 @@ def 主函数():
             投币数 = int(状态.get("投币数", 0) or 0)
         except Exception:
             投币数 = 0
+
         投币数 = max(0, 投币数)
         状态["投币数"] = int(投币数)
-        状态["credit"] = str(投币数)
-        _保存残余币值()
-
+        状态["credit"] = str(int(投币数))
+        _保存全局设置()
+        
     _加载全局设置()
-
-    try:
-        状态["投币数"] = int(_读取残余币值())
-    except Exception:
-        状态["投币数"] = 0
     _同步投币显示()
 
     状态["非游戏菜单背景音乐关闭"] = bool(非游戏菜单背景音乐关闭)
@@ -868,6 +1079,7 @@ def 主函数():
         nonlocal 当前场景名, 当前场景, 待切换目标场景名, 待切换载荷
         nonlocal 非游戏菜单开启, 非游戏菜单索引, 投币快捷键录入中
 
+        原场景名 = str(当前场景名 or "")
         目标 = 待切换目标场景名
         载荷 = 待切换载荷
         if 目标 == "玩家选择":
@@ -884,11 +1096,15 @@ def 主函数():
         当前场景 = 场景表[当前场景名](上下文)
         _安全进入场景(当前场景, 载荷)
 
+        if 原场景名 == "投币" and 当前场景名 == "登陆磁卡":
+            入场.开始()
+
         待切换目标场景名 = None
         待切换载荷 = None
         非游戏菜单开启 = False
         非游戏菜单索引 = 0
         投币快捷键录入中 = False
+
 
     def _当前场景允许非游戏菜单() -> bool:
         return bool(当前场景名 not in ("谱面播放器", "结算", "中转提示"))
@@ -1032,6 +1248,7 @@ def 主函数():
             _处理场景返回结果(更新结果)
 
         过渡.更新(_执行场景切换)
+        入场.更新()
 
         当前场景.绘制()
         _绘制非游戏菜单()
@@ -1049,6 +1266,7 @@ def 主函数():
                 pass
 
         过渡.绘制(上下文["屏幕"])
+        入场.绘制(上下文["屏幕"])
 
         _绘制opencv缺失提示(
             屏幕=上下文["屏幕"],

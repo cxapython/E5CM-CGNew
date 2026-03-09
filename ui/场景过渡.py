@@ -4,30 +4,67 @@ import pygame
 
 class 公共黑屏过渡:
     """
-    两段式：
-    - 渐入黑屏（0.1s）：alpha 0 -> 255
-    - 切换发生在黑屏到达 255 时
-    - 渐出黑屏（0.1s）：alpha 255 -> 0
+    单段式黑屏过渡：
+    - 当前场景丝滑渐黑
+    - 黑到满值时触发切场景
+    - 切场景后额外保持纯黑一小段时间
+    - 然后自动结束黑屏
 
-    这样能最大程度掩盖切换时的卡顿。
+    这样既能掩盖切场景卡顿，又不会永远黑屏。
     """
 
-    def __init__(self, 渐入秒: float = 0.1, 渐出秒: float = 0.1):
-        self.渐入秒 = float(渐入秒)
-        self.渐出秒 = float(渐出秒)
+    def __init__(
+        self,
+        渐入秒: float = 0.12,
+        渐出秒: float | None = None,
+        切换后保持黑屏秒: float = 0.06,
+    ):
+        """
+        渐出秒 参数仅为兼容旧调用而保留，当前版本不会使用。
+        """
+        self.渐入秒 = max(0.001, float(渐入秒))
+        self.渐出秒 = 0.0 if 渐出秒 is None else float(渐出秒)
+        self.切换后保持黑屏秒 = max(0.0, float(切换后保持黑屏秒))
 
         self._是否进行中 = False
-        self._阶段 = "无"  # 无 / 渐入 / 渐出
+        self._阶段 = "无"  # 无 / 渐入 / 切换后保持黑屏
         self._开始时间 = 0.0
 
         self._待切换目标场景名 = None
         self._是否已触发切换回调 = False
 
+        self._黑层缓存 = None
+        self._黑层缓存尺寸 = (0, 0)
+
+    def _取当前时间(self) -> float:
+        return time.perf_counter()
+
+    def _限制范围(self, 数值: float, 最小值: float, 最大值: float) -> float:
+        if 数值 < 最小值:
+            return 最小值
+        if 数值 > 最大值:
+            return 最大值
+        return 数值
+
+    def _缓入缓出(self, 进度: float) -> float:
+        进度 = self._限制范围(进度, 0.0, 1.0)
+        return 进度 * 进度 * 进度 * (进度 * (进度 * 6.0 - 15.0) + 10.0)
+
+    def _确保黑层缓存(self, 屏幕: pygame.Surface):
+        宽, 高 = 屏幕.get_size()
+        if (
+            self._黑层缓存 is None
+            or self._黑层缓存尺寸[0] != 宽
+            or self._黑层缓存尺寸[1] != 高
+        ):
+            self._黑层缓存 = pygame.Surface((宽, 高)).convert()
+            self._黑层缓存.fill((0, 0, 0))
+            self._黑层缓存尺寸 = (宽, 高)
+
     def 开始(self, 目标场景名: str):
-        # 若正在过渡，直接覆盖目标（避免队列堆积）
         self._是否进行中 = True
         self._阶段 = "渐入"
-        self._开始时间 = time.time()
+        self._开始时间 = self._取当前时间()
         self._待切换目标场景名 = 目标场景名
         self._是否已触发切换回调 = False
 
@@ -37,63 +74,191 @@ class 公共黑屏过渡:
     def 获取目标场景名(self):
         return self._待切换目标场景名
 
+    def 结束黑屏(self):
+        self._是否进行中 = False
+        self._阶段 = "无"
+        self._开始时间 = 0.0
+        self._待切换目标场景名 = None
+        self._是否已触发切换回调 = False
+
     def 更新(self, 触发切换回调):
-        """
-        由 main.py 每帧调用。
-        - 当渐入完成时（黑屏最黑），调用一次 触发切换回调()
-        - 然后进入渐出阶段
-        """
         if not self._是否进行中:
             return
 
-        现在 = time.time()
+        当前时间 = self._取当前时间()
+        已过秒数 = 当前时间 - self._开始时间
+
         if self._阶段 == "渐入":
-            if (现在 - self._开始时间) >= self.渐入秒:
-                # 到达全黑
+            if 已过秒数 >= self.渐入秒:
                 if not self._是否已触发切换回调:
                     self._是否已触发切换回调 = True
                     try:
                         触发切换回调()
                     except Exception:
-                        # 回调异常也不要把主循环炸掉
                         pass
 
-                # 开始渐出
-                self._阶段 = "渐出"
-                self._开始时间 = time.time()
+                self._阶段 = "切换后保持黑屏"
+                self._开始时间 = 当前时间
+                return
 
-        elif self._阶段 == "渐出":
-            if (现在 - self._开始时间) >= self.渐出秒:
-                # 完成
-                self._是否进行中 = False
-                self._阶段 = "无"
-                self._待切换目标场景名 = None
-                self._是否已触发切换回调 = False
+        if self._阶段 == "切换后保持黑屏":
+            if 已过秒数 >= self.切换后保持黑屏秒:
+                self.结束黑屏()
+
+    def _计算透明度(self) -> int:
+        if not self._是否进行中:
+            return 0
+
+        当前时间 = self._取当前时间()
+
+        if self._阶段 == "渐入":
+            已过秒数 = 当前时间 - self._开始时间
+            进度 = 已过秒数 / self.渐入秒
+            进度 = self._缓入缓出(进度)
+            return int(255 * 进度)
+
+        if self._阶段 == "切换后保持黑屏":
+            return 255
+
+        return 0
 
     def 绘制(self, 屏幕: pygame.Surface):
         if not self._是否进行中:
             return
 
-        现在 = time.time()
-        alpha = 0
-
-        if self._阶段 == "渐入":
-            t = (现在 - self._开始时间) / max(0.001, self.渐入秒)
-            t = max(0.0, min(1.0, t))
-            alpha = int(255 * t)
-
-        elif self._阶段 == "渐出":
-            t = (现在 - self._开始时间) / max(0.001, self.渐出秒)
-            t = max(0.0, min(1.0, t))
-            alpha = int(255 * (1.0 - t))
-
-        if alpha <= 0:
+        透明度 = self._计算透明度()
+        if 透明度 <= 0:
             return
 
-        w, h = 屏幕.get_size()
-        黑层 = pygame.Surface((w, h), pygame.SRCALPHA)
-        黑层.fill((0, 0, 0, alpha))
-        屏幕.blit(黑层, (0, 0))
+        self._确保黑层缓存(屏幕)
+
+        if 透明度 >= 255:
+            屏幕.blit(self._黑层缓存, (0, 0))
+            return
+
+        self._黑层缓存.set_alpha(透明度)
+        屏幕.blit(self._黑层缓存, (0, 0))
+        self._黑层缓存.set_alpha(None)
+
+
+
+
+class 公共丝滑入场:
+    """
+    单段式丝滑入场：
+    - 开始时默认全黑
+    - 然后按缓动曲线从黑到透明
+    - 不负责场景切换，只负责新场景揭幕
+
+    阶段：
+    无 -> 保持黑屏 -> 渐出黑层 -> 无
+    """
+
+    def __init__(
+        self,
+        保持黑屏秒: float = 0.03,
+        渐出秒: float = 0.12,
+    ):
+        self.保持黑屏秒 = max(0.0, float(保持黑屏秒))
+        self.渐出秒 = max(0.001, float(渐出秒))
+
+        self._是否进行中 = False
+        self._阶段 = "无"  # 无 / 保持黑屏 / 渐出黑层
+        self._开始时间 = 0.0
+
+        self._黑层缓存 = None
+        self._黑层缓存尺寸 = (0, 0)
+
+    def _取当前时间(self) -> float:
+        return time.perf_counter()
+
+    def _限制范围(self, 数值: float, 最小值: float, 最大值: float) -> float:
+        if 数值 < 最小值:
+            return 最小值
+        if 数值 > 最大值:
+            return 最大值
+        return 数值
+
+    def _缓入缓出(self, 进度: float) -> float:
+        进度 = self._限制范围(进度, 0.0, 1.0)
+        return 进度 * 进度 * 进度 * (进度 * (进度 * 6.0 - 15.0) + 10.0)
+
+    def _确保黑层缓存(self, 屏幕: pygame.Surface):
+        宽, 高 = 屏幕.get_size()
+        if (
+            self._黑层缓存 is None
+            or self._黑层缓存尺寸[0] != 宽
+            or self._黑层缓存尺寸[1] != 高
+        ):
+            self._黑层缓存 = pygame.Surface((宽, 高)).convert()
+            self._黑层缓存.fill((0, 0, 0))
+            self._黑层缓存尺寸 = (宽, 高)
+
+    def 开始(self):
+        self._是否进行中 = True
+        self._阶段 = "保持黑屏"
+        self._开始时间 = self._取当前时间()
+
+    def 是否进行中(self) -> bool:
+        return self._是否进行中
+
+    def 结束(self):
+        self._是否进行中 = False
+        self._阶段 = "无"
+        self._开始时间 = 0.0
+
+    def 更新(self):
+        if not self._是否进行中:
+            return
+
+        当前时间 = self._取当前时间()
+        已过秒数 = 当前时间 - self._开始时间
+
+        if self._阶段 == "保持黑屏":
+            if 已过秒数 >= self.保持黑屏秒:
+                self._阶段 = "渐出黑层"
+                self._开始时间 = 当前时间
+                return
+
+        if self._阶段 == "渐出黑层":
+            if 已过秒数 >= self.渐出秒:
+                self.结束()
+
+    def _计算透明度(self) -> int:
+        if not self._是否进行中:
+            return 0
+
+        当前时间 = self._取当前时间()
+
+        if self._阶段 == "保持黑屏":
+            return 255
+
+        if self._阶段 == "渐出黑层":
+            已过秒数 = 当前时间 - self._开始时间
+            进度 = 已过秒数 / self.渐出秒
+            进度 = self._缓入缓出(进度)
+            return int(255 * (1.0 - 进度))
+
+        return 0
+
+    def 绘制(self, 屏幕: pygame.Surface):
+        if not self._是否进行中:
+            return
+
+        透明度 = self._计算透明度()
+        if 透明度 <= 0:
+            return
+
+        self._确保黑层缓存(屏幕)
+
+        if 透明度 >= 255:
+            屏幕.blit(self._黑层缓存, (0, 0))
+            return
+
+        self._黑层缓存.set_alpha(透明度)
+        屏幕.blit(self._黑层缓存, (0, 0))
+        self._黑层缓存.set_alpha(None)
+
 
 
 class 公用放大过渡器:

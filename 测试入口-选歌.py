@@ -2,6 +2,7 @@ import os
 import sys
 import pygame
 
+from core.常量与路径 import 取运行根目录
 
 def 确保项目根目录在模块路径里():
     当前文件 = os.path.abspath(__file__)
@@ -28,7 +29,7 @@ def 主函数():
     屏幕 = pygame.display.set_mode((初始宽, 初始高), pygame.RESIZABLE)
     时钟 = pygame.time.Clock()
 
-    项目根目录 = os.path.dirname(os.path.abspath(__file__))
+    项目根目录 = 取运行根目录
 
     上下文 = {
         "屏幕": 屏幕,

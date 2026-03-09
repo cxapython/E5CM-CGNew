@@ -6,7 +6,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
+from core.常量与路径 import 取运行根目录
 import pygame
 
 

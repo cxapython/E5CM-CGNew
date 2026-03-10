@@ -55,13 +55,13 @@ def _安全读json(路径: str) -> dict:
         return {}
 
 
-def _加载皮肤包(项目根: str, 箭头编号: str = "03") -> Any:
+def _加载皮肤包(项目根: str, 箭头编号: str = "02") -> Any:
     class _空皮肤:
         pass
 
     箭头根目录 = os.path.join(项目根, "UI-img", "游戏界面", "箭头")
     皮肤目录 = os.path.join(
-        箭头根目录, str(箭头编号 or "03")
+        箭头根目录, str(箭头编号 or "02")
     )
     if not os.path.isdir(皮肤目录):
         try:

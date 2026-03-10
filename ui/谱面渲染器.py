@@ -2456,148 +2456,55 @@ class 谱面渲染器:
         except Exception:
             return
 
-    # # ---------------- key ----------------
-    # def _绘制判定区(self, 屏幕: pygame.Surface, 输入: 渲染输入):
-    #     图集 = self._皮肤包.key
-    #     if 图集 is None:
-    #         return
-    #     if len(输入.轨道中心列表) < 5:
-    #         return
+    def _取渲染平滑谱面秒(self, 目标谱面秒: float) -> float:
+        try:
+            当前系统秒 = float(pygame.time.get_ticks()) / 1000.0
+        except Exception:
+            return float(目标谱面秒)
 
-    #     参数 = self._取游戏区参数()
-    #     游戏缩放 = float(参数.get("缩放", 1.0))
-    #     y偏移 = float(参数.get("y偏移", 1.0))
-    #     判定区宽度系数 = float(参数.get("判定区宽度系数", 1.08))
+        if not hasattr(self, "_渲染平滑谱面秒"):
+            self._渲染平滑谱面秒 = float(目标谱面秒)
+        if not hasattr(self, "_渲染平滑上次系统秒"):
+            self._渲染平滑上次系统秒 = float(当前系统秒)
+        if not hasattr(self, "_渲染平滑追赶速度"):
+            self._渲染平滑追赶速度 = 22.0
+        if not hasattr(self, "_渲染平滑最大滞后秒"):
+            self._渲染平滑最大滞后秒 = 1.0 / 150.0
 
-    #     y判定 = int(float(输入.判定线y) + y偏移)
-    #     receptor宽 = int(
-    #         max(24, int(float(输入.箭头目标宽) * 判定区宽度系数 * 游戏缩放))
-    #     )
+        时间差秒 = float(当前系统秒 - float(self._渲染平滑上次系统秒))
+        if 时间差秒 < 0.0:
+            时间差秒 = 0.0
+        if 时间差秒 > 0.05:
+            时间差秒 = 0.05
+        self._渲染平滑上次系统秒 = float(当前系统秒)
 
-    #     间距 = (
-    #         int(输入.轨道中心列表[1] - 输入.轨道中心列表[0])
-    #         if len(输入.轨道中心列表) >= 2
-    #         else int(receptor宽 * 0.9)
-    #     )
-    #     左手x = int(输入.轨道中心列表[0] - 间距)
-    #     右手x = int(输入.轨道中心列表[4] + 间距)
+        当前平滑秒 = float(self._渲染平滑谱面秒)
+        目标谱面秒 = float(目标谱面秒)
+        差值 = float(目标谱面秒 - 当前平滑秒)
 
-    #     左手图 = 图集.取("key_ll.png")
-    #     右手图 = 图集.取("key_rr.png")
-    #     if 左手图 is not None:
-    #         图2 = self._取缩放图("key:ll", 左手图, receptor宽)
-    #         屏幕.blit(
-    #             图2, (左手x - 图2.get_width() // 2, y判定 - 图2.get_height() // 2)
-    #         )
-    #     if 右手图 is not None:
-    #         图2 = self._取缩放图("key:rr", 右手图, receptor宽)
-    #         屏幕.blit(
-    #             图2, (右手x - 图2.get_width() // 2, y判定 - 图2.get_height() // 2)
-    #         )
+        if 差值 <= 0.0:
+            self._渲染平滑谱面秒 = float(目标谱面秒)
+            return float(self._渲染平滑谱面秒)
 
-    #     # =========================
-    #     # ✅ 按键反馈：带动画的缩到 50%，长按保持 50%
-    #     #   - 使用 dt 平滑逼近 target，实现按下/松开都有过渡
-    #     # =========================
-    #     最小缩放 = 0.50
+        追赶速度 = float(max(1.0, float(self._渲染平滑追赶速度)))
+        追赶系数 = float(1.0 - math.exp(-追赶速度 * 时间差秒))
+        if 追赶系数 < 0.0:
+            追赶系数 = 0.0
+        if 追赶系数 > 1.0:
+            追赶系数 = 1.0
 
-    #     # 懒初始化：不改 __init__ 也能跑
-    #     if (not hasattr(self, "_按键反馈缩放")) or (
-    #         not isinstance(getattr(self, "_按键反馈缩放"), list)
-    #     ):
-    #         self._按键反馈缩放 = [1.0] * 5
-    #     if len(self._按键反馈缩放) != 5:
-    #         self._按键反馈缩放 = [1.0] * 5
+        当前平滑秒 = float(当前平滑秒 + 差值 * 追赶系数)
 
-    #     if not hasattr(self, "_按键反馈上次秒"):
-    #         try:
-    #             self._按键反馈上次秒 = float(pygame.time.get_ticks()) / 1000.0
-    #         except Exception:
-    #             self._按键反馈上次秒 = 0.0
+        最大滞后秒 = float(max(0.001, float(self._渲染平滑最大滞后秒)))
+        最小允许值 = float(目标谱面秒 - 最大滞后秒)
+        if 当前平滑秒 < 最小允许值:
+            当前平滑秒 = float(最小允许值)
+        if 当前平滑秒 > 目标谱面秒:
+            当前平滑秒 = float(目标谱面秒)
 
-    #     try:
-    #         当前秒 = float(pygame.time.get_ticks()) / 1000.0
-    #     except Exception:
-    #         当前秒 = float(getattr(self, "_按键反馈上次秒", 0.0) or 0.0)
+        self._渲染平滑谱面秒 = float(当前平滑秒)
+        return float(self._渲染平滑谱面秒)
 
-    #     dt = float(当前秒 - float(getattr(self, "_按键反馈上次秒", 0.0) or 0.0))
-    #     if dt < 0.0:
-    #         dt = 0.0
-    #     if dt > 0.05:
-    #         dt = 0.05
-    #     self._按键反馈上次秒 = float(当前秒)
-
-    #     # 实时按键状态
-    #     try:
-    #         按下数组 = pygame.key.get_pressed()
-    #     except Exception:
-    #         按下数组 = None
-
-    #     轨道到按键列表 = {
-    #         0: [pygame.K_1, pygame.K_KP1],
-    #         1: [pygame.K_7, pygame.K_KP7],
-    #         2: [pygame.K_5, pygame.K_KP5],
-    #         3: [pygame.K_9, pygame.K_KP9],
-    #         4: [pygame.K_3, pygame.K_KP3],
-    #     }
-
-    #     def _轨道是否按下(轨道: int) -> bool:
-    #         if 按下数组 is None:
-    #             return False
-    #         for k in 轨道到按键列表.get(int(轨道), []):
-    #             try:
-    #                 if 按下数组[k]:
-    #                     return True
-    #             except Exception:
-    #                 continue
-    #         return False
-
-    #     # 动画速度：按下更快、松开稍慢（更像回弹）
-    #     按下速度 = 26.0
-    #     松开速度 = 18.0
-
-    #     for i in range(5):
-    #         方位 = self._轨道到key方位码(i)
-    #         名 = f"key_{方位}.png"
-    #         图 = 图集.取(名)
-    #         if 图 is None:
-    #             continue
-
-    #         # ---------- 目标缩放 ----------
-    #         目标缩放 = 1.0
-
-    #         # tap 动画（原本 0.06，现在改成缩到 50%）
-    #         剩余 = float(self._按下反馈剩余秒[i])
-    #         if 剩余 > 0.0:
-    #             p = 1.0 - (剩余 / float(self._按下反馈总时长秒))
-    #             p = float(max(0.0, min(1.0, p)))
-    #             # sin(pi*p)：0->1->0，对应：1->0.5->1
-    #             tap缩放 = 1.0 - 0.50 * math.sin(p * math.pi)
-    #             tap缩放 = float(max(最小缩放, min(1.0, tap缩放)))
-    #             目标缩放 = tap缩放
-
-    #         # 长按：目标直接锁定 0.5（但靠平滑逼近，所以不会硬跳）
-    #         if _轨道是否按下(i):
-    #             目标缩放 = 最小缩放
-
-    #         # ---------- 平滑逼近（有动画） ----------
-    #         当前缩放 = float(self._按键反馈缩放[i])
-
-    #         if 目标缩放 < 当前缩放:
-    #             速度 = 按下速度
-    #         else:
-    #             速度 = 松开速度
-
-    #         系数 = float(min(1.0, dt * 速度))
-    #         新缩放 = 当前缩放 + (目标缩放 - 当前缩放) * 系数
-    #         新缩放 = float(max(最小缩放, min(1.0, 新缩放)))
-    #         self._按键反馈缩放[i] = 新缩放
-
-    #         目标宽 = int(max(8, int(receptor宽 * 新缩放)))
-    #         图2 = self._取缩放图(f"key:{名}:{目标宽}", 图, 目标宽)
-    #         x = int(输入.轨道中心列表[i] - 图2.get_width() // 2)
-    #         y = int(y判定 - 图2.get_height() // 2)
-    #         屏幕.blit(图2, (x, y))
 
     def _绘制判定区(self, 屏幕: pygame.Surface, 输入: 渲染输入):
         图集 = self._皮肤包.key
@@ -2677,6 +2584,319 @@ class 谱面渲染器:
             y = int(y判定 - 图2.get_height() // 2)
             屏幕.blit(图2, (x, y))
 
+    # def _绘制音符(self, 屏幕: pygame.Surface, 输入: 渲染输入):
+    #     图集 = self._皮肤包.arrow
+    #     if 图集 is None:
+    #         for i in range(5):
+    #             self._hold当前按下中[i] = False
+    #             self._hold松手系统秒[i] = None
+    #         return
+
+    #     参数 = self._取游戏区参数()
+    #     游戏缩放 = float(参数.get("缩放", 1.0))
+    #     y偏移 = float(参数.get("y偏移", 0.0))
+    #     hold宽度系数 = float(参数.get("hold宽度系数", 0.96))
+    #     布局锚点 = self._取判定区实际锚点(屏幕, 输入)
+
+    #     当前秒 = float(输入.当前谱面秒)
+    #     轨迹模式 = str(getattr(输入, "轨迹模式", "正常") or "正常")
+    #     隐藏模式 = str(getattr(输入, "隐藏模式", "关闭") or "关闭")
+    #     全隐模式 = bool("全隐" in 隐藏模式)
+    #     半隐模式 = (not 全隐模式) and bool("半隐" in 隐藏模式)
+    #     半隐y阈值 = int(屏幕.get_height() * 0.5)
+    #     try:
+    #         当前毫秒 = int(round(当前秒 * 1000.0))
+    #     except Exception:
+    #         当前毫秒 = 0
+
+    #     轨道中心列表 = list(getattr(输入, "轨道中心列表", []) or [])
+    #     判定线y列表: List[int] = []
+    #     if isinstance(布局锚点, dict):
+    #         try:
+    #             轨道中心列表 = list(
+    #                 布局锚点.get("轨道中心列表", 轨道中心列表) or 轨道中心列表
+    #             )
+    #         except Exception:
+    #             pass
+    #         try:
+    #             判定线y列表 = [
+    #                 int(v) for v in list(布局锚点.get("判定线y列表", []) or [])[:5]
+    #             ]
+    #         except Exception:
+    #             判定线y列表 = []
+    #         try:
+    #             y判定 = int(布局锚点.get("判定线y", 0) or 0)
+    #         except Exception:
+    #             y判定 = int(float(输入.判定线y) + y偏移)
+    #     else:
+    #         y判定 = int(float(输入.判定线y) + y偏移)
+    #     y底 = int(float(输入.底部y) + y偏移)
+
+    #     有效速度 = float(输入.滚动速度px每秒) * 游戏缩放
+    #     箭头宽_tap = int(max(18, int(float(输入.箭头目标宽) * 游戏缩放)))
+    #     箭头宽_hold = int(max(16, int(float(箭头宽_tap) * hold宽度系数)))
+
+    #     while len(轨道中心列表) < 5:
+    #         轨道中心列表.append(0)
+    #     while len(判定线y列表) < 5:
+    #         判定线y列表.append(int(y判定))
+
+    #     # ✅ 上边界在屏幕外：允许未击中跑出屏幕
+    #     上边界 = -int(max(40, 箭头宽_tap * 2))
+    #     下边界 = int(y底 + max(40, 箭头宽_tap * 2))
+
+    #     可视秒 = float(max(1, (y底 - y判定))) / float(max(60.0, float(有效速度)))
+    #     提前秒 = 可视秒 + 1.0
+
+    #     try:
+    #         按下数组 = pygame.key.get_pressed()
+    #     except Exception:
+    #         按下数组 = None
+
+    #     轨道到按键列表 = (
+    #         dict(getattr(self, "_按键反馈轨道到按键列表", {}) or {})
+    #         if isinstance(getattr(self, "_按键反馈轨道到按键列表", None), dict)
+    #         else {}
+    #     )
+    #     if not 轨道到按键列表:
+    #         轨道到按键列表 = {
+    #             0: [pygame.K_1, pygame.K_KP1],
+    #             1: [pygame.K_7, pygame.K_KP7],
+    #             2: [pygame.K_5, pygame.K_KP5],
+    #             3: [pygame.K_9, pygame.K_KP9],
+    #             4: [pygame.K_3, pygame.K_KP3],
+    #         }
+
+    #     def _轨道是否按下(轨道: int) -> bool:
+    #         if 按下数组 is None:
+    #             return False
+    #         for k in 轨道到按键列表.get(int(轨道), []):
+    #             try:
+    #                 if 按下数组[k]:
+    #                     return True
+    #             except Exception:
+    #                 continue
+    #         return False
+
+    #     # ✅ 新：队列+已命中表
+    #     self._确保命中映射缓存()
+    #     命中窗毫秒 = int(round(float(self._命中匹配窗秒) * 1000.0))
+    #     if 命中窗毫秒 < 40:
+    #         命中窗毫秒 = 40
+    #     if 命中窗毫秒 > 260:
+    #         命中窗毫秒 = 260
+
+    #     # ✅ 清理已命中tap过期表 + 清理过老的命中队列
+    #     for 轨 in range(5):
+    #         表 = self._已命中tap过期表毫秒[轨]
+    #         if isinstance(表, dict) and 表:
+    #             for k in list(表.keys()):
+    #                 try:
+    #                     if 当前毫秒 > int(表.get(k, -1)):
+    #                         del 表[k]
+    #                 except Exception:
+    #                     try:
+    #                         del 表[k]
+    #                     except Exception:
+    #                         pass
+
+    #         队列 = self._待命中队列毫秒[轨]
+    #         if isinstance(队列, list) and 队列:
+    #             # 超过 2 秒的输入基本不可能再匹配任何 note，直接丢掉
+    #             丢弃阈值 = int(当前毫秒 - 2000)
+    #             while 队列 and int(队列[0]) < 丢弃阈值:
+    #                 队列.pop(0)
+
+    #     活跃hold轨道: set[int] = set()
+    #     for i in range(5):
+    #         self._hold当前按下中[i] = False
+
+    #     for 事件 in 输入.事件列表 or []:
+    #         try:
+    #             st = float(getattr(事件, "开始秒"))
+    #             ed = float(getattr(事件, "结束秒"))
+    #             轨道 = int(getattr(事件, "轨道序号"))
+    #             类型 = str(getattr(事件, "类型"))
+    #         except Exception:
+    #             continue
+
+    #         if st < 当前秒 - 2.5 and ed < 当前秒 - 2.5:
+    #             continue
+    #         if st > 当前秒 + 提前秒:
+    #             break
+    #         if not (0 <= 轨道 < 5):
+    #             continue
+
+    #         x中心 = int(轨道中心列表[轨道])
+    #         当前轨判定y = int(判定线y列表[轨道])
+
+    #         dy开始 = (st - 当前秒) * float(有效速度)
+    #         y开始 = float(当前轨判定y) + float(dy开始)
+
+    #         st毫秒 = int(round(st * 1000.0))
+
+    #         # ---------- tap ----------
+    #         if abs(ed - st) < 1e-6 or 类型 == "tap":
+    #             if y开始 < float(上边界) or y开始 > float(下边界):
+    #                 continue
+
+    #             # ✅ 命中判定：先看“已命中表”，不靠单槽位覆盖
+    #             已命中表 = self._已命中tap过期表毫秒[轨道]
+    #             命中匹配 = False
+    #             try:
+    #                 过期 = int(已命中表.get(st毫秒, -1))
+    #                 if 过期 > 0 and 当前毫秒 <= 过期:
+    #                     命中匹配 = True
+    #             except Exception:
+    #                 命中匹配 = False
+
+    #             # ✅ 没命中则尝试从“命中队列”消费一次
+    #             if not 命中匹配:
+    #                 队列 = self._待命中队列毫秒[轨道]
+
+    #                 # 丢掉早于本 note 窗口左边界的输入（不可能匹配本 note 或后续 note）
+    #                 左界 = int(st毫秒 - 命中窗毫秒)
+    #                 while 队列 and int(队列[0]) < 左界:
+    #                     队列.pop(0)
+
+    #                 if 队列:
+    #                     hit_ms = int(队列[0])
+    #                     if abs(hit_ms - st毫秒) <= 命中窗毫秒:
+    #                         # ✅ 消费这次命中
+    #                         队列.pop(0)
+    #                         命中匹配 = True
+
+    #                         # ✅ 记录这个 note 已命中：保证它穿过判定线后立刻消失
+    #                         # 过期给足 600ms~1000ms，防止穿越判定线前表就过期
+    #                         过期候选1 = int(st毫秒 + 1000)
+    #                         过期候选2 = int(当前毫秒 + 650)
+    #                         已命中表[int(st毫秒)] = int(max(过期候选1, 过期候选2))
+
+    #             # ✅ 命中的 tap：穿过当前轨判定线就隐藏
+    #             if 命中匹配 and (y开始 < float(当前轨判定y)):
+    #                 continue
+
+    #             if 全隐模式:
+    #                 continue
+    #             if 半隐模式 and (y开始 > float(半隐y阈值)):
+    #                 continue
+
+    #             x绘制 = float(x中心)
+    #             旋转角度 = 0.0
+    #             if "摇摆" in 轨迹模式:
+    #                 # 节奏摆动：基于时间连续变化，避免“抖动感”；位移允许超出轨道宽度。
+    #                 主振幅 = max(16.0, float(箭头宽_tap) * 0.52)
+    #                 主相位 = (
+    #                     float(当前秒) * (math.pi * 2.0) * 2.05
+    #                     + float(st) * 0.55
+    #                     + float(轨道) * 0.72
+    #                 )
+    #                 次相位 = float(主相位) * 0.52 + float(轨道) * 0.35
+    #                 x绘制 = (
+    #                     float(x中心)
+    #                     + math.sin(主相位) * 主振幅
+    #                     + math.sin(次相位) * (主振幅 * 0.22)
+    #                 )
+    #             elif "旋转" in 轨迹模式:
+    #                 旋转角度 = float(
+    #                     (当前秒 * 360.0 * 1.25 + float(st) * 140.0 + float(轨道) * 35.0)
+    #                     % 360.0
+    #                 )
+
+    #             self._画tap(
+    #                 屏幕,
+    #                 图集,
+    #                 轨道,
+    #                 int(round(x绘制)),
+    #                 y开始,
+    #                 int(箭头宽_tap),
+    #                 旋转角度=旋转角度,
+    #             )
+    #             continue
+
+    #         # ---------- hold ----------
+    #         dy结束 = (ed - 当前秒) * float(有效速度)
+    #         y结束 = float(当前轨判定y) + float(dy结束)
+
+    #         seg_top = float(min(y开始, y结束))
+    #         seg_bot = float(max(y开始, y结束))
+    #         if seg_bot < float(上边界) or seg_top > float(下边界):
+    #             continue
+
+    #         是否命中hold = False
+    #         命中开始 = float(self._命中hold开始谱面秒[轨道])
+    #         命中结束 = float(self._命中hold结束谱面秒[轨道])
+
+    #         if 命中结束 > -1.0 and (当前秒 <= 命中结束 + 1.2):
+    #             if abs(st - 命中开始) <= max(0.08, float(self._命中匹配窗秒) * 2.0):
+    #                 是否命中hold = True
+
+    #         # ✅ hold 也用队列消费（解决 tap/hold 交错时被覆盖的问题）
+    #         if not 是否命中hold:
+    #             队列 = self._待命中队列毫秒[轨道]
+    #             左界 = int(st毫秒 - 命中窗毫秒)
+    #             while 队列 and int(队列[0]) < 左界:
+    #                 队列.pop(0)
+
+    #             if 队列:
+    #                 hit_ms = int(队列[0])
+    #                 if abs(hit_ms - st毫秒) <= 命中窗毫秒:
+    #                     # 只要结束秒明显晚于开始秒，就按 hold 消费。
+    #                     # 短 hold 也必须能命中，不能再被 0.15s 门槛吞掉。
+    #                     if float(ed - st) > 1e-6:
+    #                         队列.pop(0)
+    #                         self._命中hold开始谱面秒[轨道] = float(st)
+    #                         self._命中hold结束谱面秒[轨道] = float(ed)
+    #                         self._击中特效开始谱面秒[轨道] = float(st)
+    #                         self._击中特效循环到谱面秒[轨道] = float(ed)
+    #                         是否命中hold = True
+
+    #         是否绘制头 = True
+    #         if 是否命中hold and (float(st) <= 当前秒 <= float(ed)):
+    #             活跃hold轨道.add(int(轨道))
+    #             是否按下 = _轨道是否按下(int(轨道))
+    #             self._hold当前按下中[int(轨道)] = bool(是否按下)
+    #             self._hold松手系统秒[int(轨道)] = None
+
+    #         if 全隐模式:
+    #             continue
+
+    #         绘制下边界 = int(下边界)
+    #         if 半隐模式:
+    #             绘制下边界 = int(min(int(绘制下边界), int(半隐y阈值)))
+    #             if min(float(y开始), float(y结束)) > float(半隐y阈值):
+    #                 continue
+
+    #         self._画hold(
+    #             屏幕,
+    #             图集,
+    #             轨道,
+    #             x中心,
+    #             y开始,
+    #             y结束,
+    #             int(箭头宽_hold),
+    #             判定线y=int(当前轨判定y),
+    #             是否命中hold=bool(是否命中hold),
+    #             上边界=int(上边界),
+    #             下边界=int(绘制下边界),
+    #             是否绘制头=bool(是否绘制头),
+    #         )
+
+    #     for i in range(5):
+    #         if i not in 活跃hold轨道:
+    #             self._hold松手系统秒[i] = None
+    #             self._hold当前按下中[i] = False
+
+    #     for i in range(5):
+    #         if (
+    #             float(self._命中hold结束谱面秒[i]) > -1.0
+    #             and 当前秒 > float(self._命中hold结束谱面秒[i]) + 2.0
+    #         ):
+    #             self._命中hold开始谱面秒[i] = -999.0
+    #             self._命中hold结束谱面秒[i] = -999.0
+    #             if float(self._击中特效循环到谱面秒[i]) > -1.0:
+    #                 self._击中特效循环到谱面秒[i] = -999.0
+
     def _绘制音符(self, 屏幕: pygame.Surface, 输入: 渲染输入):
         图集 = self._皮肤包.arrow
         if 图集 is None:
@@ -2692,11 +2912,14 @@ class 谱面渲染器:
         布局锚点 = self._取判定区实际锚点(屏幕, 输入)
 
         当前秒 = float(输入.当前谱面秒)
+        渲染秒 = float(self._取渲染平滑谱面秒(当前秒))
+
         轨迹模式 = str(getattr(输入, "轨迹模式", "正常") or "正常")
         隐藏模式 = str(getattr(输入, "隐藏模式", "关闭") or "关闭")
         全隐模式 = bool("全隐" in 隐藏模式)
         半隐模式 = (not 全隐模式) and bool("半隐" in 隐藏模式)
         半隐y阈值 = int(屏幕.get_height() * 0.5)
+
         try:
             当前毫秒 = int(round(当前秒 * 1000.0))
         except Exception:
@@ -2723,6 +2946,7 @@ class 谱面渲染器:
                 y判定 = int(float(输入.判定线y) + y偏移)
         else:
             y判定 = int(float(输入.判定线y) + y偏移)
+
         y底 = int(float(输入.底部y) + y偏移)
 
         有效速度 = float(输入.滚动速度px每秒) * 游戏缩放
@@ -2734,7 +2958,6 @@ class 谱面渲染器:
         while len(判定线y列表) < 5:
             判定线y列表.append(int(y判定))
 
-        # ✅ 上边界在屏幕外：允许未击中跑出屏幕
         上边界 = -int(max(40, 箭头宽_tap * 2))
         下边界 = int(y底 + max(40, 箭头宽_tap * 2))
 
@@ -2771,7 +2994,6 @@ class 谱面渲染器:
                     continue
             return False
 
-        # ✅ 新：队列+已命中表
         self._确保命中映射缓存()
         命中窗毫秒 = int(round(float(self._命中匹配窗秒) * 1000.0))
         if 命中窗毫秒 < 40:
@@ -2779,7 +3001,6 @@ class 谱面渲染器:
         if 命中窗毫秒 > 260:
             命中窗毫秒 = 260
 
-        # ✅ 清理已命中tap过期表 + 清理过老的命中队列
         for 轨 in range(5):
             表 = self._已命中tap过期表毫秒[轨]
             if isinstance(表, dict) and 表:
@@ -2795,7 +3016,6 @@ class 谱面渲染器:
 
             队列 = self._待命中队列毫秒[轨]
             if isinstance(队列, list) and 队列:
-                # 超过 2 秒的输入基本不可能再匹配任何 note，直接丢掉
                 丢弃阈值 = int(当前毫秒 - 2000)
                 while 队列 and int(队列[0]) < 丢弃阈值:
                     队列.pop(0)
@@ -2823,17 +3043,15 @@ class 谱面渲染器:
             x中心 = int(轨道中心列表[轨道])
             当前轨判定y = int(判定线y列表[轨道])
 
-            dy开始 = (st - 当前秒) * float(有效速度)
+            dy开始 = (st - 渲染秒) * float(有效速度)
             y开始 = float(当前轨判定y) + float(dy开始)
 
             st毫秒 = int(round(st * 1000.0))
 
-            # ---------- tap ----------
             if abs(ed - st) < 1e-6 or 类型 == "tap":
                 if y开始 < float(上边界) or y开始 > float(下边界):
                     continue
 
-                # ✅ 命中判定：先看“已命中表”，不靠单槽位覆盖
                 已命中表 = self._已命中tap过期表毫秒[轨道]
                 命中匹配 = False
                 try:
@@ -2843,11 +3061,8 @@ class 谱面渲染器:
                 except Exception:
                     命中匹配 = False
 
-                # ✅ 没命中则尝试从“命中队列”消费一次
                 if not 命中匹配:
                     队列 = self._待命中队列毫秒[轨道]
-
-                    # 丢掉早于本 note 窗口左边界的输入（不可能匹配本 note 或后续 note）
                     左界 = int(st毫秒 - 命中窗毫秒)
                     while 队列 and int(队列[0]) < 左界:
                         队列.pop(0)
@@ -2855,17 +3070,12 @@ class 谱面渲染器:
                     if 队列:
                         hit_ms = int(队列[0])
                         if abs(hit_ms - st毫秒) <= 命中窗毫秒:
-                            # ✅ 消费这次命中
                             队列.pop(0)
                             命中匹配 = True
-
-                            # ✅ 记录这个 note 已命中：保证它穿过判定线后立刻消失
-                            # 过期给足 600ms~1000ms，防止穿越判定线前表就过期
                             过期候选1 = int(st毫秒 + 1000)
                             过期候选2 = int(当前毫秒 + 650)
                             已命中表[int(st毫秒)] = int(max(过期候选1, 过期候选2))
 
-                # ✅ 命中的 tap：穿过当前轨判定线就隐藏
                 if 命中匹配 and (y开始 < float(当前轨判定y)):
                     continue
 
@@ -2877,10 +3087,9 @@ class 谱面渲染器:
                 x绘制 = float(x中心)
                 旋转角度 = 0.0
                 if "摇摆" in 轨迹模式:
-                    # 节奏摆动：基于时间连续变化，避免“抖动感”；位移允许超出轨道宽度。
                     主振幅 = max(16.0, float(箭头宽_tap) * 0.52)
                     主相位 = (
-                        float(当前秒) * (math.pi * 2.0) * 2.05
+                        float(渲染秒) * (math.pi * 2.0) * 2.05
                         + float(st) * 0.55
                         + float(轨道) * 0.72
                     )
@@ -2892,7 +3101,7 @@ class 谱面渲染器:
                     )
                 elif "旋转" in 轨迹模式:
                     旋转角度 = float(
-                        (当前秒 * 360.0 * 1.25 + float(st) * 140.0 + float(轨道) * 35.0)
+                        (渲染秒 * 360.0 * 1.25 + float(st) * 140.0 + float(轨道) * 35.0)
                         % 360.0
                     )
 
@@ -2907,8 +3116,7 @@ class 谱面渲染器:
                 )
                 continue
 
-            # ---------- hold ----------
-            dy结束 = (ed - 当前秒) * float(有效速度)
+            dy结束 = (ed - 渲染秒) * float(有效速度)
             y结束 = float(当前轨判定y) + float(dy结束)
 
             seg_top = float(min(y开始, y结束))
@@ -2924,7 +3132,6 @@ class 谱面渲染器:
                 if abs(st - 命中开始) <= max(0.08, float(self._命中匹配窗秒) * 2.0):
                     是否命中hold = True
 
-            # ✅ hold 也用队列消费（解决 tap/hold 交错时被覆盖的问题）
             if not 是否命中hold:
                 队列 = self._待命中队列毫秒[轨道]
                 左界 = int(st毫秒 - 命中窗毫秒)
@@ -2934,8 +3141,6 @@ class 谱面渲染器:
                 if 队列:
                     hit_ms = int(队列[0])
                     if abs(hit_ms - st毫秒) <= 命中窗毫秒:
-                        # 只要结束秒明显晚于开始秒，就按 hold 消费。
-                        # 短 hold 也必须能命中，不能再被 0.15s 门槛吞掉。
                         if float(ed - st) > 1e-6:
                             队列.pop(0)
                             self._命中hold开始谱面秒[轨道] = float(st)
@@ -3204,86 +3409,6 @@ class 谱面渲染器:
                         int(y头 - 头2.get_height() // 2),
                     ),
                 )
-
-    # def _绘制击中特效(self, 屏幕: pygame.Surface, 输入: 渲染输入):
-    #     图集 = self._皮肤包.key_effect
-    #     if 图集 is None:
-    #         return
-
-    #     if bool(getattr(输入, "调试_循环击中特效", False)):
-    #         当前 = float(getattr(输入, "当前谱面秒", 0.0) or 0.0)
-    #         for i in range(5):
-    #             self._击中特效开始谱面秒[i] = 当前
-    #             self._击中特效循环到谱面秒[i] = 当前 + 99999.0
-    #             if self._击中特效进行秒[i] < 0.0:
-    #                 self._击中特效进行秒[i] = 0.0
-
-    #     参数 = self._取游戏区参数()
-    #     游戏缩放 = float(参数.get("缩放", 1.1))
-    #     y偏移 = float(参数.get("y偏移", 0.0))
-    #     偏移x = float(参数.get("击中特效偏移x", 0.0))
-    #     偏移y = float(参数.get("击中特效偏移y", 0.0))
-    #     宽度系数 = float(参数.get("击中特效宽度系数", 2.6))
-
-    #     当前谱面秒 = float(输入.当前谱面秒)
-    #     y判定 = int(float(输入.判定线y) + y偏移 + 偏移y)
-
-    #     # ✅ 特效更大：整体再乘 1.25
-    #     目标宽 = int(max(90, int(float(输入.箭头目标宽) * 宽度系数 * 游戏缩放 * 1.25)))
-
-    #     帧数 = 18
-    #     fps = float(self._击中特效帧率)
-
-    #     for i in range(5):
-    #         循环到 = float(self._击中特效循环到谱面秒[i])
-
-    #         if 循环到 > 0.0:
-    #             if 当前谱面秒 > 循环到 + 0.02:
-    #                 self._击中特效循环到谱面秒[i] = -999.0
-    #                 self._击中特效进行秒[i] = -1.0
-    #                 self._击中特效开始谱面秒[i] = -999.0
-    #                 continue
-
-    #             起点 = float(self._击中特效开始谱面秒[i])
-    #             if 起点 < -100.0:
-    #                 起点 = 当前谱面秒
-    #             进行秒 = max(0.0, 当前谱面秒 - 起点)
-
-    #             # ✅ hold 循环：速度 *2
-    #             帧号 = int((进行秒 * (fps * 2.0)) % float(帧数))
-    #             是否循环态 = True
-    #         else:
-    #             进行秒 = float(self._击中特效进行秒[i])
-    #             if 进行秒 < 0.0:
-    #                 continue
-    #             帧号 = int(max(0, min(帧数 - 1, int(进行秒 * fps))))
-    #             是否循环态 = False
-
-    #         序列前缀, 需要水平翻转 = self._轨道到击中序列(i)
-    #         文件名 = f"{序列前缀}_{帧号:04d}.png"
-
-    #         原图 = 图集.取(文件名)
-    #         if 原图 is None:
-    #             continue
-
-    #         if 需要水平翻转:
-    #             缓存键 = f"eff:{文件名}:fx1:{目标宽}"
-    #             原图2 = pygame.transform.flip(原图, True, False)
-    #         else:
-    #             缓存键 = f"eff:{文件名}:fx0:{目标宽}"
-    #             原图2 = 原图
-
-    #         图2 = self._取缩放图(缓存键, 原图2, 目标宽)
-
-    #         x = int(float(输入.轨道中心列表[i]) - 图2.get_width() // 2 + 偏移x)
-    #         y = int(y判定 - 图2.get_height() // 2)
-
-    #         # ✅ 更亮：循环态叠两次（ADD），普通态叠一次
-    #         if 是否循环态:
-    #             屏幕.blit(图2, (x, y), special_flags=pygame.BLEND_RGBA_ADD)
-    #             屏幕.blit(图2, (x, y), special_flags=pygame.BLEND_RGBA_ADD)
-    #         else:
-    #             屏幕.blit(图2, (x, y), special_flags=pygame.BLEND_RGBA_ADD)
 
     def _绘制击中特效(self, 屏幕: pygame.Surface, 输入: 渲染输入):
         图集 = self._皮肤包.key_effect

@@ -29,7 +29,7 @@ def 主函数():
     屏幕 = pygame.display.set_mode((初始宽, 初始高), pygame.RESIZABLE)
     时钟 = pygame.time.Clock()
 
-    项目根目录 = 取运行根目录
+    项目根目录 = 取运行根目录()
 
     上下文 = {
         "屏幕": 屏幕,

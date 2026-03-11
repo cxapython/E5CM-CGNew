@@ -19,7 +19,8 @@ songs/
 设计图/
 动刀之前先备份/
 开发工具归档/
-
+编译结果/
+installer_output/
 # 打包/构建产物
 build/
 dist/

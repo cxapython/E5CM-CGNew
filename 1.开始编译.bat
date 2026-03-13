@@ -1,0 +1,1 @@
+python windows±‡“ÎΩ≈±æ.py

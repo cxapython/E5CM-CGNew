@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import inspect
+import webbrowser
 import pygame
 from typing import Optional
 
@@ -18,6 +19,7 @@ from core.踏板控制 import 解析踏板动作
 from core.工具 import 获取字体
 from core.音频 import 音乐管理
 from core.视频 import 全局视频循环播放器, 选择第一个视频
+from core.软件版本 import 规范版本比较值, 规范版本号, 读取当前版本号
 from scenes.场景_投币 import 场景_投币
 from scenes.场景_登陆磁卡 import 场景_登陆磁卡
 from scenes.场景_个人资料 import 场景_个人资料
@@ -30,6 +32,694 @@ from scenes.场景_中转提示 import 场景_中转提示
 from scenes.场景_谱面播放器 import 场景_谱面播放器
 from ui.点击特效 import 序列帧特效资源, 全局点击特效管理器
 from ui.场景过渡 import 公共黑屏过渡,公共丝滑入场
+
+
+更新接口地址 = "https://e5cg.vip/api/update"
+
+
+def _songs目录含有曲包(songs根目录: str) -> bool:
+    路径 = os.path.abspath(str(songs根目录 or "").strip()) if str(songs根目录 or "").strip() else ""
+    if not 路径 or (not os.path.isdir(路径)):
+        return False
+
+    目标扩展名 = {".sm", ".ssc", ".dwi"}
+    try:
+        for 根目录, _子目录, 文件列表 in os.walk(路径):
+            for 文件名 in 文件列表:
+                _, 扩展名 = os.path.splitext(str(文件名 or ""))
+                if str(扩展名 or "").lower() in 目标扩展名:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _弹窗提示缺少曲包(songs根目录: str):
+    路径 = os.path.abspath(str(songs根目录 or "").strip()) if str(songs根目录 or "").strip() else ""
+    if 路径:
+        try:
+            os.makedirs(路径, exist_ok=True)
+        except Exception:
+            pass
+
+    标题 = "缺少曲包"
+    正文 = "检测到您没有曲包，请下载曲包并解压，覆盖到软件根目录songs文件夹。"
+    操作步骤 = [
+        "1. 下载所有part的曲包",
+        "2. 解压第一个压缩包，会获得全部的歌曲文件",
+        "3. 打开songs文件夹",
+        "4. 把曲包拖进去",
+        "5. 重启软件",
+    ]
+
+    try:
+        import tkinter as tk
+    except Exception:
+        tk = None
+
+    if tk is None:
+        print(正文)
+        print("下载曲包：https://e5cg.vip")
+        for 文本 in 操作步骤:
+            print(文本)
+        return
+
+    try:
+        根窗 = tk.Tk()
+        根窗.withdraw()
+
+        弹窗 = tk.Toplevel(根窗)
+        弹窗.title(标题)
+        弹窗.resizable(False, False)
+        弹窗.attributes("-topmost", True)
+        弹窗.configure(bg="#0f1726")
+        弹窗.protocol("WM_DELETE_WINDOW", 弹窗.destroy)
+
+        外框 = tk.Frame(弹窗, bg="#0f1726", padx=18, pady=16)
+        外框.pack(fill="both", expand=True)
+
+        tk.Label(
+            外框,
+            text=正文,
+            justify="left",
+            anchor="w",
+            fg="#f3f7ff",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            wraplength=520,
+        ).pack(fill="x")
+
+        if 路径:
+            tk.Label(
+                外框,
+                text=f"songs文件夹：{路径}",
+                justify="left",
+                anchor="w",
+                fg="#9fb4d9",
+                bg="#0f1726",
+                font=("Microsoft YaHei UI", 10),
+                wraplength=520,
+            ).pack(fill="x", pady=(8, 0))
+
+        tk.Label(
+            外框,
+            text="操作提示：",
+            justify="left",
+            anchor="w",
+            fg="#ffe066",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).pack(fill="x", pady=(14, 6))
+
+        for 文本 in 操作步骤:
+            tk.Label(
+                外框,
+                text=文本,
+                justify="left",
+                anchor="w",
+                fg="#d7e2f5",
+                bg="#0f1726",
+                font=("Microsoft YaHei UI", 10),
+                wraplength=520,
+            ).pack(fill="x", pady=1)
+
+        按钮区 = tk.Frame(外框, bg="#0f1726")
+        按钮区.pack(fill="x", pady=(16, 0))
+
+        def _下载曲包():
+            try:
+                webbrowser.open("https://e5cg.vip")
+            except Exception:
+                pass
+
+        tk.Button(
+            按钮区,
+            text="1.下载曲包，https://e5cg.vip",
+            command=_下载曲包,
+            padx=14,
+            pady=8,
+            bg="#1d6cff",
+            fg="#ffffff",
+            activebackground="#2a7fff",
+            activeforeground="#ffffff",
+            relief="flat",
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(side="left")
+
+        tk.Button(
+            按钮区,
+            text="关闭",
+            command=弹窗.destroy,
+            padx=14,
+            pady=8,
+            bg="#243248",
+            fg="#f3f7ff",
+            activebackground="#30415d",
+            activeforeground="#ffffff",
+            relief="flat",
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10),
+        ).pack(side="right")
+
+        弹窗.update_idletasks()
+        宽 = int(弹窗.winfo_width() or 560)
+        高 = int(弹窗.winfo_height() or 320)
+        屏宽 = int(弹窗.winfo_screenwidth() or 宽)
+        屏高 = int(弹窗.winfo_screenheight() or 高)
+        x = max(0, (屏宽 - 宽) // 2)
+        y = max(0, (屏高 - 高) // 2)
+        弹窗.geometry(f"{宽}x{高}+{x}+{y}")
+        弹窗.deiconify()
+        弹窗.grab_set()
+        弹窗.focus_force()
+        根窗.wait_window(弹窗)
+        根窗.destroy()
+    except Exception:
+        try:
+            根窗.destroy()
+        except Exception:
+            pass
+        print(正文)
+        print("下载曲包：https://e5cg.vip")
+        for 文本 in 操作步骤:
+            print(文本)
+
+
+def _格式化字节大小(字节数: object) -> str:
+    try:
+        值 = float(字节数 or 0)
+    except Exception:
+        值 = 0.0
+
+    单位列表 = ["B", "KB", "MB", "GB"]
+    单位索引 = 0
+    while 值 >= 1024.0 and 单位索引 < len(单位列表) - 1:
+        值 /= 1024.0
+        单位索引 += 1
+
+    if 单位索引 == 0:
+        return f"{int(值)}{单位列表[单位索引]}"
+    return f"{值:.1f}{单位列表[单位索引]}"
+
+
+def _清理下载文件名(文本: object) -> str:
+    值 = str(文本 or "").strip()
+    if not 值:
+        return ""
+
+    非法字符 = '<>:"/\\|?*'
+    return "".join("_" if ch in 非法字符 else ch for ch in 值).strip(" .")
+
+
+def _启动安装包(安装包路径: str):
+    路径 = os.path.abspath(str(安装包路径 or "").strip())
+    if not 路径 or (not os.path.isfile(路径)):
+        raise FileNotFoundError(f"未找到安装包：{路径}")
+
+    if sys.platform == "win32" and hasattr(os, "startfile"):
+        os.startfile(路径)
+        return
+
+    import subprocess
+
+    subprocess.Popen([路径])
+
+
+def _后台检查软件更新(当前版本号: str, 结果容器: dict):
+    import urllib.request
+
+    请求 = urllib.request.Request(
+        更新接口地址,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": f"E5CM-CG/{规范版本号(当前版本号, 默认值='unknown')}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(请求, timeout=5) as 响应:
+            编码 = 响应.headers.get_content_charset() or "utf-8"
+            文本 = 响应.read().decode(编码, errors="ignore")
+
+        对象 = json.loads(文本)
+        if not isinstance(对象, dict):
+            raise ValueError("更新接口返回的不是 JSON 对象")
+
+        更新信息 = {
+            "version": str(对象.get("version", "") or "").strip(),
+            "versionLabel": str(对象.get("versionLabel", "") or "").strip(),
+            "downloadUrl": str(对象.get("downloadUrl", "") or "").strip(),
+            "updateContent": str(对象.get("updateContent", "") or "").strip(),
+            "publishedAt": str(对象.get("publishedAt", "") or "").strip(),
+        }
+        远端版本号 = str(更新信息.get("version", "") or "").strip()
+
+        结果容器["查询成功"] = True
+        结果容器["错误"] = ""
+        结果容器["数据"] = 更新信息
+        结果容器["发现新版本"] = bool(
+            远端版本号
+            and 规范版本比较值(远端版本号) != 规范版本比较值(当前版本号)
+        )
+    except Exception as 异常:
+        结果容器["查询成功"] = False
+        结果容器["错误"] = str(异常 or "")
+        结果容器["数据"] = None
+        结果容器["发现新版本"] = False
+    finally:
+        结果容器["已完成"] = True
+
+
+def _弹窗下载新版安装包(更新信息: dict, 父窗体=None) -> bool:
+    下载链接 = str(更新信息.get("downloadUrl", "") or "").strip()
+    if not 下载链接:
+        return False
+
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except Exception:
+        return False
+
+    根窗 = None
+    自建根窗 = 父窗体 is None
+    状态 = {
+        "已完成": False,
+        "成功": False,
+        "取消": False,
+        "已下载字节": 0,
+        "总字节": 0,
+        "错误": "",
+        "保存路径": "",
+        "已启动安装器": False,
+    }
+    已处理完成 = {"值": False}
+    进度条已启动 = {"值": False}
+
+    try:
+        if 自建根窗:
+            根窗 = tk.Tk()
+            根窗.withdraw()
+        else:
+            根窗 = 父窗体
+
+        弹窗 = tk.Toplevel(根窗)
+        弹窗.title("下载更新")
+        弹窗.resizable(False, False)
+        弹窗.attributes("-topmost", True)
+        弹窗.configure(bg="#0f1726")
+
+        外框 = tk.Frame(弹窗, bg="#0f1726", padx=18, pady=16)
+        外框.pack(fill="both", expand=True)
+
+        标题变量 = tk.StringVar(value="正在准备下载更新包...")
+        详情变量 = tk.StringVar(value=str(下载链接))
+
+        tk.Label(
+            外框,
+            textvariable=标题变量,
+            justify="left",
+            anchor="w",
+            fg="#f3f7ff",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            wraplength=520,
+        ).pack(fill="x")
+
+        tk.Label(
+            外框,
+            textvariable=详情变量,
+            justify="left",
+            anchor="w",
+            fg="#9fb4d9",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 10),
+            wraplength=520,
+        ).pack(fill="x", pady=(8, 12))
+
+        进度条 = ttk.Progressbar(外框, orient="horizontal", length=520, mode="determinate")
+        进度条.pack(fill="x")
+
+        按钮区 = tk.Frame(外框, bg="#0f1726")
+        按钮区.pack(fill="x", pady=(16, 0))
+
+        def _关闭或取消():
+            if bool(状态.get("已完成", False)):
+                弹窗.destroy()
+                return
+            状态["取消"] = True
+            标题变量.set("正在取消下载...")
+
+        取消按钮 = tk.Button(
+            按钮区,
+            text="取消",
+            command=_关闭或取消,
+            padx=14,
+            pady=8,
+            bg="#243248",
+            fg="#f3f7ff",
+            activebackground="#30415d",
+            activeforeground="#ffffff",
+            relief="flat",
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10),
+        )
+        取消按钮.pack(side="right")
+        弹窗.protocol("WM_DELETE_WINDOW", _关闭或取消)
+
+        def _下载线程():
+            import tempfile
+            import urllib.parse
+            import urllib.request
+
+            目标路径 = ""
+            临时路径 = ""
+
+            try:
+                下载目录 = os.path.join(tempfile.gettempdir(), "E5CM-CG_Update")
+                os.makedirs(下载目录, exist_ok=True)
+
+                解析结果 = urllib.parse.urlparse(下载链接)
+                文件名 = os.path.basename(urllib.parse.unquote(解析结果.path or ""))
+                文件名 = _清理下载文件名(文件名)
+                if not 文件名:
+                    安全版本号 = _清理下载文件名(
+                        str(更新信息.get("version", "") or "")
+                    ) or str(int(time.time()))
+                    文件名 = f"E5CM-CG_Setup_{安全版本号}.exe"
+                if not 文件名.lower().endswith(".exe"):
+                    文件名 += ".exe"
+
+                目标路径 = os.path.join(下载目录, 文件名)
+                临时路径 = 目标路径 + ".part"
+                状态["保存路径"] = 目标路径
+                状态["已下载字节"] = 0
+
+                请求 = urllib.request.Request(
+                    下载链接,
+                    method="GET",
+                    headers={"User-Agent": "E5CM-CG-Updater"},
+                )
+
+                with urllib.request.urlopen(请求, timeout=15) as 响应:
+                    try:
+                        状态["总字节"] = max(
+                            0,
+                            int(响应.headers.get("Content-Length", "0") or 0),
+                        )
+                    except Exception:
+                        状态["总字节"] = 0
+
+                    with open(临时路径, "wb") as 文件:
+                        while True:
+                            if bool(状态.get("取消", False)):
+                                raise RuntimeError("下载已取消")
+
+                            数据块 = 响应.read(262144)
+                            if not 数据块:
+                                break
+
+                            文件.write(数据块)
+                            状态["已下载字节"] = int(
+                                状态.get("已下载字节", 0) or 0
+                            ) + len(数据块)
+
+                if bool(状态.get("取消", False)):
+                    raise RuntimeError("下载已取消")
+
+                if os.path.isfile(目标路径):
+                    try:
+                        os.remove(目标路径)
+                    except Exception:
+                        pass
+                os.replace(临时路径, 目标路径)
+                状态["成功"] = True
+            except Exception as 异常:
+                状态["错误"] = str(异常 or "下载失败")
+                for 路径 in (临时路径, 目标路径):
+                    if 路径 and os.path.isfile(路径):
+                        try:
+                            os.remove(路径)
+                        except Exception:
+                            pass
+            finally:
+                状态["已完成"] = True
+
+        def _刷新进度():
+            已下载字节 = int(状态.get("已下载字节", 0) or 0)
+            总字节 = int(状态.get("总字节", 0) or 0)
+
+            if not bool(状态.get("已完成", False)):
+                if 总字节 > 0:
+                    if bool(进度条已启动.get("值", False)):
+                        try:
+                            进度条.stop()
+                        except Exception:
+                            pass
+                        进度条已启动["值"] = False
+                    进度条.configure(mode="determinate", maximum=max(1, 总字节))
+                    进度条["value"] = min(已下载字节, 总字节)
+                    百分比 = min(100.0, 已下载字节 * 100.0 / max(1, 总字节))
+                    标题变量.set(f"正在下载更新包... {百分比:.1f}%")
+                    详情变量.set(
+                        f"{_格式化字节大小(已下载字节)} / {_格式化字节大小(总字节)}"
+                    )
+                else:
+                    if not bool(进度条已启动.get("值", False)):
+                        进度条.configure(mode="indeterminate")
+                        进度条.start(12)
+                        进度条已启动["值"] = True
+                    标题变量.set("正在下载更新包...")
+                    详情变量.set(f"已下载 {_格式化字节大小(已下载字节)}")
+
+                弹窗.after(120, _刷新进度)
+                return
+
+            if bool(进度条已启动.get("值", False)):
+                try:
+                    进度条.stop()
+                except Exception:
+                    pass
+                进度条已启动["值"] = False
+
+            if bool(已处理完成.get("值", False)):
+                return
+            已处理完成["值"] = True
+
+            if bool(状态.get("成功", False)):
+                标题变量.set("下载完成，正在启动安装包...")
+                详情变量.set(str(状态.get("保存路径", "") or ""))
+                取消按钮.configure(state="disabled")
+                try:
+                    _启动安装包(str(状态.get("保存路径", "") or ""))
+                    状态["已启动安装器"] = True
+                    弹窗.after(180, 弹窗.destroy)
+                except Exception as 异常:
+                    标题变量.set("安装包启动失败")
+                    详情变量.set(str(异常 or ""))
+                    取消按钮.configure(state="normal", text="关闭")
+                return
+
+            if bool(状态.get("取消", False)):
+                标题变量.set("下载已取消")
+            else:
+                标题变量.set("下载失败")
+            详情变量.set(str(状态.get("错误", "") or ""))
+            取消按钮.configure(state="normal", text="关闭")
+
+        import threading
+
+        下载线程 = threading.Thread(
+            target=_下载线程,
+            name="E5CM-CG-UpdateDownload",
+            daemon=True,
+        )
+        下载线程.start()
+
+        弹窗.update_idletasks()
+        宽 = int(弹窗.winfo_width() or 560)
+        高 = int(弹窗.winfo_height() or 220)
+        屏宽 = int(弹窗.winfo_screenwidth() or 宽)
+        屏高 = int(弹窗.winfo_screenheight() or 高)
+        x = max(0, (屏宽 - 宽) // 2)
+        y = max(0, (屏高 - 高) // 2)
+        弹窗.geometry(f"{宽}x{高}+{x}+{y}")
+        弹窗.deiconify()
+        弹窗.grab_set()
+        弹窗.focus_force()
+
+        弹窗.after(120, _刷新进度)
+        根窗.wait_window(弹窗)
+        return bool(状态.get("已启动安装器", False))
+    finally:
+        if 自建根窗 and 根窗 is not None:
+            try:
+                根窗.destroy()
+            except Exception:
+                pass
+
+
+def _弹窗提示软件更新(当前版本号: str, 更新信息: dict) -> bool:
+    远端版本号 = str(更新信息.get("version", "") or "").strip()
+    if not 远端版本号:
+        return False
+
+    try:
+        import tkinter as tk
+    except Exception:
+        return False
+
+    根窗 = None
+    结果 = {"已启动安装器": False}
+
+    try:
+        根窗 = tk.Tk()
+        根窗.withdraw()
+
+        弹窗 = tk.Toplevel(根窗)
+        弹窗.title("发现新版本")
+        弹窗.resizable(False, False)
+        弹窗.attributes("-topmost", True)
+        弹窗.configure(bg="#0f1726")
+        弹窗.protocol("WM_DELETE_WINDOW", 弹窗.destroy)
+
+        外框 = tk.Frame(弹窗, bg="#0f1726", padx=18, pady=16)
+        外框.pack(fill="both", expand=True)
+
+        版本提示 = str(更新信息.get("versionLabel", "") or "").strip()
+        更新内容 = str(更新信息.get("updateContent", "") or "").strip() or "暂无更新说明"
+        下载链接 = str(更新信息.get("downloadUrl", "") or "").strip()
+
+        tk.Label(
+            外框,
+            text="发现新版本",
+            justify="left",
+            anchor="w",
+            fg="#f3f7ff",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 14, "bold"),
+        ).pack(fill="x")
+
+        tk.Label(
+            外框,
+            text=f"当前版本：{规范版本号(当前版本号, 默认值='未知版本')}",
+            justify="left",
+            anchor="w",
+            fg="#9fb4d9",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 10),
+        ).pack(fill="x", pady=(8, 0))
+
+        tk.Label(
+            外框,
+            text=f"新版本版本号：{远端版本号}",
+            justify="left",
+            anchor="w",
+            fg="#ffe066",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            wraplength=520,
+        ).pack(fill="x", pady=(10, 0))
+
+        if 版本提示 and 版本提示 != 远端版本号:
+            tk.Label(
+                外框,
+                text=f"更新提示：{版本提示}",
+                justify="left",
+                anchor="w",
+                fg="#9fb4d9",
+                bg="#0f1726",
+                font=("Microsoft YaHei UI", 10),
+                wraplength=520,
+            ).pack(fill="x", pady=(6, 0))
+
+        tk.Label(
+            外框,
+            text=f"本次更新功能：\n{更新内容}",
+            justify="left",
+            anchor="w",
+            fg="#d7e2f5",
+            bg="#0f1726",
+            font=("Microsoft YaHei UI", 10),
+            wraplength=520,
+        ).pack(fill="x", pady=(12, 0))
+
+        按钮区 = tk.Frame(外框, bg="#0f1726")
+        按钮区.pack(fill="x", pady=(18, 0))
+
+        def _立即更新():
+            try:
+                弹窗.grab_release()
+            except Exception:
+                pass
+            弹窗.withdraw()
+            成功 = _弹窗下载新版安装包(更新信息, 父窗体=根窗)
+            if 成功:
+                结果["已启动安装器"] = True
+                弹窗.destroy()
+                return
+            if 弹窗.winfo_exists():
+                弹窗.deiconify()
+                try:
+                    弹窗.grab_set()
+                except Exception:
+                    pass
+                弹窗.focus_force()
+
+        更新按钮 = tk.Button(
+            按钮区,
+            text="立即更新",
+            command=_立即更新,
+            padx=14,
+            pady=8,
+            bg="#1d6cff",
+            fg="#ffffff",
+            activebackground="#2a7fff",
+            activeforeground="#ffffff",
+            relief="flat",
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        更新按钮.pack(side="left")
+        if not 下载链接:
+            更新按钮.configure(state="disabled")
+
+        tk.Button(
+            按钮区,
+            text="稍后再说",
+            command=弹窗.destroy,
+            padx=14,
+            pady=8,
+            bg="#243248",
+            fg="#f3f7ff",
+            activebackground="#30415d",
+            activeforeground="#ffffff",
+            relief="flat",
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10),
+        ).pack(side="right")
+
+        弹窗.update_idletasks()
+        宽 = int(弹窗.winfo_width() or 560)
+        高 = int(弹窗.winfo_height() or 280)
+        屏宽 = int(弹窗.winfo_screenwidth() or 宽)
+        屏高 = int(弹窗.winfo_screenheight() or 高)
+        x = max(0, (屏宽 - 宽) // 2)
+        y = max(0, (屏高 - 高) // 2)
+        弹窗.geometry(f"{宽}x{高}+{x}+{y}")
+        弹窗.deiconify()
+        弹窗.grab_set()
+        弹窗.focus_force()
+        根窗.wait_window(弹窗)
+        return bool(结果.get("已启动安装器", False))
+    finally:
+        if 根窗 is not None:
+            try:
+                根窗.destroy()
+            except Exception:
+                pass
 
 
 def _切换英文输入法():
@@ -566,10 +1256,39 @@ def 主函数():
     # _切换英文输入法()
 
     启动调试设置 = _读取启动调试设置()
+    当前版本号 = 读取当前版本号(_取运行根目录())
+    更新检查状态 = {
+        "线程已启动": False,
+        "已完成": False,
+        "已提示": False,
+        "查询成功": False,
+        "发现新版本": False,
+        "错误": "",
+        "数据": None,
+    }
     os.environ.setdefault(
         "E5CM_GPU_PIPELINE",
         "1" if bool(启动调试设置.get("默认GPU谱面管线", True)) else "0",
     )
+
+    try:
+        import threading
+
+        threading.Thread(
+            target=_后台检查软件更新,
+            args=(当前版本号, 更新检查状态),
+            name="E5CM-CG-UpdateCheck",
+            daemon=True,
+        ).start()
+        更新检查状态["线程已启动"] = True
+    except Exception:
+        更新检查状态["线程已启动"] = False
+        更新检查状态["已完成"] = True
+
+    songs根目录 = os.path.join(_取运行根目录(), "songs")
+    if not _songs目录含有曲包(songs根目录):
+        _弹窗提示缺少曲包(songs根目录)
+        return
 
     pygame.init()
     窗口标题 = "e舞成名重构版"
@@ -665,6 +1384,7 @@ def 主函数():
         "开发默认选歌模式": str(
             启动调试设置.get("开发默认选歌模式", "混音") or "混音"
         ),
+        "软件版本": str(当前版本号),
     }
 
     def _同步渲染后端状态(后端对象, 当前载荷=None):
@@ -1770,6 +2490,22 @@ def 主函数():
 
                 结果 = 当前场景.处理事件(事件)
                 _处理场景返回结果(结果)
+
+        if (
+            bool(更新检查状态.get("已完成", False))
+            and (not bool(更新检查状态.get("已提示", False)))
+            and bool(更新检查状态.get("发现新版本", False))
+            and (not bool(非游戏菜单开启))
+            and (not bool(开发调试菜单开启))
+            and (not 过渡.是否进行中())
+            and 当前场景名 not in ("谱面播放器", "结算", "中转提示")
+        ):
+            更新检查状态["已提示"] = True
+            if _弹窗提示软件更新(
+                当前版本号,
+                dict(更新检查状态.get("数据") or {}),
+            ):
+                _退出程序()
 
         if (not 过渡.是否进行中()) and hasattr(当前场景, "更新"):
             try:

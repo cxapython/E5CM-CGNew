@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import json
 import shutil
 import subprocess
 from pathlib import Path
+
+
+版本文件名 = "客户端版本.json"
+默认版本号 = "v1.0.0"
 
 
 def 获取项目根目录() -> Path:
@@ -16,6 +21,60 @@ def 获取编译结果目录(项目根目录: Path) -> Path:
 
 def 获取主程序路径(项目根目录: Path) -> Path:
     return 项目根目录 / "main.py"
+
+
+def 获取版本文件路径列表(项目根目录: Path) -> list[Path]:
+    return [
+        项目根目录 / "json" / 版本文件名,
+        项目根目录 / "打包专用资源" / "json" / 版本文件名,
+    ]
+
+
+def 读取版本配置(文件路径: Path) -> dict:
+    try:
+        if 文件路径.exists():
+            with open(文件路径, "r", encoding="utf-8") as 文件:
+                对象 = json.load(文件)
+            if isinstance(对象, dict):
+                return dict(对象)
+    except Exception:
+        pass
+    return {}
+
+
+def 确认并写入当前版本号(项目根目录: Path) -> str:
+    版本文件路径列表 = 获取版本文件路径列表(项目根目录)
+
+    当前版本号 = ""
+    for 文件路径 in 版本文件路径列表:
+        当前版本号 = str(读取版本配置(文件路径).get("version", "") or "").strip()
+        if 当前版本号:
+            break
+    if not 当前版本号:
+        当前版本号 = 默认版本号
+
+    print("=" * 60)
+    print("🏷️ 确认当前版本号")
+    print("=" * 60)
+    print(f"当前版本号: {当前版本号}")
+    print("请输入本次版本号（直接回车保留当前值）: ", end="")
+    用户输入 = input()
+    新版本号 = str(用户输入 or "").strip() or 当前版本号
+
+    if not 新版本号:
+        raise ValueError("版本号不能为空")
+
+    for 文件路径 in 版本文件路径列表:
+        旧配置 = 读取版本配置(文件路径)
+        新配置 = dict(旧配置)
+        新配置["version"] = 新版本号
+        文件路径.parent.mkdir(parents=True, exist_ok=True)
+        with open(文件路径, "w", encoding="utf-8") as 文件:
+            json.dump(新配置, 文件, ensure_ascii=False, indent=2)
+        print(f"✓ 已写入版本号: {文件路径}")
+
+    print()
+    return 新版本号
 
 
 def 检查依赖():
@@ -309,6 +368,7 @@ def 主程序():
     print(f"输出目录: {编译结果目录}")
     print()
 
+    确认并写入当前版本号(项目根目录)
     检查依赖()
     清理旧文件(项目根目录)
 

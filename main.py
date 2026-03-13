@@ -42,7 +42,7 @@ def _songs目录含有曲包(songs根目录: str) -> bool:
     if not 路径 or (not os.path.isdir(路径)):
         return False
 
-    目标扩展名 = {".sm", ".ssc", ".dwi"}
+    目标扩展名 = {".sm", ".ssc", ".dwi", ".json"}
     try:
         for 根目录, _子目录, 文件列表 in os.walk(路径):
             for 文件名 in 文件列表:

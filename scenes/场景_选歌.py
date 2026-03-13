@@ -2596,6 +2596,20 @@ def 安全读取文本(文件路径: str) -> str:
     with open(文件路径, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
+
+def 安全读取json(文件路径: str) -> Optional[dict]:
+    for 编码 in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            with open(文件路径, "r", encoding=编码, errors="strict") as f:
+                return json.load(f)
+        except Exception:
+            continue
+    try:
+        with open(文件路径, "r", encoding="utf-8", errors="ignore") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
 def 解析显示BPM(sm文本: str) -> Optional[int]:
     匹配 = re.search(r"#DISPLAYBPM\s*:\s*([^;]+)\s*;", sm文本, flags=re.IGNORECASE)
     if not 匹配:
@@ -2614,6 +2628,33 @@ def 解析SM标题(sm文本: str) -> str:
     if not 匹配:
         return ""
     return str(匹配.group(1) or "").strip()
+
+
+def 解析JSON显示BPM(谱面数据: dict) -> Optional[int]:
+    try:
+        bpms = (谱面数据 or {}).get("bpms", []) or []
+        if not bpms:
+            return None
+        # 取 lineNo 最小的一条
+        bpms_sorted = sorted(bpms, key=lambda x: int(x.get("lineNo", 0)))
+        bpm = float(bpms_sorted[0].get("bpmVal", 0))
+        if bpm <= 0:
+            return None
+        return int(round(bpm))
+    except Exception:
+        return None
+
+
+def 解析JSON标题(谱面数据: dict) -> str:
+    try:
+        score = (谱面数据 or {}).get("scoreInfo", {}) or {}
+        for key in ("title", "name", "songName"):
+            v = str(score.get(key, "") or "").strip()
+            if v:
+                return v
+    except Exception:
+        return ""
+    return ""
 
 def 从文件夹名解析歌名星级(文件夹名: str) -> Tuple[str, int]:
     """
@@ -2668,17 +2709,37 @@ def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Opti
     歌曲文件夹 = os.path.basename(歌曲路径)
     if str(歌曲文件夹 or "").strip().lower() in {"backup", "backups"}:
         return None
-    sm文本 = 安全读取文本(sm路径)
+    扩展名 = os.path.splitext(sm路径)[1].lower()
+    sm文本 = ""
+    json数据 = None
+    if 扩展名 == ".json":
+        json数据 = 安全读取json(sm路径)
+        if (not isinstance(json数据, dict)) or (
+            ("boards" not in json数据) and ("bpms" not in json数据)
+        ):
+            return None
+    else:
+        sm文本 = 安全读取文本(sm路径)
 
     音频路径 = 找文件(歌曲路径, (".ogg", ".mp3", ".wav"))
     封面路径 = 找封面(歌曲路径)
-    bpm = 解析显示BPM(sm文本)
+    if 扩展名 == ".json":
+        bpm = 解析JSON显示BPM(json数据)
+        if bpm is None:
+            bpm = 120
+    else:
+        bpm = 解析显示BPM(sm文本)
     歌名, 星级 = 从文件夹名解析歌名星级(歌曲文件夹)
 
     if "#" not in str(歌曲文件夹 or ""):
-        sm标题 = 解析SM标题(sm文本)
-        if sm标题:
-            歌名 = sm标题
+        if 扩展名 == ".json":
+            json标题 = 解析JSON标题(json数据)
+            if json标题:
+                歌名 = json标题
+        else:
+            sm标题 = 解析SM标题(sm文本)
+            if sm标题:
+                歌名 = sm标题
 
     return 歌曲信息(
         序号=0,
@@ -2731,7 +2792,8 @@ def 扫描songs目录(songs根目录: str) -> Dict[str, Dict[str, List[歌曲信
 
     for 根, 目录列表, 文件列表 in os.walk(songs根目录):
         for 文件名 in 文件列表:
-            if not 文件名.lower().endswith(".sm"):
+            低 = 文件名.lower()
+            if not (低.endswith(".sm") or 低.endswith(".json")):
                 continue
 
             sm路径 = os.path.join(根, 文件名)
@@ -2828,7 +2890,8 @@ def 扫描songs_指定路径(
 
     for 根, 目录列表, 文件列表 in os.walk(模式目录):
         for 文件名 in 文件列表:
-            if not 文件名.lower().endswith(".sm"):
+            低 = 文件名.lower()
+            if not (低.endswith(".sm") or 低.endswith(".json")):
                 continue
 
             sm路径 = os.path.join(根, 文件名)
@@ -3265,10 +3328,6 @@ class 按钮:
         self._加载按钮背景图()
 
     def _加载按钮背景图(self):
-        """
-        统一按钮背景：UI-img/选歌界面资源/默认按钮背景.png
-        相对脚本目录加载，避免工作目录变化导致找不到资源。
-        """
         try:
             脚本目录 = _取项目根目录()
             路径 = os.path.join(脚本目录, "UI-img", "选歌界面资源", "默认按钮背景.png")
@@ -3995,11 +4054,11 @@ class 歌曲卡片:
                     hot路径 = _资源路径("UI-img", "选歌界面资源", "热门.png")
                     hot原 = 获取UI原图(hot路径, 透明=True)
                     if hot原 is not None:
-                        hot高 = max(14, int(框矩形.h * 0.24))
+                        hot高 = max(14, int(框矩形.h * 0.34))
                         hot图 = _按高等比缩放(hot原, hot高)
                         if hot图 is not None:
                             hotw, hoth = hot图.get_size()
-                            hx = 局部框矩形.right - hotw - max(4, int(hot高 * 0.10))
+                            hx = 局部框矩形.right - hotw - max(4, int(hot高 * -0.50))
                             hy = 局部框矩形.bottom - hoth - max(4, int(hot高 * 0.10))
                             hot占位宽 = hotw + max(6, int(hot高 * 0.14))
                             局部画布.blit(hot图, (hx, hy))
@@ -4011,11 +4070,11 @@ class 歌曲卡片:
                     new路径 = _资源路径("UI-img", "选歌界面资源", "NEW绿色.png")
                     new原 = 获取UI原图(new路径, 透明=True)
                     if new原 is not None:
-                        new高 = max(12, int(框矩形.h * 0.20))
+                        new高 = max(12, int(框矩形.h * 0.30))
                         new图 = _按高等比缩放(new原, new高)
                         if new图 is not None:
                             neww, newh = new图.get_size()
-                            nx = 局部框矩形.right - neww - max(4, int(new高 * 0.10))
+                            nx = 局部框矩形.right - neww - max(4, int(new高 * 0.0))
                             if hot占位宽 > 0:
                                 nx -= hot占位宽
                             ny = 局部框矩形.bottom - newh - max(4, int(new高 * 0.10))
@@ -4592,6 +4651,13 @@ class 选歌游戏:
         self._失效歌曲视图缓存()
         self._失效详情浮层缓存()
         self._刷新当前歌曲视图(保留歌曲键=当前歌曲键, 强制返回列表=True)
+        try:
+            if isinstance(getattr(self, "按钮_收藏夹", None), 底部图文按钮):
+                self.按钮_收藏夹.底部文字 = (
+                    "退出收藏夹" if bool(self.是否收藏夹模式) else "收藏夹"
+                )
+        except Exception:
+            pass
 
     def _重置列表筛选(self):
         当前歌曲键 = ""
@@ -5082,7 +5148,7 @@ class 选歌游戏:
             hot路径 = _资源路径("UI-img", "选歌界面资源", "热门.png")
             hot原 = 获取UI原图(hot路径, 透明=True)
             if hot原 is not None:
-                hot高占比 = self._取布局值("详情大图.HOT.高占比", 0.24)
+                hot高占比 = self._取布局值("详情大图.HOT.高占比", 0.34)
                 try:
                     hot高占比 = float(hot高占比)
                 except Exception:
@@ -5111,7 +5177,7 @@ class 选歌游戏:
                         最大=99999,
                     )
                     hotx偏移 = self._取布局像素(
-                        "详情大图.HOT.x偏移", +int(hotw * 0.10), 最小=-99999, 最大=99999
+                        "详情大图.HOT.x偏移", +int(hotw * 0.50), 最小=-99999, 最大=99999
                     )
                     hoty偏移 = self._取布局像素(
                         "详情大图.HOT.y偏移", +int(hoth * 0.10), 最小=-99999, 最大=99999
@@ -5647,6 +5713,7 @@ class 选歌游戏:
         # ===== 资源路径 =====
         歌曲分类图路径 = _资源路径("UI-img", "选歌界面资源", "歌曲分类.png")
         收藏夹图路径 = _资源路径("UI-img", "选歌界面资源", "收藏夹.png")
+        收藏夹底文 = "退出收藏夹" if bool(getattr(self, "是否收藏夹模式", False)) else "收藏夹"
         ALL图路径 = _资源路径("UI-img", "选歌界面资源", "all按钮.png")
         设置图路径 = _资源路径("UI-img", "选歌界面资源", "设置.png")
 
@@ -5683,13 +5750,13 @@ class 选歌游戏:
             self.按钮_收藏夹 = 底部图文按钮(
                 图片路径=收藏夹图路径,
                 矩形=pygame.Rect(0, 0, 0, 0),
-                底部文字="收藏夹",
+                底部文字=收藏夹底文,
                 是否处理透明像素=False,
             )
         else:
             try:
                 self.按钮_收藏夹.图片路径 = str(收藏夹图路径)
-                self.按钮_收藏夹.底部文字 = "收藏夹"
+                self.按钮_收藏夹.底部文字 = 收藏夹底文
                 self.按钮_收藏夹._加载原图()
             except Exception:
                 pass
@@ -5730,10 +5797,10 @@ class 选歌游戏:
             )
 
         if not hasattr(self, "按钮_重选模式"):
-            self.按钮_重选模式 = 按钮("重开", pygame.Rect(0, 0, 0, 0))
+            self.按钮_重选模式 = 按钮("", pygame.Rect(0, 0, 0, 0))
         else:
             try:
-                self.按钮_重选模式.名称 = "重开"
+                self.按钮_重选模式.名称 = ""
             except Exception:
                 pass
 
@@ -5849,15 +5916,25 @@ class 选歌游戏:
         self._确保top栏资源()
 
         w, h = self.屏幕.get_size()
-        if getattr(self, "_top缓存尺寸", (0, 0)) == (w, h):
+        当前模式 = bool(getattr(self, "是否收藏夹模式", False))
+        if (
+            getattr(self, "_top缓存尺寸", (0, 0)) == (w, h)
+            and getattr(self, "_top缓存模式", None) == 当前模式
+        ):
             return
         self._top缓存尺寸 = (w, h)
+        self._top缓存模式 = 当前模式
+
+        if 当前模式 and getattr(self, "_top中间标题图_收藏夹", None) is not None:
+            标题原图 = self._top中间标题图_收藏夹
+        else:
+            标题原图 = getattr(self, "_top中间标题图_歌曲选择", None) or self._top中间标题原图
 
         # ✅ 用 ui/top栏.py 统一生成 top 栏（中间标题用 歌曲选择.png）
         self._top_rect, self._top图, self._top标题rect, self._top标题图 = 生成top栏(
             屏幕=self.屏幕,
             top背景原图=self._top栏背景原图,
-            标题原图=self._top中间标题原图,
+            标题原图=标题原图,
             设计宽=self._设计宽,
             设计高=self._设计高,
             top设计高=150,
@@ -5897,12 +5974,24 @@ class 选歌游戏:
 
         # ===== 中间标题：歌曲选择.png =====
         self._top中间标题原图 = None
+        self._top中间标题图_歌曲选择 = None
+        self._top中间标题图_收藏夹 = None
         try:
             路径 = os.path.join(脚本目录, "UI-img", "top栏", "歌曲选择.png")
             if os.path.isfile(路径):
                 self._top中间标题原图 = pygame.image.load(路径).convert_alpha()
+                self._top中间标题图_歌曲选择 = self._top中间标题原图
         except Exception:
             self._top中间标题原图 = None
+            self._top中间标题图_歌曲选择 = None
+
+        # ===== 中间标题：收藏夹.png =====
+        try:
+            路径 = os.path.join(脚本目录, "UI-img", "top栏", "收藏夹.png")
+            if os.path.isfile(路径):
+                self._top中间标题图_收藏夹 = pygame.image.load(路径).convert_alpha()
+        except Exception:
+            self._top中间标题图_收藏夹 = None
 
         # ===== 左上角：类型/模式 图片绑定表 =====
         # 类型（大模式）

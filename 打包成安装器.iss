@@ -1,7 +1,16 @@
 #define AppName "E舞成名重构版"
-#define AppVersion "1.0.0"
 #define AppPublisher "liang"
 #define AppExeName "E5CM-CG.exe"
+#define Versionfilepath AddBackslash(SourcePath) + "json\客户端版本.json"
+#define AppVersion Trim(ExecAndGetFirstLine( \
+  "powershell.exe", \
+  "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; (Get-Content -Raw -LiteralPath '" + Versionfilepath + "' | ConvertFrom-Json).version""", \
+  SourcePath \
+))
+
+#if AppVersion == ""
+  #expr Error("读取 json\\客户端版本.json 失败，version 为空。")
+#endif
 
 [Setup]
 AppId={{9E0B6D5E-6A56-4D7B-BE4C-1F6B2C8A9E11}

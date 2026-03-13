@@ -614,6 +614,7 @@ class 歌曲信息:
     游玩次数: int = 0
     是否NEW: bool = False
     是否HOT: bool = False
+    是否收藏: bool = False
 
 
 def 安全加载图片(路径: str, 透明: bool = True) -> Optional[pygame.Surface]:
@@ -2249,6 +2250,8 @@ def 绘制星星行_图片(
     光效周期秒: float = 2.0,
     基准高占比: float = 1.0,
     行间距占比: float = 0.35,
+    仅绘制动态光效: bool = False,
+    光效透明度: int = 255,
 ):
     """
     ✅ 规则改为：
@@ -2275,6 +2278,12 @@ def 绘制星星行_图片(
     except Exception:
         行间距占比 = 0.35
     行间距占比 = max(0.0, min(2.0, 行间距占比))
+
+    try:
+        光效透明度 = int(光效透明度)
+    except Exception:
+        光效透明度 = 255
+    光效透明度 = max(0, min(255, 光效透明度))
 
     def _按目标高生成星图(目标高_: int) -> Optional[pygame.Surface]:
         return _按高等比缩放(星原图, max(1, int(目标高_)))
@@ -2326,13 +2335,18 @@ def 绘制星星行_图片(
 
     起始y = 区域.y + (区域.h - 总高) // 2
 
+    星矩形列表: List[pygame.Rect] = []
+
     def _绘制一行(数量: int, y: int):
         if 数量 <= 0:
             return pygame.Rect(区域.centerx, y, 1, 星h)
         总宽 = 数量 * 星w + (数量 - 1) * 间距
         x0 = 区域.centerx - 总宽 // 2
         for i in range(数量):
-            屏幕.blit(星图, (x0 + i * (星w + 间距), y))
+            星矩形 = pygame.Rect(x0 + i * (星w + 间距), y, 星w, 星h)
+            星矩形列表.append(星矩形)
+            if not 仅绘制动态光效:
+                屏幕.blit(星图, 星矩形.topleft)
         return pygame.Rect(x0, y, 总宽, 星h)
 
     if 行数 == 1:
@@ -2352,28 +2366,56 @@ def 绘制星星行_图片(
         光效行矩形 = 下排矩形 if 下排数 > 0 else 上排矩形
 
     # ---------- 动态光效 ----------
-    if 动态光效路径 and os.path.isfile(动态光效路径) and 光效行矩形.w > 2:
-        光原图 = 获取UI原图(动态光效路径, 透明=True)
-        if 光原图 is None:
-            return
+    if 动态光效路径 and 光效透明度 > 0 and 星矩形列表:
+        光效区域 = 星矩形列表[0].copy()
+        for 星矩形 in 星矩形列表[1:]:
+            光效区域.union_ip(星矩形)
+        光效区域.inflate_ip(max(4, int(星w * 0.24)), max(4, int(星h * 0.32)))
+        if 光效区域.w > 2 and 光效区域.h > 2:
+            遮罩层 = pygame.Surface((光效区域.w, 光效区域.h), pygame.SRCALPHA)
+            for 星矩形 in 星矩形列表:
+                遮罩层.blit(星图, (星矩形.x - 光效区域.x, 星矩形.y - 光效区域.y))
 
-        光高 = max(1, int(星h * 1.10))
-        光图 = _按高等比缩放(光原图, 光高)
-        if 光图 is None:
-            return
+            try:
+                遮罩层 = pygame.mask.from_surface(遮罩层).to_surface(
+                    setcolor=(255, 255, 255, 255),
+                    unsetcolor=(0, 0, 0, 0),
+                ).convert_alpha()
+            except Exception:
+                pass
 
-        now = time.time()
-        t = (now % float(光效周期秒)) / float(光效周期秒)
+            高光层 = pygame.Surface((光效区域.w, 光效区域.h), pygame.SRCALPHA)
+            周期秒 = max(0.8, float(光效周期秒 or 1.6))
+            t = (time.time() % 周期秒) / 周期秒
+            斜向偏移 = max(6, int(光效区域.h * 0.42))
+            基础带宽 = max(12, int(光效区域.w * 0.24))
+            中心x = int(-基础带宽 + (光效区域.w + 基础带宽 * 2) * t)
 
-        扫描宽 = max(1, int(光效行矩形.w * 0.55))
-        光图 = pygame.transform.smoothscale(光图, (扫描宽, 光高)).convert_alpha()
+            def _画高光带(宽度: int, alpha: int, 颜色: Tuple[int, int, int]):
+                半宽 = max(2, int(宽度 // 2))
+                多边形点 = [
+                    (中心x - 半宽 - 斜向偏移, 0),
+                    (中心x + 半宽 - 斜向偏移, 0),
+                    (中心x + 半宽 + 斜向偏移, 光效区域.h),
+                    (中心x - 半宽 + 斜向偏移, 光效区域.h),
+                ]
+                pygame.draw.polygon(高光层, (*颜色, alpha), 多边形点)
 
-        x0 = 光效行矩形.left - 扫描宽
-        x1 = 光效行矩形.right
-        光x = int(x0 + (x1 - x0) * t)
-        光y = 光效行矩形.y + int((星h - 光高) * 0.50)
+            _画高光带(int(基础带宽 * 1.85), 26, (255, 186, 58))
+            _画高光带(int(基础带宽 * 1.10), 54, (255, 223, 132))
+            _画高光带(int(基础带宽 * 0.48), 88, (255, 248, 226))
 
-        屏幕.blit(光图, (光x, 光y), special_flags=pygame.BLEND_RGBA_ADD)
+            try:
+                高光层.blit(遮罩层, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            except Exception:
+                pass
+
+            try:
+                高光层.set_alpha(光效透明度)
+            except Exception:
+                pass
+
+            屏幕.blit(高光层, 光效区域.topleft, special_flags=pygame.BLEND_RGBA_ADD)
 
 _字体对象缓存: Dict[Tuple[str, int, bool], pygame.font.Font] = {}
 _字体默认路径缓存: Dict[bool, str] = {}  
@@ -2521,6 +2563,28 @@ def 渲染紧凑文本(
             当前x += 间距
 
     return 画布
+
+
+def _取游玩次数颜色(游玩次数: int) -> Tuple[int, int, int]:
+    try:
+        次数 = int(max(0, int(游玩次数 or 0)))
+    except Exception:
+        次数 = 0
+
+    if 次数 >= 5:
+        return (255, 96, 96)
+    if 次数 >= 3:
+        return (255, 214, 72)
+    if 次数 >= 1:
+        return (96, 232, 128)
+    return (235, 235, 235)
+
+
+def _需要HOT标记(游玩次数: int) -> bool:
+    try:
+        return int(max(0, int(游玩次数 or 0))) >= 2
+    except Exception:
+        return False
 
 def 安全读取文本(文件路径: str) -> str:
     for 编码 in ("utf-8-sig", "utf-8", "gbk"):
@@ -3852,6 +3916,7 @@ class 歌曲卡片:
             游玩标签字号 = max(8, int(局部信息条.h * 0.26))
             游玩数字字号 = max(8, int(局部信息条.h * 0.28))
             bpm字号 = max(9, int(局部信息条.h * 0.31))
+            游玩颜色 = _取游玩次数颜色(游玩次数)
 
             try:
                 游玩标签字体 = 获取字体(游玩标签字号, 是否粗体=True)
@@ -3861,13 +3926,13 @@ class 歌曲卡片:
                 游玩标签面 = 渲染紧凑文本(
                     "游玩次数:",
                     游玩标签字体,
-                    (235, 235, 235),
+                    游玩颜色,
                     字符间距=-1,
                 )
                 游玩数字面 = 渲染紧凑文本(
                     str(游玩次数),
                     游玩数字字体,
-                    (235, 235, 235),
+                    游玩颜色,
                     字符间距=0,
                 )
                 bpm文面 = bpm字体.render(bpm文本, True, (255, 255, 255))
@@ -3924,19 +3989,19 @@ class 歌曲卡片:
                         vy = 局部框矩形.top - max(2, int(viph * -0.020))
                         局部画布.blit(vip图, (vx, vy))
 
+            hot占位宽 = 0
             try:
                 if bool(getattr(self.歌曲, "是否HOT", False)):
                     hot路径 = _资源路径("UI-img", "选歌界面资源", "热门.png")
                     hot原 = 获取UI原图(hot路径, 透明=True)
                     if hot原 is not None:
-                        hot高 = max(12, int(框矩形.h * 0.18))
+                        hot高 = max(14, int(框矩形.h * 0.24))
                         hot图 = _按高等比缩放(hot原, hot高)
                         if hot图 is not None:
                             hotw, hoth = hot图.get_size()
                             hx = 局部框矩形.right - hotw - max(4, int(hot高 * 0.10))
-                            hy = 局部框矩形.top + max(4, int(hot高 * 0.06))
-                            if bool(getattr(self.歌曲, "是否VIP", False)):
-                                hx -= int(hotw * 0.82)
+                            hy = 局部框矩形.bottom - hoth - max(4, int(hot高 * 0.10))
+                            hot占位宽 = hotw + max(6, int(hot高 * 0.14))
                             局部画布.blit(hot图, (hx, hy))
             except Exception:
                 pass
@@ -3951,6 +4016,8 @@ class 歌曲卡片:
                         if new图 is not None:
                             neww, newh = new图.get_size()
                             nx = 局部框矩形.right - neww - max(4, int(new高 * 0.10))
+                            if hot占位宽 > 0:
+                                nx -= hot占位宽
                             ny = 局部框矩形.bottom - newh - max(4, int(new高 * 0.10))
                             局部画布.blit(new图, (nx, ny))
             except Exception:
@@ -4079,10 +4146,12 @@ class 选歌游戏:
         self._踏板选中视图索引: Optional[int] = None
 
         self.按钮_歌曲分类 = 按钮("歌曲分类", pygame.Rect(0, 0, 0, 0))
+        self.按钮_收藏夹 = 按钮("收藏夹", pygame.Rect(0, 0, 0, 0))
         self.按钮_ALL = 按钮("ALL", pygame.Rect(0, 0, 0, 0))
         self.按钮_2P加入 = 按钮("2P加入", pygame.Rect(0, 0, 0, 0))
         self.按钮_设置 = 按钮("设置", pygame.Rect(0, 0, 0, 0))
         self.按钮_重选模式 = 按钮("重选模式", pygame.Rect(0, 0, 0, 0))
+        self.按钮_详情收藏 = 图片按钮("", pygame.Rect(0, 0, 1, 1))
 
         self.数据树 = {}
         if self.指定类型名 and self.指定模式名:
@@ -4100,6 +4169,14 @@ class 选歌游戏:
                 self.数据树 = {}
 
         self._同步歌曲游玩记录()
+        self._同步全部NEW标记()
+        self.是否收藏夹模式 = False
+        self._全部歌曲缓存: Optional[List[歌曲信息]] = None
+        self._收藏歌曲键集合: Set[str] = set()
+        self._收藏夹修改序号 = 0
+        self._收藏歌曲列表缓存版本 = -1
+        self._收藏歌曲列表缓存: List[歌曲信息] = []
+        self._加载收藏夹()
 
         self.类型列表 = sorted(self.数据树.keys())
         self.当前类型索引 = 0
@@ -4321,6 +4398,268 @@ class 选歌游戏:
         self._详情浮层静态缓存键 = None
         self._详情浮层静态缓存图 = None
 
+    def _取歌曲数据根目录(self) -> str:
+        return os.path.abspath(
+            os.path.dirname(self.songs根目录)
+            if str(self.songs根目录 or "").strip()
+            else _取运行根目录()
+        )
+
+    def _收藏夹文件路径(self) -> str:
+        return os.path.join(self._取歌曲数据根目录(), "json", "收藏夹.json")
+
+    def _遍历全部歌曲(self) -> List[歌曲信息]:
+        缓存 = getattr(self, "_全部歌曲缓存", None)
+        if isinstance(缓存, list):
+            return 缓存
+
+        全部歌曲: List[歌曲信息] = []
+        for 类型映射 in self.数据树.values():
+            if not isinstance(类型映射, dict):
+                continue
+            for 列表 in 类型映射.values():
+                if isinstance(列表, list):
+                    全部歌曲.extend(列表)
+
+        self._全部歌曲缓存 = 全部歌曲
+        return 全部歌曲
+
+    def _取歌曲收藏键(self, 歌: 歌曲信息) -> str:
+        try:
+            return 取歌曲记录键(
+                str(getattr(歌, "sm路径", "") or ""), self._取歌曲数据根目录()
+            )
+        except Exception:
+            return str(getattr(歌, "sm路径", "") or "")
+
+    def _同步歌曲收藏状态(self):
+        收藏键集合 = set(getattr(self, "_收藏歌曲键集合", set()) or set())
+        for 歌 in self._遍历全部歌曲():
+            try:
+                setattr(歌, "是否收藏", bool(self._取歌曲收藏键(歌) in 收藏键集合))
+            except Exception:
+                pass
+
+    def _加载收藏夹(self):
+        数据 = {}
+        路径 = self._收藏夹文件路径()
+        if 路径 and os.path.isfile(路径):
+            for 编码 in ("utf-8-sig", "utf-8", "gbk"):
+                try:
+                    with open(路径, "r", encoding=编码) as 文件:
+                        数据 = json.load(文件)
+                    break
+                except Exception:
+                    continue
+
+        收藏列表 = []
+        if isinstance(数据, dict):
+            收藏列表 = 数据.get("收藏歌曲键列表", [])
+        self._收藏歌曲键集合 = {
+            str(键).strip() for 键 in list(收藏列表 or []) if str(键).strip()
+        }
+        self._收藏歌曲列表缓存版本 = -1
+        self._收藏歌曲列表缓存 = []
+        self._同步歌曲收藏状态()
+
+    def _写入收藏夹数据(self) -> bool:
+        临时路径 = ""
+        try:
+            路径 = self._收藏夹文件路径()
+            if not 路径:
+                return False
+
+            目录 = os.path.dirname(路径)
+            os.makedirs(目录, exist_ok=True)
+            临时路径 = f"{路径}.tmp"
+            载荷 = {
+                "版本": 1,
+                "收藏歌曲键列表": sorted(
+                    str(键).strip()
+                    for 键 in set(getattr(self, "_收藏歌曲键集合", set()) or set())
+                    if str(键).strip()
+                ),
+            }
+            with open(临时路径, "w", encoding="utf-8") as 文件:
+                json.dump(载荷, 文件, ensure_ascii=False, indent=2)
+            os.replace(临时路径, 路径)
+            return True
+        except Exception:
+            try:
+                if 临时路径 and os.path.isfile(临时路径):
+                    os.remove(临时路径)
+            except Exception:
+                pass
+            return False
+
+    def _获取收藏歌曲列表(self) -> List[歌曲信息]:
+        当前版本 = int(getattr(self, "_收藏夹修改序号", 0) or 0)
+        if int(getattr(self, "_收藏歌曲列表缓存版本", -1) or -1) == 当前版本:
+            return getattr(self, "_收藏歌曲列表缓存", []) or []
+
+        列表 = [
+            歌
+            for 歌 in self._遍历全部歌曲()
+            if bool(getattr(歌, "是否收藏", False))
+        ]
+        self._收藏歌曲列表缓存 = 列表
+        self._收藏歌曲列表缓存版本 = 当前版本
+        return 列表
+
+    def _失效收藏夹缓存(self):
+        self._收藏夹修改序号 = int(getattr(self, "_收藏夹修改序号", 0) or 0) + 1
+        self._收藏歌曲列表缓存版本 = -1
+        self._收藏歌曲列表缓存 = []
+        self._失效歌曲视图缓存()
+        self._失效详情浮层缓存()
+
+    def _同步全部NEW标记(self):
+        for 类型映射 in self.数据树.values():
+            if not isinstance(类型映射, dict):
+                continue
+            for 列表 in 类型映射.values():
+                if not isinstance(列表, list) or not 列表:
+                    continue
+                try:
+                    self._更新当前模式NEW标记(列表)
+                except Exception:
+                    pass
+
+    def _刷新当前歌曲视图(
+        self,
+        *,
+        保留歌曲键: str = "",
+        强制返回列表: bool = False,
+    ):
+        原始 = self.当前原始歌曲列表()
+
+        if 原始 and 保留歌曲键:
+            for 索引, 歌 in enumerate(原始):
+                if self._取歌曲收藏键(歌) == 保留歌曲键:
+                    self.当前选择原始索引 = int(索引)
+                    break
+            else:
+                self.当前选择原始索引 = 0
+        elif 原始:
+            self.当前选择原始索引 = max(
+                0,
+                min(int(getattr(self, "当前选择原始索引", 0) or 0), len(原始) - 1),
+            )
+        else:
+            self.当前选择原始索引 = 0
+
+        if 强制返回列表 or (bool(getattr(self, "是否详情页", False)) and not 原始):
+            self.是否详情页 = False
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+            self.确保播放背景音乐()
+
+        列表, 映射 = self.当前歌曲列表与映射()
+        if 映射:
+            try:
+                视图索引 = int(
+                    映射.index(int(getattr(self, "当前选择原始索引", 0) or 0))
+                )
+            except Exception:
+                视图索引 = 0
+            self.当前页 = max(
+                0, int(视图索引 // max(1, int(getattr(self, "每页数量", 1) or 1)))
+            )
+            self._踏板选中视图索引 = int(视图索引)
+        else:
+            self.当前页 = 0
+            self._踏板选中视图索引 = None
+
+        self.当前页卡片 = self.生成指定页卡片(self.当前页)
+        self.安排预加载(基准页=self.当前页)
+        self._同步踏板卡片高亮()
+
+    def _切换收藏夹模式(self):
+        当前歌曲键 = ""
+        原始 = self.当前原始歌曲列表()
+        try:
+            当前索引 = int(getattr(self, "当前选择原始索引", 0) or 0)
+        except Exception:
+            当前索引 = 0
+
+        if 0 <= 当前索引 < len(原始):
+            当前歌曲键 = self._取歌曲收藏键(原始[当前索引])
+
+        self.是否收藏夹模式 = not bool(getattr(self, "是否收藏夹模式", False))
+        self.当前筛选星级 = None
+        self._失效歌曲视图缓存()
+        self._失效详情浮层缓存()
+        self._刷新当前歌曲视图(保留歌曲键=当前歌曲键, 强制返回列表=True)
+
+    def _重置列表筛选(self):
+        当前歌曲键 = ""
+        原始 = self.当前原始歌曲列表()
+        try:
+            当前索引 = int(getattr(self, "当前选择原始索引", 0) or 0)
+        except Exception:
+            当前索引 = 0
+
+        if 0 <= 当前索引 < len(原始):
+            当前歌曲键 = self._取歌曲收藏键(原始[当前索引])
+
+        self.当前筛选星级 = None
+        if bool(getattr(self, "是否收藏夹模式", False)):
+            self.是否收藏夹模式 = False
+            self._失效歌曲视图缓存()
+            self._失效详情浮层缓存()
+            self._刷新当前歌曲视图(保留歌曲键=当前歌曲键, 强制返回列表=True)
+            return
+
+        self.设置星级筛选(None)
+
+    def _切换当前歌曲收藏(self):
+        原始 = self.当前原始歌曲列表()
+        if not 原始:
+            return
+
+        try:
+            当前索引 = int(getattr(self, "当前选择原始索引", 0) or 0)
+        except Exception:
+            当前索引 = 0
+        当前索引 = max(0, min(当前索引, len(原始) - 1))
+        歌 = 原始[当前索引]
+
+        歌曲键 = self._取歌曲收藏键(歌)
+        if not 歌曲键:
+            self.显示消息提示("收藏夹保存失败", 持续秒=1.6)
+            return
+
+        原已收藏 = bool(歌曲键 in self._收藏歌曲键集合)
+        if 原已收藏:
+            self._收藏歌曲键集合.discard(歌曲键)
+        else:
+            self._收藏歌曲键集合.add(歌曲键)
+
+        if not self._写入收藏夹数据():
+            if 原已收藏:
+                self._收藏歌曲键集合.add(歌曲键)
+            else:
+                self._收藏歌曲键集合.discard(歌曲键)
+            self._同步歌曲收藏状态()
+            self.显示消息提示("收藏夹保存失败", 持续秒=1.8)
+            return
+
+        self._同步歌曲收藏状态()
+        self._失效收藏夹缓存()
+
+        强制返回列表 = bool(self.是否收藏夹模式 and 原已收藏)
+        self._刷新当前歌曲视图(
+            保留歌曲键="" if 强制返回列表 else 歌曲键,
+            强制返回列表=强制返回列表,
+        )
+
+        if 原已收藏:
+            self.显示消息提示("移除收藏成功", 持续秒=1.5)
+        else:
+            self.显示消息提示("存入收藏夹成功", 持续秒=1.5)
+
     def _构建详情浮层静态图(
         self,
         歌: 歌曲信息,
@@ -4392,7 +4731,6 @@ class 选歌游戏:
         局部画布.blit(黑条, (局部信息条.x + 内容偏移x, 局部信息条.y + 内容偏移y))
 
         大星星路径 = _资源路径("UI-img", "选歌界面资源", "小星星", "大星星.png")
-        光效路径 = _资源路径("UI-img", "选歌界面资源", "小星星", "星星动态.png")
 
         绘制星星行_图片(
             局部画布,
@@ -4406,8 +4744,6 @@ class 选歌游戏:
             大星星路径,
             1.65,
             每行最大=10,
-            动态光效路径=光效路径,
-            光效周期秒=2.0,
             基准高占比=0.34,
             行间距占比=0.02,
         )
@@ -4458,10 +4794,11 @@ class 选歌游戏:
 
         bpm文本 = f"BPM:{歌.bpm}" if 歌.bpm else "BPM:?"
         底部字号 = max(12, int(局部信息条.h * 0.13))
-        底部字体 = 获取字体(底部字号, 是否粗体=False)
+        底部字体 = 获取字体(底部字号, 是否粗体=True)
+        游玩颜色 = _取游玩次数颜色(游玩次数)
 
         try:
-            左文 = 底部字体.render(f"游玩次数:{游玩次数}", True, (230, 230, 230))
+            左文 = 底部字体.render(f"游玩次数:{游玩次数}", True, 游玩颜色)
             右文 = 底部字体.render(bpm文本, True, (230, 230, 230))
 
             左x = 局部游玩区域.x + 内容偏移x
@@ -4497,20 +4834,77 @@ class 选歌游戏:
         )
         return 局部画布
 
+    def _绘制详情浮层星星光泽(
+        self,
+        *,
+        当前大框: pygame.Rect,
+        局部星星区域: pygame.Rect,
+        内容偏移x: int,
+        内容偏移y: int,
+        总宽: int,
+        总高: int,
+        星数: int,
+        光效透明度: int,
+    ):
+        if (not isinstance(当前大框, pygame.Rect)) or 当前大框.w <= 4 or 当前大框.h <= 4:
+            return
+        if int(max(0, int(星数 or 0))) <= 0:
+            return
+
+        原星区 = pygame.Rect(
+            int(局部星星区域.x + 内容偏移x),
+            int(局部星星区域.y + 内容偏移y),
+            int(局部星星区域.w),
+            int(局部星星区域.h),
+        )
+        if 原星区.w <= 2 or 原星区.h <= 2:
+            return
+
+        sx = float(当前大框.w) / float(max(1, int(总宽)))
+        sy = float(当前大框.h) / float(max(1, int(总高)))
+        星区 = pygame.Rect(
+            当前大框.left + int(round(float(原星区.x) * sx)),
+            当前大框.top + int(round(float(原星区.y) * sy)),
+            max(1, int(round(float(原星区.w) * sx))),
+            max(1, int(round(float(原星区.h) * sy))),
+        )
+
+        大星星路径 = _资源路径("UI-img", "选歌界面资源", "小星星", "大星星.png")
+        光效路径 = _资源路径("UI-img", "选歌界面资源", "小星星", "星星动态.png")
+        绘制星星行_图片(
+            屏幕=self.屏幕,
+            区域=星区,
+            星数=int(星数),
+            星星路径=大星星路径,
+            星星缩放倍数=1.65,
+            每行最大=10,
+            动态光效路径=光效路径,
+            光效周期秒=1.6,
+            基准高占比=0.34,
+            行间距占比=0.02,
+            仅绘制动态光效=True,
+            光效透明度=int(max(0, min(255, int(光效透明度 or 0)))),
+        )
+
     def _取当前歌曲列表缓存键(
         self, 原始列表: Optional[List[歌曲信息]] = None
-    ) -> Tuple[str, str, Optional[int], int, int]:
+    ) -> Tuple[str, str, Optional[int], bool, int, int, int]:
         if 原始列表 is None:
             原始列表 = self.当前原始歌曲列表()
         return (
             str(self.当前类型名() or ""),
             str(self.当前模式名() or ""),
             self.当前筛选星级,
+            bool(getattr(self, "是否收藏夹模式", False)),
+            int(getattr(self, "_收藏夹修改序号", 0) or 0),
             int(id(原始列表)),
             int(len(原始列表)),
         )
 
     def 当前原始歌曲列表(self) -> List[歌曲信息]:
+        if bool(getattr(self, "是否收藏夹模式", False)):
+            return self._获取收藏歌曲列表()
+
         if not self.类型列表 or not self.模式列表:
             return []
         try:
@@ -4527,11 +4921,7 @@ class 选歌游戏:
         return 列表
 
     def _同步歌曲游玩记录(self):
-        根目录 = os.path.abspath(
-            os.path.dirname(self.songs根目录)
-            if str(self.songs根目录 or "").strip()
-            else _取运行根目录()
-        )
+        根目录 = self._取歌曲数据根目录()
         try:
             索引 = 读取歌曲记录索引(根目录)
         except Exception:
@@ -4557,7 +4947,7 @@ class 选歌游戏:
                         游玩次数 = 0
                     try:
                         setattr(歌, "游玩次数", 游玩次数)
-                        setattr(歌, "是否HOT", bool(游玩次数 > 2))
+                        setattr(歌, "是否HOT", _需要HOT标记(游玩次数))
                     except Exception:
                         pass
 
@@ -4625,11 +5015,12 @@ class 选歌游戏:
             except Exception:
                 pass
 
-    def 绘制NEW标签_大图(self):
+    def 绘制详情角标_大图(self):
         """
         ✅ 叠加绘制（z轴在最上层）：
         - NEW：允许超出详情大框边界
         - VIP：允许超出详情大框边界
+        - HOT：游玩次数大于等于 2 时显示在右下角
         """
         if not bool(getattr(self, "是否详情页", False)):
             return
@@ -4649,6 +5040,10 @@ class 选歌游戏:
 
         alpha = int(getattr(self, "_详情浮层_alpha", 255) or 255)
         alpha = max(0, min(255, alpha))
+        try:
+            游玩次数 = int(max(0, int(getattr(歌, "游玩次数", 0) or 0)))
+        except Exception:
+            游玩次数 = 0
 
         # ========= VIP =========
         if bool(getattr(歌, "是否VIP", False)):
@@ -4682,6 +5077,51 @@ class 选歌游戏:
                     vy = 大框.top + int(vipy偏移)
                     self.屏幕.blit(vip图, (vx, vy))
 
+        hot占位宽 = 0
+        if _需要HOT标记(游玩次数):
+            hot路径 = _资源路径("UI-img", "选歌界面资源", "热门.png")
+            hot原 = 获取UI原图(hot路径, 透明=True)
+            if hot原 is not None:
+                hot高占比 = self._取布局值("详情大图.HOT.高占比", 0.24)
+                try:
+                    hot高占比 = float(hot高占比)
+                except Exception:
+                    hot高占比 = 0.24
+                hot高占比 = max(0.02, min(0.90, hot高占比))
+
+                hot高 = max(14, int(大框.h * hot高占比))
+                hot图 = _按高等比缩放(hot原, hot高)
+                if hot图 is not None:
+                    try:
+                        hot图.set_alpha(alpha)
+                    except Exception:
+                        pass
+
+                    hotw, hoth = hot图.get_size()
+                    hot右内边距 = self._取布局像素(
+                        "详情大图.HOT.右内边距",
+                        max(6, int(hot高 * 0.10)),
+                        最小=-99999,
+                        最大=99999,
+                    )
+                    hot下内边距 = self._取布局像素(
+                        "详情大图.HOT.下内边距",
+                        max(6, int(hot高 * 0.10)),
+                        最小=-99999,
+                        最大=99999,
+                    )
+                    hotx偏移 = self._取布局像素(
+                        "详情大图.HOT.x偏移", +int(hotw * 0.10), 最小=-99999, 最大=99999
+                    )
+                    hoty偏移 = self._取布局像素(
+                        "详情大图.HOT.y偏移", +int(hoth * 0.10), 最小=-99999, 最大=99999
+                    )
+
+                    hx = 大框.right - hotw - int(hot右内边距) + int(hotx偏移)
+                    hy = 大框.bottom - hoth - int(hot下内边距) + int(hoty偏移)
+                    hot占位宽 = hotw + max(8, int(hot高 * 0.14))
+                    self.屏幕.blit(hot图, (hx, hy))
+
         # ========= NEW =========
         if bool(getattr(歌, "是否NEW", False)):
             new路径 = _资源路径("UI-img", "选歌界面资源", "NEW绿色.png")
@@ -4696,38 +5136,38 @@ class 选歌游戏:
 
                 new高 = max(14, int(大框.h * new高占比))
                 new图 = _按高等比缩放(new原, new高)
-                if new图 is None:
-                    return
+                if new图 is not None:
+                    try:
+                        new图.set_alpha(alpha)
+                    except Exception:
+                        pass
 
-                try:
-                    new图.set_alpha(alpha)
-                except Exception:
-                    pass
+                    neww, newh = new图.get_size()
 
-                neww, newh = new图.get_size()
+                    new右内边距 = self._取布局像素(
+                        "详情大图.NEW.右内边距",
+                        max(6, int(new高 * 0.10)),
+                        最小=-99999,
+                        最大=99999,
+                    )
+                    new下内边距 = self._取布局像素(
+                        "详情大图.NEW.下内边距",
+                        max(6, int(new高 * 0.10)),
+                        最小=-99999,
+                        最大=99999,
+                    )
+                    newx偏移 = self._取布局像素(
+                        "详情大图.NEW.x偏移", +int(neww * 0.15), 最小=-99999, 最大=99999
+                    )  # 默认略往外
+                    newy偏移 = self._取布局像素(
+                        "详情大图.NEW.y偏移", +int(newh * 0.15), 最小=-99999, 最大=99999
+                    )  # 默认略往外
 
-                new右内边距 = self._取布局像素(
-                    "详情大图.NEW.右内边距",
-                    max(6, int(new高 * 0.10)),
-                    最小=-99999,
-                    最大=99999,
-                )
-                new下内边距 = self._取布局像素(
-                    "详情大图.NEW.下内边距",
-                    max(6, int(new高 * 0.10)),
-                    最小=-99999,
-                    最大=99999,
-                )
-                newx偏移 = self._取布局像素(
-                    "详情大图.NEW.x偏移", +int(neww * 0.15), 最小=-99999, 最大=99999
-                )  # 默认略往外
-                newy偏移 = self._取布局像素(
-                    "详情大图.NEW.y偏移", +int(newh * 0.15), 最小=-99999, 最大=99999
-                )  # 默认略往外
-
-                nx = 大框.right - neww - int(new右内边距) + int(newx偏移)
-                ny = 大框.bottom - newh - int(new下内边距) + int(newy偏移)
-                self.屏幕.blit(new图, (nx, ny))
+                    nx = 大框.right - neww - int(new右内边距) + int(newx偏移)
+                    if hot占位宽 > 0:
+                        nx -= hot占位宽
+                    ny = 大框.bottom - newh - int(new下内边距) + int(newy偏移)
+                    self.屏幕.blit(new图, (nx, ny))
 
     def 当前歌曲列表与映射(self) -> Tuple[List[歌曲信息], List[int]]:
         """
@@ -5196,7 +5636,8 @@ class 选歌游戏:
         右外边距 = self._取底部布局像素("底部.右外边距", 40, 最小=0, 最大=9999)
 
         槽_歌曲分类 = pygame.Rect(左起, 槽y, 槽边长, 槽总高)
-        槽_ALL = pygame.Rect(槽_歌曲分类.right + 左组间距, 槽y, 槽边长, 槽总高)
+        槽_收藏夹 = pygame.Rect(槽_歌曲分类.right + 左组间距, 槽y, 槽边长, 槽总高)
+        槽_ALL = pygame.Rect(槽_收藏夹.right + 左组间距, 槽y, 槽边长, 槽总高)
         槽_重开 = pygame.Rect(槽_ALL.right + 左组间距, 槽y, 槽边长, 槽总高)
 
         右起 = self.宽 - 右外边距 - 槽边长
@@ -5205,6 +5646,7 @@ class 选歌游戏:
 
         # ===== 资源路径 =====
         歌曲分类图路径 = _资源路径("UI-img", "选歌界面资源", "歌曲分类.png")
+        收藏夹图路径 = _资源路径("UI-img", "选歌界面资源", "收藏夹.png")
         ALL图路径 = _资源路径("UI-img", "选歌界面资源", "all按钮.png")
         设置图路径 = _资源路径("UI-img", "选歌界面资源", "设置.png")
 
@@ -5234,6 +5676,23 @@ class 选歌游戏:
                 底部文字="歌曲分类",
                 是否处理透明像素=False,
             )
+
+        if (not hasattr(self, "按钮_收藏夹")) or (
+            not isinstance(self.按钮_收藏夹, 底部图文按钮)
+        ):
+            self.按钮_收藏夹 = 底部图文按钮(
+                图片路径=收藏夹图路径,
+                矩形=pygame.Rect(0, 0, 0, 0),
+                底部文字="收藏夹",
+                是否处理透明像素=False,
+            )
+        else:
+            try:
+                self.按钮_收藏夹.图片路径 = str(收藏夹图路径)
+                self.按钮_收藏夹.底部文字 = "收藏夹"
+                self.按钮_收藏夹._加载原图()
+            except Exception:
+                pass
 
         if (not hasattr(self, "按钮_ALL")) or (not isinstance(self.按钮_ALL, 图片按钮)):
             self.按钮_ALL = 图片按钮(
@@ -5280,12 +5739,14 @@ class 选歌游戏:
 
         # ===== 设置最终矩形 =====
         self.按钮_歌曲分类.矩形 = 槽_歌曲分类
+        self.按钮_收藏夹.矩形 = 槽_收藏夹
         self.按钮_2P加入.矩形 = 槽_P加入
         self.按钮_设置.矩形 = 槽_设置
 
         统一文字偏移 = self._取底部布局像素("底部.统一文字偏移", -6, 最小=-9999, 最大=9999)
         try:
             self.按钮_歌曲分类.文字y偏移 = 统一文字偏移
+            self.按钮_收藏夹.文字y偏移 = 统一文字偏移
             self.按钮_2P加入.文字y偏移 = 统一文字偏移
             self.按钮_设置.文字y偏移 = 统一文字偏移
         except Exception:
@@ -6535,6 +6996,12 @@ class 选歌游戏:
         else:
             self.按钮_歌曲分类.绘制(self.屏幕, 底部标签字体)
 
+        # 收藏夹
+        if isinstance(self.按钮_收藏夹, 底部图文按钮):
+            self.按钮_收藏夹.绘制(self.屏幕, 底部标签字体)
+        else:
+            self.按钮_收藏夹.绘制(self.屏幕, 底部标签字体)
+
         # ALL（只画图）
         if isinstance(self.按钮_ALL, 图片按钮):
             self.按钮_ALL.绘制(self.屏幕)
@@ -6643,8 +7110,15 @@ class 选歌游戏:
         if not 列表:
             try:
                 字体 = 获取字体(28)
+                if bool(getattr(self, "是否收藏夹模式", False)):
+                    if self.当前筛选星级 is None:
+                        提示文本 = "收藏夹为空，先在浮动大图右侧点收藏按钮"
+                    else:
+                        提示文本 = "收藏夹里没有符合当前筛选的歌曲，点 ALL 查看全部收藏"
+                else:
+                    提示文本 = "没有扫描到歌曲，请检查歌曲目录songs文件夹，点击重开按钮退出当前模式"
                 文面 = 字体.render(
-                    "没有扫描到歌曲，请检查歌曲目录songs文件夹，点击重开按钮退出当前模式",
+                    提示文本,
                     True,
                     (255, 255, 255),
                 )
@@ -6936,6 +7410,19 @@ class 选歌游戏:
         当前大框 = 绘制画布.get_rect(center=内容基础矩形.center)
         self.详情大框矩形 = 当前大框
         self.屏幕.blit(绘制画布, 当前大框.topleft)
+        try:
+            self._绘制详情浮层星星光泽(
+                当前大框=当前大框,
+                局部星星区域=局部星星区域,
+                内容偏移x=内容偏移x,
+                内容偏移y=内容偏移y,
+                总宽=总宽,
+                总高=总高,
+                星数=int(getattr(歌, "星级", 0) or 0),
+                光效透明度=入场透明度,
+            )
+        except Exception:
+            pass
 
         下一首图路径 = _资源路径("UI-img", "选歌界面资源", "下一首.png")
         下一首原图 = 获取UI原图(下一首图路径, 透明=True)
@@ -6967,6 +7454,42 @@ class 选歌游戏:
 
         self.按钮_详情上一首.绘制(self.屏幕)
         self.按钮_详情下一首.绘制(self.屏幕)
+
+        收藏图路径 = _资源路径(
+            "UI-img",
+            "选歌界面资源",
+            "移除收藏.png" if bool(getattr(歌, "是否收藏", False)) else "添加收藏.png",
+        )
+        if (not hasattr(self, "按钮_详情收藏")) or (
+            not isinstance(self.按钮_详情收藏, 图片按钮)
+        ):
+            self.按钮_详情收藏 = 图片按钮(收藏图路径, pygame.Rect(0, 0, 1, 1))
+        elif str(getattr(self.按钮_详情收藏, "图片路径", "") or "") != 收藏图路径:
+            try:
+                self.按钮_详情收藏.图片路径 = str(收藏图路径)
+                self.按钮_详情收藏._加载原图()
+            except Exception:
+                pass
+
+        收藏原图 = 获取UI原图(收藏图路径, 透明=True)
+        if 收藏原图 is not None:
+            收藏原宽, 收藏原高 = 收藏原图.get_size()
+        else:
+            收藏原宽, 收藏原高 = (220, 96)
+
+        收藏按钮高 = max(48, int(当前大框.h * 0.13))
+        收藏按钮宽 = max(
+            90, int(收藏按钮高 * float(收藏原宽) / float(max(1, 收藏原高)))
+        )
+        收藏按钮间距x = max(16, int(self.宽 * 0.012))
+        收藏按钮x = min(self.宽 - 收藏按钮宽 - 12, 当前大框.right + 收藏按钮间距x)
+        收藏按钮y = max(12, 当前大框.top + int(当前大框.h * 0.17))
+        收藏按钮y = min(self.高 - 收藏按钮高 - 12, 收藏按钮y)
+
+        self.按钮_详情收藏.矩形 = pygame.Rect(
+            收藏按钮x, 收藏按钮y, 收藏按钮宽, 收藏按钮高
+        )
+        self.按钮_详情收藏.绘制(self.屏幕)
 
 
     def 绘制星级筛选页(self):
@@ -7393,9 +7916,9 @@ class 选歌游戏:
 
             if self.是否详情页:
                 self.绘制详情浮层()
-                # ✅ 大图 NEW（不改绘制详情浮层巨型函数）
+                # ✅ 大图角标（不改绘制详情浮层巨型函数）
                 try:
-                    self.绘制NEW标签_大图()
+                    self.绘制详情角标_大图()
                 except Exception:
                     pass
             else:
@@ -7509,11 +8032,16 @@ class 选歌游戏:
                         self._特效_按钮, self.按钮_歌曲分类.矩形, self.打开星级筛选页
                     )
 
+                if self.按钮_收藏夹.处理事件(事件):
+                    self._启动过渡(
+                        self._特效_按钮, self.按钮_收藏夹.矩形, self._切换收藏夹模式
+                    )
+
                 if self.按钮_ALL.处理事件(事件):
                     self._启动过渡(
                         self._特效_按钮,
                         self.按钮_ALL.矩形,
-                        lambda: self.设置星级筛选(None),
+                        self._重置列表筛选,
                     )
 
                 if self.按钮_2P加入.处理事件(事件):
@@ -7545,6 +8073,7 @@ class 选歌游戏:
                 if self.是否详情页:
                     上一首触发 = self.按钮_详情上一首.处理事件(事件)
                     下一首触发 = self.按钮_详情下一首.处理事件(事件)
+                    收藏触发 = self.按钮_详情收藏.处理事件(事件)
 
                     if 上一首触发:
                         self._启动过渡(
@@ -7562,11 +8091,21 @@ class 选歌游戏:
                             覆盖图片=self.按钮_详情下一首._获取缩放图(),
                         )
                         continue
+                    if 收藏触发:
+                        self._启动过渡(
+                            self._特效_按钮,
+                            self.按钮_详情收藏.矩形,
+                            self._切换当前歌曲收藏,
+                            覆盖图片=self.按钮_详情收藏._获取缩放图(),
+                        )
+                        continue
 
                     if 事件.type == pygame.MOUSEBUTTONDOWN and 事件.button == 1:
                         点在左右按钮 = self.按钮_详情上一首.矩形.collidepoint(
                             事件.pos
-                        ) or self.按钮_详情下一首.矩形.collidepoint(事件.pos)
+                        ) or self.按钮_详情下一首.矩形.collidepoint(
+                            事件.pos
+                        ) or self.按钮_详情收藏.矩形.collidepoint(事件.pos)
 
                         if (not 点在左右按钮) and self.详情大框矩形.collidepoint(
                             事件.pos
@@ -8869,7 +9408,7 @@ def 选歌_帧绘制(self):
         if bool(getattr(self, "是否详情页", False)):
             self.绘制详情浮层()
             try:
-                self.绘制NEW标签_大图()
+                self.绘制详情角标_大图()
             except Exception:
                 pass
         else:
@@ -8998,9 +9537,17 @@ def 选歌_处理事件_外部(self, 事件):
         pass
 
     try:
+        if self.按钮_收藏夹.处理事件(事件):
+            self._启动过渡(
+                self._特效_按钮, self.按钮_收藏夹.矩形, self._切换收藏夹模式
+            )
+    except Exception:
+        pass
+
+    try:
         if self.按钮_ALL.处理事件(事件):
             self._启动过渡(
-                self._特效_按钮, self.按钮_ALL.矩形, lambda: self.设置星级筛选(None)
+                self._特效_按钮, self.按钮_ALL.矩形, self._重置列表筛选
             )
     except Exception:
         pass
@@ -9039,6 +9586,7 @@ def 选歌_处理事件_外部(self, 事件):
         try:
             上一首触发 = self.按钮_详情上一首.处理事件(事件)
             下一首触发 = self.按钮_详情下一首.处理事件(事件)
+            收藏触发 = self.按钮_详情收藏.处理事件(事件)
 
             if 上一首触发:
                 self._启动过渡(
@@ -9056,6 +9604,14 @@ def 选歌_处理事件_外部(self, 事件):
                     覆盖图片=self.按钮_详情下一首._获取缩放图(),
                 )
                 return None
+            if 收藏触发:
+                self._启动过渡(
+                    self._特效_按钮,
+                    self.按钮_详情收藏.矩形,
+                    self._切换当前歌曲收藏,
+                    覆盖图片=self.按钮_详情收藏._获取缩放图(),
+                )
+                return None
         except Exception:
             pass
 
@@ -9063,7 +9619,9 @@ def 选歌_处理事件_外部(self, 事件):
             try:
                 点在左右按钮 = self.按钮_详情上一首.矩形.collidepoint(
                     事件.pos
-                ) or self.按钮_详情下一首.矩形.collidepoint(事件.pos)
+                ) or self.按钮_详情下一首.矩形.collidepoint(
+                    事件.pos
+                ) or self.按钮_详情收藏.矩形.collidepoint(事件.pos)
             except Exception:
                 点在左右按钮 = False
 

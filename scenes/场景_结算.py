@@ -91,6 +91,7 @@ class 场景_结算(场景基类):
         self._顶部砸入秒 = 0.3
         self._流程1时长秒 = 3.0
         self._流程2时长秒 = 3.0
+        self._自动切场最短秒 = 10.0
         self._经验窗入场秒 = 0.55
         self._背景图: Optional[pygame.Surface] = None
         self._面板图: Optional[pygame.Surface] = None
@@ -187,7 +188,7 @@ class 场景_结算(场景基类):
             self._准备流程3进入下一把(
                 下一关卡=4,
                 提示键="赠送一把",
-                提示秒数=3.0,
+                提示秒数=2.0,
                 累计S数=3,
                 赠送第四把=True,
             )
@@ -197,7 +198,7 @@ class 场景_结算(场景基类):
                 self._准备流程3进入下一把(
                     下一关卡=self._流程3当前关卡 + 1,
                     提示键="下一把",
-                    提示秒数=3.0,
+                    提示秒数=2.0,
                     累计S数=self._流程3结算后S数,
                     赠送第四把=False,
                 )
@@ -273,18 +274,19 @@ class 场景_结算(场景基类):
         消耗数量: int = 0,
         重开新局: bool = False,
     ):
-        推进对局流程(
-            self.上下文.get("状态", {}),
+        继续动作 = 构建继续动作(
+            self._构建返回选歌动作(),
             下一关卡=下一关卡,
-            累计S数=累计S数,
-            赠送第四把=赠送第四把,
-            消耗数量=消耗数量,
             重开新局=重开新局,
+            累计S数=累计S数,
+            每局所需信用=self._流程3每局所需信用,
+            消耗信用=int(消耗数量),
+            赠送第四把=赠送第四把,
         )
         self._进入流程3自动提示(
             提示键=提示键,
             持续秒=提示秒数,
-            动作=self._构建返回选歌动作(),
+            动作=继续动作,
             显示倒计时=False,
         )
 
@@ -296,7 +298,7 @@ class 场景_结算(场景基类):
         self._准备流程3进入下一把(
             下一关卡=下一关卡,
             提示键="下一把",
-            提示秒数=3.0,
+            提示秒数=2.0,
             累计S数=累计S数,
             赠送第四把=False,
             消耗数量=int(self._流程3每局所需信用),
@@ -305,18 +307,7 @@ class 场景_结算(场景基类):
 
     def _执行流程3是分支(self):
         动作 = dict(self._流程3继续动作 or {})
-        下一关卡 = int(动作.get("下一关卡", 1) or 1)
-        重开新局 = bool(动作.get("重开新局", False))
-        累计S数 = int(动作.get("累计S数", 0) or 0)
-        推进对局流程(
-            self.上下文.get("状态", {}),
-            下一关卡=下一关卡,
-            累计S数=累计S数,
-            赠送第四把=False,
-            消耗数量=int(动作.get("消耗信用", 0) or 0),
-            重开新局=重开新局,
-        )
-        self._开始流程3退出(self._构建返回选歌动作())
+        self._开始流程3退出(动作)
 
     def _执行流程3否分支(self):
         self._开始流程3退出(dict(self._流程3默认否动作 or {"类型": "投币"}))
@@ -327,12 +318,27 @@ class 场景_结算(场景基类):
         self._流程3退出动作 = dict(动作 or {})
         self._流程3退出开始秒 = time.perf_counter()
 
+    def _应用流程3继续动作(self, 动作: dict):
+        if not isinstance(动作, dict):
+            return
+        if "下一关卡" not in 动作:
+            return
+        推进对局流程(
+            self.上下文.get("状态", {}),
+            下一关卡=int(动作.get("下一关卡", 1) or 1),
+            累计S数=int(动作.get("累计S数", 0) or 0),
+            赠送第四把=bool(动作.get("赠送第四把", False)),
+            消耗数量=int(动作.get("消耗信用", 0) or 0),
+            重开新局=bool(动作.get("重开新局", False)),
+        )
+
     def _构建流程3退出结果(self, 动作: dict):
         类型 = str((动作 or {}).get("类型", "") or "")
         if 类型 == "投币":
             重置游戏流程状态(self.上下文.get("状态", {}))
             return {"切换到": "投币", "禁用黑屏过渡": True}
         if 类型 == "选歌":
+            self._应用流程3继续动作(动作)
             return self._返回选歌(动作)
         return None
 
@@ -1002,9 +1008,28 @@ class 场景_结算(场景基类):
             当前经验 = float(新经验)
 
         升级动画t = None
-        if 升级节点 and 进度 >= 升级节点[0]:
-            起点 = float(升级节点[0])
-            升级动画t = _夹取((进度 - 起点) / max(0.01, 1.0 - 起点), 0.0, 1.0)
+        if 升级节点:
+            升级触发秒 = float(动画开始秒) + float(动画时长) * float(升级节点[0])
+            升级动画时长秒 = min(0.80, max(0.45, float(动画时长) * 0.35))
+            升级动画开始秒 = min(
+                升级触发秒,
+                float(self._流程2时长秒) - float(升级动画时长秒),
+            )
+            升级动画开始秒 = max(float(动画开始秒), float(升级动画开始秒))
+            升级动画结束秒 = max(
+                升级动画开始秒 + 0.01,
+                min(
+                    float(self._流程2时长秒),
+                    float(升级动画开始秒) + float(升级动画时长秒),
+                ),
+            )
+            if 经过秒 >= 升级动画开始秒:
+                升级动画t = _夹取(
+                    (float(经过秒) - 升级动画开始秒)
+                    / max(0.01, 升级动画结束秒 - 升级动画开始秒),
+                    0.0,
+                    1.0,
+                )
 
         return {
             "等级": int(max(1, 当前等级)),
@@ -1573,6 +1598,19 @@ class 场景_结算(场景基类):
         流程阶段, _ = self._取流程阶段(经过秒)
         当前系统秒 = time.perf_counter()
 
+        if 事件.type == pygame.KEYDOWN and 事件.key in (
+            pygame.K_RETURN,
+            pygame.K_KP_ENTER,
+        ):
+            if 流程阶段 == 3 and self._流程3是否允许交互(当前系统秒):
+                if self._流程3按钮选中 == "是":
+                    self._执行流程3是分支()
+                else:
+                    self._执行流程3否分支()
+            else:
+                self._执行回车跳过(流程阶段, 当前系统秒)
+            return None
+
         if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_ESCAPE:
             if 流程阶段 == 3:
                 if self._流程3是否允许交互(当前系统秒):
@@ -1602,7 +1640,7 @@ class 场景_结算(场景基类):
                 self._流程3按钮选中 = "是"
             elif 事件.key in (pygame.K_RIGHT, pygame.K_KP3, pygame.K_d):
                 self._流程3按钮选中 = "否"
-            elif 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP5):
+            elif 事件.key == pygame.K_KP5:
                 if self._流程3按钮选中 == "是":
                     self._执行流程3是分支()
                 else:
@@ -1795,6 +1833,61 @@ class 场景_结算(场景基类):
             max(0.0, float(self._流程3提示入场秒 or 0.0))
         )
 
+    def _是否允许自动开始流程3退场(
+        self, 当前系统秒: Optional[float] = None
+    ) -> bool:
+        if 当前系统秒 is None:
+            当前系统秒 = time.perf_counter()
+        自动退场最早开始秒 = max(
+            0.0,
+            float(self._自动切场最短秒 or 0.0)
+            - float(max(0.01, float(self._流程3内容退场秒 or 0.0))),
+        )
+        return max(0.0, float(当前系统秒) - float(self._进入系统秒 or 0.0)) >= float(
+            自动退场最早开始秒
+        )
+
+    def _快进到流程3可见(self, 当前系统秒: Optional[float] = None):
+        if 当前系统秒 is None:
+            当前系统秒 = time.perf_counter()
+        流程2终点 = float(self._流程1时长秒) + float(self._流程2时长秒)
+        提示入场秒 = float(max(0.0, float(self._流程3提示入场秒 or 0.0)))
+        self._进入系统秒 = float(当前系统秒) - 流程2终点 - 提示入场秒
+        self._流程3阶段开始秒 = float(当前系统秒) - 提示入场秒
+        self._流程3计时已启动 = True
+
+    def _执行回车跳过(self, 流程阶段: int, 当前系统秒: Optional[float] = None):
+        if 当前系统秒 is None:
+            当前系统秒 = time.perf_counter()
+
+        if self._流程3退出动作 is not None:
+            return
+
+        阶段类型 = str(self._流程3阶段类型 or "")
+        if 阶段类型 == "继续挑战":
+            if 流程阶段 < 3 or (not self._流程3是否已完成入场(当前系统秒)):
+                self._快进到流程3可见(当前系统秒)
+                return
+            if self._流程3按钮选中 == "是":
+                self._执行流程3是分支()
+            else:
+                self._执行流程3否分支()
+            return
+
+        if 阶段类型 == "续币等待":
+            if 取信用数(self.上下文.get("状态", {})) >= int(self._流程3每局所需信用):
+                self._处理流程3续币成功()
+                self._快进到流程3可见(当前系统秒)
+                self._开始流程3退出(dict(self._流程3继续动作 or {}))
+                return
+            self._快进到流程3可见(当前系统秒)
+            self._开始流程3退出(dict(self._流程3默认否动作 or {"类型": "投币"}))
+            return
+
+        if 流程阶段 < 3:
+            self._快进到流程3可见(当前系统秒)
+        self._开始流程3退出(dict(self._流程3继续动作 or self._构建返回选歌动作()))
+
     def _按比例适配图片尺寸(
         self, 原图: Optional[pygame.Surface], 目标尺寸: Tuple[int, int]
     ) -> Tuple[int, int]:
@@ -1841,7 +1934,7 @@ class 场景_结算(场景基类):
         if self._流程3阶段类型 == "自动提示":
             if self._流程3是否已完成入场(当前系统秒) and (
                 可见已持续秒 >= float(self._流程3阶段持续秒 or 0.0)
-            ):
+            ) and self._是否允许自动开始流程3退场(当前系统秒):
                 self._开始流程3退出(dict(self._流程3继续动作 or {}))
             return None
 
@@ -1853,7 +1946,7 @@ class 场景_结算(场景基类):
 
             if self._流程3是否已完成入场(当前系统秒) and (
                 可见已持续秒 >= float(self._流程3阶段持续秒 or 0.0)
-            ):
+            ) and self._是否允许自动开始流程3退场(当前系统秒):
                 self._播放游戏结束音效()
                 self._进入流程3自动提示(
                     提示键="游戏结束",
@@ -1866,7 +1959,7 @@ class 场景_结算(场景基类):
         if self._流程3阶段类型 == "继续挑战":
             if self._流程3是否已完成入场(当前系统秒) and (
                 可见已持续秒 >= float(self._流程3阶段持续秒 or 0.0)
-            ):
+            ) and self._是否允许自动开始流程3退场(当前系统秒):
                 self._执行流程3否分支()
         return None
 

@@ -1,0 +1,466 @@
+from __future__ import annotations
+
+import os
+import time
+from typing import Dict, List, Optional, Tuple
+
+import pygame
+
+from core.动态背景 import DynamicBackgroundManager
+from core.game_esc_menu_settings import (
+    GAME_ESC_SETTINGS_KEY_AUTOPLAY,
+    GAME_ESC_SETTINGS_KEY_BINDINGS,
+    PROFILE_DOUBLE,
+    PROFILE_SINGLE,
+    ArrowSkinOption,
+    BackgroundOption,
+    VideoBackgroundOption,
+    assign_profile_key,
+    get_dynamic_background_modes,
+    load_key_binding_profiles,
+    resolve_arrow_skin_option,
+    resolve_background_option,
+    resolve_video_background_option,
+    scan_arrow_skin_options,
+    scan_background_options,
+    scan_video_background_options,
+    serialize_key_binding_profiles,
+    write_game_esc_settings_scope_patch,
+)
+from core.sqlite_store import (
+    SCOPE_GAME_ESC_MENU_SETTINGS,
+    SCOPE_SELECT_SETTINGS,
+    read_scope,
+    write_scope_patch,
+)
+from core.工具 import 获取字体
+from ui.game_esc_menu import GameEscMenuController
+
+
+class SelectSceneEscMenuHost:
+    def __init__(self, context: dict):
+        self._context = context if isinstance(context, dict) else {}
+        self._controller = GameEscMenuController(self)
+        self._project_root = str(self._context.get("项目根目录", "") or os.getcwd())
+        self._默认背景视频目录 = os.path.join(self._project_root, "backmovies", "游戏中")
+        self._载荷: Dict[str, object] = {}
+        self._菜单背景选项: List[BackgroundOption] = []
+        self._菜单视频背景选项: List[VideoBackgroundOption] = []
+        self._菜单箭头选项: List[ArrowSkinOption] = []
+        self._菜单动态背景选项: List[str] = []
+        self._菜单单踏板键位: Dict[str, int] = {}
+        self._菜单双踏板键位: Dict[str, int] = {}
+        self._当前背景选项: Optional[BackgroundOption] = None
+        self._当前视频背景选项: Optional[VideoBackgroundOption] = None
+        self._当前箭头选项: Optional[ArrowSkinOption] = None
+        self._动态背景管理器 = DynamicBackgroundManager()
+        self._菜单视频预览播放器 = None
+        self._菜单视频预览路径 = ""
+        self._背景预览缓存: Dict[str, pygame.Surface] = {}
+        self._箭头预览缓存: Dict[str, pygame.Surface] = {}
+        self._卷轴速度倍率 = 4.0
+        self._隐藏模式 = "关闭"
+        self._轨迹模式 = "正常"
+        self._方向模式 = "关闭"
+        self._尺寸倍率 = 0.8
+        self._背景模式 = "图片"
+        self._动态背景模式 = "唱片"
+        self._视频背景关闭 = True
+        self._性能模式 = False
+        self._是否自动模式 = False
+        self._是否双踏板模式 = False
+        self._背景暗层alpha = 179
+        self._refresh_from_storage()
+
+    def open(self):
+        self._refresh_from_storage()
+        self._controller.open()
+
+    def close(self):
+        self._controller.close()
+        self._close_video_preview_player()
+
+    def is_open(self) -> bool:
+        return bool(self._controller.is_open())
+
+    def handle_event(self, event: pygame.event.Event):
+        return self._controller.handle_event(event)
+
+    def draw(self, screen: pygame.Surface):
+        self._controller.draw(screen)
+
+    def _esc_menu_should_show_exit_match(self) -> bool:
+        return False
+
+    def _取当前大小选项文本(self) -> str:
+        return "放大" if float(self._尺寸倍率 or 0.8) >= 0.95 else "正常"
+
+    def _取背景渲染模式(self) -> str:
+        return str(getattr(self, "_背景模式", "图片") or "图片")
+
+    def _背景亮度档位alpha(self) -> List[int]:
+        return [179, 128, 77, 26, 0]
+
+    def _取背景亮度菜单文本(self) -> str:
+        档位 = list(self._背景亮度档位alpha())
+        当前 = int(max(0, min(255, int(getattr(self, "_背景暗层alpha", 0) or 0))))
+        try:
+            索引 = min(range(len(档位)), key=lambda i: abs(int(档位[i]) - 当前))
+        except Exception:
+            索引 = 0
+        标签 = ["默认", "较亮", "明亮", "最亮", "关闭"]
+        return str(标签[int(max(0, min(len(标签) - 1, 索引)))])
+
+    def _设置操作反馈(self, _文本: str):
+        return
+
+    def _refresh_from_storage(self):
+        select_data = read_scope(SCOPE_SELECT_SETTINGS)
+        esc_data = read_scope(SCOPE_GAME_ESC_MENU_SETTINGS)
+        select_data = dict(select_data) if isinstance(select_data, dict) else {}
+        esc_data = dict(esc_data) if isinstance(esc_data, dict) else {}
+        params = dict(select_data.get("设置参数", {}) or {})
+
+        self._菜单背景选项 = scan_background_options(self._project_root)
+        self._菜单视频背景选项 = scan_video_background_options(self._project_root)
+        self._菜单箭头选项 = scan_arrow_skin_options(self._project_root)
+        self._菜单动态背景选项 = get_dynamic_background_modes(include_off=False) or ["唱片"]
+        bindings = load_key_binding_profiles(esc_data)
+        self._菜单单踏板键位 = dict(bindings.get(PROFILE_SINGLE, {}) or {})
+        self._菜单双踏板键位 = dict(bindings.get(PROFILE_DOUBLE, {}) or {})
+
+        self._卷轴速度倍率 = float(str(params.get("调速", "X4.0")).replace("X", "") or 4.0)
+        self._隐藏模式 = str(params.get("隐藏", "关闭") or "关闭")
+        self._轨迹模式 = str(params.get("轨迹", "正常") or "正常")
+        self._方向模式 = str(params.get("方向", "关闭") or "关闭")
+        self._尺寸倍率 = 1.0 if str(params.get("大小", "正常") or "正常") == "放大" else 0.8
+        self._背景模式 = str(params.get("背景模式", "图片") or "图片")
+        self._动态背景模式 = str(params.get("动态背景", "唱片") or "唱片")
+        self._性能模式 = bool(esc_data.get("性能模式", False))
+        self._是否自动模式 = bool(esc_data.get(GAME_ESC_SETTINGS_KEY_AUTOPLAY, False))
+        self._背景暗层alpha = int(max(0, min(255, int(esc_data.get("背景遮罩alpha", 179) or 179))))
+
+        self._当前背景选项 = resolve_background_option(
+            self._菜单背景选项, select_data.get("背景文件名", "")
+        )
+        self._当前视频背景选项 = resolve_video_background_option(
+            self._菜单视频背景选项, select_data.get("视频背景文件名", "")
+        )
+        self._当前箭头选项 = resolve_arrow_skin_option(
+            self._菜单箭头选项, select_data.get("箭头文件名", "")
+        )
+        self._载荷 = {
+            "背景文件名": str(getattr(self._当前背景选项, "file_name", "") or ""),
+            "视频背景文件名": str(getattr(self._当前视频背景选项, "file_name", "") or ""),
+            "箭头文件名": str(getattr(self._当前箭头选项, "file_name", "") or ""),
+            "关闭视频背景": bool(self._背景模式 != "视频"),
+            "背景遮罩alpha": int(self._背景暗层alpha),
+        }
+        self._视频背景关闭 = bool(self._背景模式 != "视频")
+
+    def _save_select_visual_settings(self):
+        params = {
+            "调速": f"X{float(self._卷轴速度倍率 or 4.0):.1f}",
+            "背景模式": str(self._背景模式 or "图片"),
+            "动态背景": str(self._动态背景模式 or "关闭"),
+            "隐藏": str(self._隐藏模式 or "关闭"),
+            "轨迹": str(self._轨迹模式 or "正常"),
+            "方向": str(self._方向模式 or "关闭"),
+            "大小": self._取当前大小选项文本(),
+        }
+        patch = {
+            "设置参数": dict(params),
+            "背景文件名": str(getattr(self._当前背景选项, "file_name", "") or ""),
+            "视频背景文件名": str(getattr(self._当前视频背景选项, "file_name", "") or ""),
+            "箭头文件名": str(getattr(self._当前箭头选项, "file_name", "") or ""),
+        }
+        write_scope_patch(SCOPE_SELECT_SETTINGS, patch)
+        self._载荷.update(patch)
+        self._载荷["关闭视频背景"] = bool(self._背景模式 != "视频")
+
+    def _save_esc_scope_patch(self, patch: Dict[str, object]):
+        write_scope_patch(SCOPE_GAME_ESC_MENU_SETTINGS, dict(patch or {}))
+
+    def _apply_video_option(self, file_name: str) -> bool:
+        option = resolve_video_background_option(self._菜单视频背景选项, file_name)
+        if option is None:
+            return False
+        self._当前视频背景选项 = option
+        self._载荷["视频背景文件名"] = str(option.file_name or "")
+        self._close_video_preview_player()
+        self._save_select_visual_settings()
+        return True
+
+    def _esc_menu_adjust(self, row_key: str, step: int = 1):
+        step = 1 if int(step or 0) >= 0 else -1
+        key = str(row_key or "").strip()
+        if not key:
+            return None
+
+        if key == "scroll_speed":
+            options = ["3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5", "7.0"]
+            current = f"{float(self._卷轴速度倍率 or 4.0):.1f}"
+            index = options.index(current) if current in options else 2
+            self._卷轴速度倍率 = float(options[(index + step) % len(options)])
+            self._save_select_visual_settings()
+            return None
+
+        if key == "background_mode":
+            options = ["图片", "视频", "动态背景"]
+            current = str(self._背景模式 or "图片")
+            index = options.index(current) if current in options else 0
+            self._背景模式 = str(options[(index + step) % len(options)])
+            self._视频背景关闭 = bool(self._背景模式 != "视频")
+            if self._背景模式 == "动态背景" and self._动态背景模式 == "关闭":
+                self._动态背景模式 = str((self._菜单动态背景选项 or ["唱片"])[0])
+            self._save_select_visual_settings()
+            return None
+
+        if key == "dynamic_background":
+            options = list(self._菜单动态背景选项 or ["唱片"])
+            current = str(self._动态背景模式 or options[0])
+            index = options.index(current) if current in options else 0
+            self._动态背景模式 = str(options[(index + step) % len(options)])
+            try:
+                self._动态背景管理器.reset()
+            except Exception:
+                pass
+            self._save_select_visual_settings()
+            return None
+
+        if key == "image_background":
+            options = list(self._菜单背景选项 or [])
+            if not options:
+                return None
+            current = resolve_background_option(options, getattr(self._当前背景选项, "file_name", ""))
+            try:
+                index = options.index(current)
+            except Exception:
+                index = 0
+            self._当前背景选项 = options[(index + step) % len(options)]
+            self._save_select_visual_settings()
+            return None
+
+        if key == "video_background":
+            options = list(self._菜单视频背景选项 or [])
+            if not options:
+                return None
+            current = resolve_video_background_option(options, getattr(self._当前视频背景选项, "file_name", ""))
+            try:
+                index = options.index(current)
+            except Exception:
+                index = 0
+            self._apply_video_option(str(options[(index + step) % len(options)].file_name or ""))
+            return None
+
+        if key == "hidden":
+            options = ["关闭", "半隐", "全隐"]
+            current = str(self._隐藏模式 or "关闭")
+            index = options.index(current) if current in options else 0
+            self._隐藏模式 = str(options[(index + step) % len(options)])
+            self._save_select_visual_settings()
+            return None
+
+        if key == "track":
+            options = ["正常", "摇摆", "旋转"]
+            current = str(self._轨迹模式 or "正常")
+            index = options.index(current) if current in options else 0
+            self._轨迹模式 = str(options[(index + step) % len(options)])
+            self._save_select_visual_settings()
+            return None
+
+        if key == "direction":
+            options = ["关闭", "反向"]
+            current = str(self._方向模式 or "关闭")
+            index = options.index(current) if current in options else 0
+            self._方向模式 = str(options[(index + step) % len(options)])
+            self._save_select_visual_settings()
+            return None
+
+        if key == "size":
+            self._尺寸倍率 = 1.0 if float(self._尺寸倍率 or 0.8) < 0.95 else 0.8
+            self._save_select_visual_settings()
+            return None
+
+        if key == "arrow_skin":
+            options = list(self._菜单箭头选项 or [])
+            if not options:
+                return None
+            current = resolve_arrow_skin_option(options, getattr(self._当前箭头选项, "file_name", ""))
+            try:
+                index = options.index(current)
+            except Exception:
+                index = 0
+            self._当前箭头选项 = options[(index + step) % len(options)]
+            self._save_select_visual_settings()
+            return None
+
+        if key == "brightness":
+            levels = self._背景亮度档位alpha()
+            current = int(self._背景暗层alpha or 0)
+            try:
+                index = min(range(len(levels)), key=lambda i: abs(int(levels[i]) - current))
+            except Exception:
+                index = 0
+            self._背景暗层alpha = int(levels[(index + step) % len(levels)])
+            self._载荷["背景遮罩alpha"] = int(self._背景暗层alpha)
+            self._save_esc_scope_patch({"背景遮罩alpha": int(self._背景暗层alpha)})
+            return None
+
+        if key == "performance_mode":
+            self._性能模式 = not bool(self._性能模式)
+            self._save_esc_scope_patch({"性能模式": bool(self._性能模式)})
+            return None
+
+        if key == "autoplay":
+            self._是否自动模式 = not bool(self._是否自动模式)
+            write_game_esc_settings_scope_patch({GAME_ESC_SETTINGS_KEY_AUTOPLAY: bool(self._是否自动模式)})
+            return None
+
+    def _esc_menu_apply_binding(self, profile_id: str, slot_id: str, keycode: int):
+        profiles = {
+            PROFILE_SINGLE: dict(self._菜单单踏板键位),
+            PROFILE_DOUBLE: dict(self._菜单双踏板键位),
+        }
+        updated = assign_profile_key(profiles, str(profile_id), str(slot_id), int(keycode))
+        self._菜单单踏板键位 = dict(updated.get(PROFILE_SINGLE, {}) or {})
+        self._菜单双踏板键位 = dict(updated.get(PROFILE_DOUBLE, {}) or {})
+        write_game_esc_settings_scope_patch(
+            {
+                GAME_ESC_SETTINGS_KEY_BINDINGS: serialize_key_binding_profiles(
+                    {
+                        PROFILE_SINGLE: self._菜单单踏板键位,
+                        PROFILE_DOUBLE: self._菜单双踏板键位,
+                    }
+                )
+            }
+        )
+
+    def _esc_menu_confirm_exit(self, target: str):
+        self.close()
+        if str(target) == "desktop":
+            return {"退出程序": True}
+        return None
+
+    def _esc_menu_draw_dynamic_preview(self, screen: pygame.Surface, rect: pygame.Rect) -> bool:
+        mode = str(self._动态背景模式 or "关闭")
+        if mode == "关闭":
+            return False
+        try:
+            return bool(
+                self._动态背景管理器.render_preview_surface(
+                    mode,
+                    screen,
+                    rect,
+                    now=float(time.perf_counter()),
+                )
+            )
+        except Exception:
+            return False
+
+    def _load_surface(self, cache: Dict[str, pygame.Surface], path: str, alpha: bool) -> Optional[pygame.Surface]:
+        key = str(path or "").strip()
+        cached = cache.get(key)
+        if isinstance(cached, pygame.Surface):
+            return cached
+        if not key or (not os.path.isfile(key)):
+            return None
+        try:
+            surface = pygame.image.load(key)
+            surface = surface.convert_alpha() if alpha else surface.convert()
+            cache[key] = surface
+            return surface
+        except Exception:
+            return None
+
+    def _blit_cover(self, screen: pygame.Surface, image: pygame.Surface, rect: pygame.Rect):
+        iw, ih = image.get_size()
+        scale = max(float(rect.w) / float(max(1, iw)), float(rect.h) / float(max(1, ih)))
+        size = (max(1, int(round(iw * scale))), max(1, int(round(ih * scale))))
+        frame = pygame.transform.smoothscale(image, size)
+        screen.blit(frame, (int(rect.centerx - frame.get_width() * 0.5), int(rect.centery - frame.get_height() * 0.5)))
+
+    def _blit_contain(self, screen: pygame.Surface, image: pygame.Surface, rect: pygame.Rect):
+        iw, ih = image.get_size()
+        scale = min(float(rect.w) / float(max(1, iw)), float(rect.h) / float(max(1, ih)))
+        size = (max(1, int(round(iw * scale))), max(1, int(round(ih * scale))))
+        frame = pygame.transform.smoothscale(image, size)
+        screen.blit(frame, (int(rect.centerx - frame.get_width() * 0.5), int(rect.centery - frame.get_height() * 0.5)))
+
+    def _esc_menu_draw_image_preview(self, screen: pygame.Surface, rect: pygame.Rect) -> bool:
+        path = str(getattr(self._当前背景选项, "path", "") or "")
+        image = self._load_surface(self._背景预览缓存, path, True)
+        if not isinstance(image, pygame.Surface):
+            return False
+        self._blit_cover(screen, image, rect)
+        return True
+
+    def _close_video_preview_player(self):
+        player = getattr(self, "_菜单视频预览播放器", None)
+        try:
+            if player is not None and hasattr(player, "关闭"):
+                player.关闭()
+        except Exception:
+            pass
+        self._菜单视频预览播放器 = None
+        self._菜单视频预览路径 = ""
+
+    def _get_video_preview_player(self):
+        target_path = str(getattr(self._当前视频背景选项, "path", "") or self._默认背景视频目录 or "").strip()
+        if not target_path:
+            self._close_video_preview_player()
+            return None
+        if getattr(self, "_菜单视频预览播放器", None) is not None and str(self._菜单视频预览路径 or "") == target_path:
+            return self._菜单视频预览播放器
+        self._close_video_preview_player()
+        try:
+            if os.path.isdir(target_path):
+                from core.视频 import 全局视频顺序循环播放器
+
+                player = 全局视频顺序循环播放器(target_path)
+            else:
+                from core.视频 import 全局视频循环播放器
+
+                player = 全局视频循环播放器(target_path)
+            player.打开(是否重置进度=True)
+            self._菜单视频预览播放器 = player
+            self._菜单视频预览路径 = target_path
+            return player
+        except Exception:
+            self._close_video_preview_player()
+            return None
+
+    def _esc_menu_draw_video_preview(self, screen: pygame.Surface, rect: pygame.Rect) -> bool:
+        player = self._get_video_preview_player()
+        if player is None:
+            return False
+        try:
+            frame = player.读取覆盖帧(max(1, rect.w), max(1, rect.h)) if hasattr(player, "读取覆盖帧") else player.读取帧()
+        except Exception:
+            frame = None
+        if not isinstance(frame, pygame.Surface):
+            return False
+        if frame.get_size() == (rect.w, rect.h):
+            screen.blit(frame, rect.topleft)
+        else:
+            self._blit_cover(screen, frame, rect)
+        return True
+
+    def _esc_menu_draw_arrow_preview(self, screen: pygame.Surface, rect: pygame.Rect) -> bool:
+        option = self._当前箭头选项
+        if option is None:
+            return False
+        preview_path = str(getattr(option, "preview_path", "") or "")
+        image = self._load_surface(self._箭头预览缓存, preview_path, True)
+        if not isinstance(image, pygame.Surface):
+            font = 获取字体(20, 是否粗体=False)
+            label = font.render(str(getattr(option, "label", "箭头") or "箭头"), True, (220, 235, 255))
+            screen.blit(label, (int(rect.centerx - label.get_width() * 0.5), int(rect.centery - label.get_height() * 0.5)))
+            return True
+        # 选歌场景使用的是单张候选箭头 PNG，需要比对局内图集预览缩得更小。
+        preview_w = max(84, int(rect.w * 0.24))
+        preview_h = max(84, int(rect.h * 0.24))
+        inner_rect = pygame.Rect(0, 0, preview_w, preview_h)
+        inner_rect.center = rect.center
+        self._blit_contain(screen, image, inner_rect)
+        return True

@@ -9,6 +9,11 @@ from core.常量与路径 import (
     取项目根目录 as _公共取项目根目录,
     取运行根目录 as _公共取运行根目录,
 )
+from core.sqlite_store import (
+    SCOPE_LOADING_PAYLOAD as _加载页存储作用域,
+    replace_scope as _覆盖存储作用域,
+    read_scope as _读取存储作用域,
+)
 from core.歌曲记录 import 取歌曲记录
 from core.工具 import 绘制底部联网与信用
 from scenes.场景基类 import 场景基类
@@ -139,19 +144,13 @@ class 场景_加载页(场景基类):
 
     def 进入(self, 载荷=None):
         self._入场开始 = time.time()
-
-        状态载荷 = {}
-        try:
-            状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
-            临时载荷 = (状态 or {}).get("加载页_载荷", {})
-            if isinstance(临时载荷, dict):
-                状态载荷 = dict(临时载荷)
-        except Exception:
-            状态载荷 = {}
-
-        传入载荷 = dict(载荷) if isinstance(载荷, dict) else {}
         落盘载荷 = self._读取加载页json()
-        self._载荷 = _合并载荷源(落盘载荷, 状态载荷, 传入载荷)
+        if (not 落盘载荷) and isinstance(载荷, dict) and 载荷:
+            try:
+                落盘载荷 = _覆盖存储作用域(_加载页存储作用域, dict(载荷))
+            except Exception:
+                落盘载荷 = dict(载荷)
+        self._载荷 = dict(落盘载荷) if isinstance(落盘载荷, dict) else {}
 
         try:
             运行根目录 = _取运行根目录()
@@ -176,7 +175,7 @@ class 场景_加载页(场景基类):
             if isinstance(self.上下文, dict):
                 状态 = self.上下文.get("状态", {}) or {}
                 if isinstance(状态, dict):
-                    状态["加载页_载荷"] = dict(self._载荷)
+                    状态.pop("加载页_载荷", None)
         except Exception:
             pass
 
@@ -257,11 +256,7 @@ class 场景_加载页(场景基类):
     def 更新(self):
         try:
             if (time.time() - float(getattr(self, "_入场开始", 0.0) or 0.0)) >= 3.0:
-                return {
-                    "切换到": "谱面播放器",
-                    "载荷": dict(getattr(self, "_载荷", {}) or {}),
-                    "禁用黑屏过渡": True,
-                }
+                return {"切换到": "谱面播放器", "禁用黑屏过渡": True}
         except Exception:
             pass
         return None
@@ -272,12 +267,7 @@ class 场景_加载页(场景基类):
                 return {"切换到": "子模式", "禁用黑屏过渡": True}
 
             if 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                try:
-                    载荷 = dict(getattr(self, "_载荷", {}) or {})
-                except Exception:
-                    载荷 = {}
-
-                return {"切换到": "谱面播放器", "载荷": 载荷, "禁用黑屏过渡": True}
+                return {"切换到": "谱面播放器", "禁用黑屏过渡": True}
 
         return None
 
@@ -328,28 +318,8 @@ class 场景_加载页(场景基类):
             pass
 
     def _读取加载页json(self) -> dict:
-        try:
-            import json
-        except Exception:
-            return {}
-
-        候选路径列表 = [os.path.join(_取运行根目录(), "json", "加载页.json")]
-
-        for 路径 in 候选路径列表:
-            try:
-                if (not 路径) or (not os.path.isfile(路径)):
-                    continue
-                for 编码 in ("utf-8-sig", "utf-8", "gbk"):
-                    try:
-                        with open(路径, "r", encoding=编码) as 文件:
-                            数据 = json.load(文件)
-                        return dict(数据) if isinstance(数据, dict) else {}
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        return {}
+        数据 = _读取存储作用域(_加载页存储作用域)
+        return dict(数据) if isinstance(数据, dict) else {}
 
     def _加载资源(self):
         try:

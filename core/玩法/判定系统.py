@@ -18,6 +18,7 @@ class 判定参数:
 
     长按每拍连击: int = 4
     长按松手宽限毫秒: int = 360
+    长按续接宽限毫秒: int = 360
 
 
 @dataclass
@@ -63,6 +64,7 @@ class 判定系统:
         self._活跃长按索引: List[int] = []  # 已判定头且未结束的hold音符索引
         self._长按判定缓存: Dict[int, str] = {}  # 音符索引 -> hold_head 判定
         self._长按最近按住秒: Dict[int, float] = {}  # 音符索引 -> 最近一次确认按住时间
+        self._轨道长按续接资格到秒: Dict[int, float] = {}  # 轨道序号 -> 允许无新按下续接hold到的时刻
 
     def 加载谱面(self, 音符列表: List[判定音符]):
         self._音符列表 = list(音符列表 or [])
@@ -81,6 +83,7 @@ class 判定系统:
         self._活跃长按索引 = []
         self._长按判定缓存 = {}
         self._长按最近按住秒 = {}
+        self._轨道长按续接资格到秒 = {}
 
     # ---------- 对外：按下 ----------
     def 处理按下(self, 轨道序号: int, 当前谱面秒: float) -> List[判定回报]:
@@ -94,54 +97,7 @@ class 判定系统:
         if 候选索引 is None:
             return []
 
-        音符 = self._音符列表[候选索引]
-        时间差毫秒 = (float(音符.开始秒) - float(当前谱面秒)) * 1000.0  # ✅ 正=提前按
-
-        判定 = self._计算判定(时间差毫秒)
-        加分 = self._判定到分数(判定)
-
-        if 音符.类型 == "tap":
-            self._音符已判定头[候选索引] = True
-            self._音符已结束[候选索引] = True
-            return [
-                判定回报(
-                    类型="tap",
-                    轨道序号=轨道序号,
-                    判定=判定,
-                    时间差毫秒=float(时间差毫秒),
-                    加分=int(加分),
-                    连击增量=0 if 判定 == "miss" else 1,
-                )
-            ]
-
-        # hold：先判头
-        self._音符已判定头[候选索引] = True
-
-        回报列表 = [
-            判定回报(
-                类型="hold_head",
-                轨道序号=轨道序号,
-                判定=判定,
-                时间差毫秒=float(时间差毫秒),
-                加分=int(加分),
-                连击增量=0 if 判定 == "miss" else 1,
-            )
-        ]
-
-        # 头是miss：按你“超过即miss”，直接终止该hold（否则会产生大量tick误解）
-        if 判定 == "miss":
-            self._音符已结束[候选索引] = True
-            return 回报列表
-
-        # 头命中：进入活跃长按，tick从0开始
-        if 候选索引 not in self._长按tick游标:
-            self._长按tick游标[候选索引] = 0
-        if 候选索引 not in self._活跃长按索引:
-            self._活跃长按索引.append(候选索引)
-        self._长按判定缓存[候选索引] = str(判定 or "perfect")
-        self._长按最近按住秒[候选索引] = float(当前谱面秒)
-
-        return 回报列表
+        return self._结算音符头部(候选索引, 当前谱面秒, 轨道序号=轨道序号)
 
     # ---------- 每帧更新：miss判定 + hold tick ----------
     def 更新(
@@ -153,6 +109,28 @@ class 判定系统:
             return self._自动更新(当前谱面秒)
 
         回报列表: List[判定回报] = []
+        轨道按下缓存: Dict[int, bool] = {}
+
+        def _取轨道按下状态(轨道序号: int) -> bool:
+            轨道序号 = int(轨道序号)
+            if 轨道序号 not in 轨道按下缓存:
+                轨道按下缓存[轨道序号] = bool(轨道是否按下(int(轨道序号)))
+            return bool(轨道按下缓存[轨道序号])
+
+        # hold持续按住时会不断续期，允许后一个hold头在没有新KEYDOWN时接上。
+        for idx in self._活跃长按索引:
+            if self._音符已结束[idx]:
+                continue
+            音符 = self._音符列表[idx]
+            if 音符.类型 != "hold":
+                continue
+            if _取轨道按下状态(int(音符.轨道序号)):
+                self._刷新长按续接资格(int(音符.轨道序号), 当前谱面秒)
+
+        for 轨道 in self._轨道到索引.keys():
+            if not _取轨道按下状态(int(轨道)):
+                continue
+            回报列表.extend(self._尝试续接长按判头(int(轨道), 当前谱面秒))
 
         # 1) 自动miss：超过 -25ms 还没判头 -> miss（按你规则，窗口非常窄）
         for 轨道, 索引列表 in self._轨道到索引.items():
@@ -208,9 +186,10 @@ class 判定系统:
             tick列表 = 音符.tick秒列表 or []
             最近按住秒 = self._长按最近按住秒.get(idx, None)
 
-            if bool(轨道是否按下(int(音符.轨道序号))):
+            if _取轨道按下状态(int(音符.轨道序号)):
                 最近按住秒 = float(当前谱面秒)
                 self._长按最近按住秒[idx] = float(最近按住秒)
+                self._刷新长按续接资格(int(音符.轨道序号), 当前谱面秒)
 
             while tick游标 < len(tick列表) and float(tick列表[tick游标]) <= float(
                 当前谱面秒
@@ -260,6 +239,94 @@ class 判定系统:
         self._活跃长按索引 = 新活跃
 
         return 回报列表
+
+    def _结算音符头部(
+        self, 候选索引: int, 当前谱面秒: float, 轨道序号: Optional[int] = None
+    ) -> List[判定回报]:
+        候选索引 = int(候选索引)
+        音符 = self._音符列表[候选索引]
+        轨道序号 = int(音符.轨道序号 if 轨道序号 is None else 轨道序号)
+        时间差毫秒 = (float(音符.开始秒) - float(当前谱面秒)) * 1000.0  # 正=提前按
+        判定 = self._计算判定(时间差毫秒)
+        加分 = self._判定到分数(判定)
+
+        if 音符.类型 == "tap":
+            self._音符已判定头[候选索引] = True
+            self._音符已结束[候选索引] = True
+            return [
+                判定回报(
+                    类型="tap",
+                    轨道序号=轨道序号,
+                    判定=判定,
+                    时间差毫秒=float(时间差毫秒),
+                    加分=int(加分),
+                    连击增量=0 if 判定 == "miss" else 1,
+                )
+            ]
+
+        self._音符已判定头[候选索引] = True
+        回报列表 = [
+            判定回报(
+                类型="hold_head",
+                轨道序号=轨道序号,
+                判定=判定,
+                时间差毫秒=float(时间差毫秒),
+                加分=int(加分),
+                连击增量=0 if 判定 == "miss" else 1,
+            )
+        ]
+
+        if 判定 == "miss":
+            self._音符已结束[候选索引] = True
+            self._轨道长按续接资格到秒.pop(int(音符.轨道序号), None)
+            return 回报列表
+
+        if 候选索引 not in self._长按tick游标:
+            self._长按tick游标[候选索引] = 0
+        if 候选索引 not in self._活跃长按索引:
+            self._活跃长按索引.append(候选索引)
+        self._长按判定缓存[候选索引] = str(判定 or "perfect")
+        self._长按最近按住秒[候选索引] = float(当前谱面秒)
+        self._刷新长按续接资格(int(音符.轨道序号), 当前谱面秒)
+        return 回报列表
+
+    def _刷新长按续接资格(self, 轨道序号: int, 当前谱面秒: float):
+        宽限秒 = max(
+            0.0, float(getattr(self.参数, "长按续接宽限毫秒", 0) or 0) / 1000.0
+        )
+        if 宽限秒 <= 0.0:
+            return
+        轨道序号 = int(轨道序号)
+        截止秒 = float(当前谱面秒) + float(宽限秒)
+        self._轨道长按续接资格到秒[轨道序号] = max(
+            float(self._轨道长按续接资格到秒.get(轨道序号, 0.0) or 0.0),
+            float(截止秒),
+        )
+
+    def _尝试续接长按判头(self, 轨道序号: int, 当前谱面秒: float) -> List[判定回报]:
+        轨道序号 = int(轨道序号)
+        截止秒 = float(self._轨道长按续接资格到秒.get(轨道序号, 0.0) or 0.0)
+        if 截止秒 <= 0.0:
+            return []
+        if float(当前谱面秒) > 截止秒:
+            self._轨道长按续接资格到秒.pop(轨道序号, None)
+            return []
+
+        候选索引 = self._找候选音符索引(轨道序号, 当前谱面秒)
+        if 候选索引 is None:
+            return []
+
+        音符 = self._音符列表[int(候选索引)]
+        if 音符.类型 != "hold":
+            return []
+        if float(当前谱面秒) + 1e-6 < float(音符.开始秒):
+            return []
+
+        时间差毫秒 = (float(音符.开始秒) - float(当前谱面秒)) * 1000.0
+        if self._计算判定(时间差毫秒) == "miss":
+            return []
+
+        return self._结算音符头部(int(候选索引), 当前谱面秒, 轨道序号=轨道序号)
 
     # ---------- 内部：自动模式（用于你调UI） ----------
     def _自动更新(self, 当前谱面秒: float) -> List[判定回报]:

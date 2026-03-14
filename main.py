@@ -32,6 +32,7 @@ from scenes.场景_中转提示 import 场景_中转提示
 from scenes.场景_谱面播放器 import 场景_谱面播放器
 from ui.点击特效 import 序列帧特效资源, 全局点击特效管理器
 from ui.场景过渡 import 公共黑屏过渡,公共丝滑入场
+from ui.select_scene_esc_menu_host import SelectSceneEscMenuHost
 
 
 更新接口地址 = "https://e5cg.vip/api/update"
@@ -1479,6 +1480,7 @@ def 主函数():
     非游戏菜单项矩形: list[pygame.Rect] = []
     非游戏菜单背景音乐关闭 = False
     非游戏菜单背景音乐路径 = ""
+    选歌ESC菜单宿主 = SelectSceneEscMenuHost(上下文)
     投币音效对象 = None
     try:
         投币音效路径 = str(资源.get("投币音效", "") or "")
@@ -2325,6 +2327,8 @@ def 主函数():
         当前场景名 = 目标
         当前场景 = 场景表[当前场景名](上下文)
         _安全进入场景(当前场景, 载荷)
+        if str(当前场景名 or "") != "选歌" and bool(选歌ESC菜单宿主.is_open()):
+            选歌ESC菜单宿主.close()
 
         if 原场景名 == "投币" and 当前场景名 == "登陆磁卡":
             入场.开始()
@@ -2456,7 +2460,26 @@ def 主函数():
                 if 过渡.是否进行中():
                     continue
 
-                if _当前场景允许非游戏菜单():
+                if str(当前场景名 or "") == "选歌":
+                    if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_ESCAPE:
+                        非游戏菜单开启 = False
+                        投币快捷键录入中 = False
+                        if bool(选歌ESC菜单宿主.is_open()):
+                            选歌ESC菜单宿主.close()
+                        else:
+                            选歌ESC菜单宿主.open()
+                        continue
+
+                    if bool(选歌ESC菜单宿主.is_open()):
+                        结果 = 选歌ESC菜单宿主.handle_event(事件)
+                        if isinstance(结果, dict) and bool(结果.get("close_menu", False)):
+                            选歌ESC菜单宿主.close()
+                            continue
+                        if _处理场景返回结果(结果):
+                            continue
+                        continue
+
+                elif _当前场景允许非游戏菜单():
                     if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_ESCAPE:
                         if bool(非游戏菜单开启) and bool(投币快捷键录入中):
                             投币快捷键录入中 = False
@@ -2476,6 +2499,8 @@ def 主函数():
                         非游戏菜单开启 = False
                         非游戏菜单索引 = 0
                         投币快捷键录入中 = False
+                    if bool(选歌ESC菜单宿主.is_open()):
+                        选歌ESC菜单宿主.close()
 
                 踏板动作 = 解析踏板动作(事件)
                 if 踏板动作 is not None:
@@ -2496,6 +2521,7 @@ def 主函数():
             and (not bool(更新检查状态.get("已提示", False)))
             and bool(更新检查状态.get("发现新版本", False))
             and (not bool(非游戏菜单开启))
+            and (not bool(选歌ESC菜单宿主.is_open()))
             and (not bool(开发调试菜单开启))
             and (not 过渡.是否进行中())
             and 当前场景名 not in ("谱面播放器", "结算", "中转提示")
@@ -2521,7 +2547,10 @@ def 主函数():
         上下文["GPU上传脏矩形列表"] = None
         上下文["GPU强制全量上传"] = False
         当前场景.绘制()
-        _绘制非游戏菜单()
+        if bool(选歌ESC菜单宿主.is_open()) and str(当前场景名 or "") == "选歌":
+            选歌ESC菜单宿主.draw(上下文["屏幕"])
+        else:
+            _绘制非游戏菜单()
         _绘制开发调试菜单()
         全局点击特效.更新并绘制(上下文["屏幕"])
 

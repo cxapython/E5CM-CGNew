@@ -17,9 +17,42 @@ from core.常量与路径 import (
     取运行根目录 as _公共取运行根目录,
 )
 from core.动态背景 import DynamicBackgroundContext, DynamicBackgroundManager
+from core.game_esc_menu_settings import (
+    GAME_ESC_SETTINGS_KEY_AUTOPLAY,
+    GAME_ESC_SETTINGS_KEY_BINDINGS,
+    PROFILE_DOUBLE,
+    PROFILE_LABELS,
+    PROFILE_SINGLE,
+    ArrowSkinOption,
+    BackgroundOption,
+    VideoBackgroundOption,
+    assign_profile_key,
+    build_track_key_maps,
+    get_dynamic_background_modes,
+    keycode_to_display_name,
+    load_key_binding_profiles,
+    read_saved_autoplay,
+    resolve_arrow_skin_option,
+    resolve_background_option,
+    resolve_video_background_option,
+    scan_arrow_skin_options,
+    scan_background_options,
+    scan_video_background_options,
+    serialize_key_binding_profiles,
+    write_game_esc_settings_scope_patch,
+)
+from core.sqlite_store import (
+    SCOPE_GAME_ESC_MENU_SETTINGS as _游戏esc菜单设置存储作用域,
+    SCOPE_LOADING_PAYLOAD as _加载页存储作用域,
+    SCOPE_SELECT_SETTINGS as _选歌设置存储作用域,
+    replace_scope as _覆盖存储作用域,
+    read_scope as _读取存储作用域,
+    write_scope_patch as _写入存储作用域,
+)
 from core.对局状态 import 取当前关卡, 取累计S数, 是否赠送第四把, 设置对局流程
 from core.工具 import 绘制底部联网与信用
 from scenes.场景基类 import 场景基类
+from ui.game_esc_menu import GameEscMenuController
 from ui.准备就绪动画 import (
     读取准备动画设置,
     加载准备动画图片,
@@ -75,12 +108,8 @@ def _安全读json(路径: str):
 
 def _读取加载页载荷json() -> dict:
     try:
-        候选路径列表 = [os.path.join(_取运行根目录(), "json", "选歌设置.json")]
-        for 路径 in 候选路径列表:
-            数据 = _安全读json(路径)
-            if isinstance(数据, dict):
-                return dict(数据)
-        return {}
+        数据 = _读取存储作用域(_加载页存储作用域)
+        return dict(数据) if isinstance(数据, dict) else {}
     except Exception:
         return {}
 
@@ -171,18 +200,16 @@ def _解析背景模式(设置参数: dict, 参数文本: str) -> str:
         else str(设置参数.get("背景模式", 设置参数.get("变速", "")) or "")
     )
     候选 = str(候选).strip()
+    if "动态" in 候选:
+        return "动态背景"
     if "视频" in 候选:
         return "视频"
     return "图片"
 
 def _读取选歌设置json() -> dict:
     try:
-        候选路径列表 = [os.path.join(_取运行根目录(), "json", "选歌设置.json")]
-        for 路径 in 候选路径列表:
-            数据 = _安全读json(路径)
-            if isinstance(数据, dict):
-                return dict(数据)
-        return {}
+        数据 = _读取存储作用域(_选歌设置存储作用域)
+        return dict(数据) if isinstance(数据, dict) else {}
     except Exception:
         return {}
 
@@ -1139,6 +1166,11 @@ class 场景_谱面播放器(场景基类):
         self._方向模式: str = "关闭"
         self._背景模式: str = "图片"
         self._动态背景模式: str = "关闭"
+        self._背景GIF帧列表: List[pygame.Surface] = []
+        self._背景GIF帧时长: List[float] = []
+        self._背景GIF总时长: float = 0.0
+        self._背景GIF开始时间: float = 0.0
+        self._背景GIF路径: str = ""
         self._谱面设置: str = "正常"
 
         # 血条/HP
@@ -1190,7 +1222,6 @@ class 场景_谱面播放器(场景基类):
         self._调试血条晃荡速度: float = 2.7
         self._调试血条晃荡幅度: float = 5.0
         self._调试暴走血条速度: float = 300.0
-        self._调试暴走血条不透明度: float = 1.0
         self._调试暴走血条羽化: float = 8.0
         self._调试头像框特效速度: float = 30.0
         self._调试圆环频谱最大长度: int = 16
@@ -1234,15 +1265,26 @@ class 场景_谱面播放器(场景基类):
         self._背景视频缩放带alpha: bool = False
         self._视频背景关闭: bool = False
         self._暂停菜单开启: bool = False
-        self._暂停菜单索引: int = 0
         self._暂停菜单打开前播放中: bool = False
-        self._暂停菜单项矩形: List[pygame.Rect] = []
-        self._暂停菜单关闭按钮: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._动态背景管理器 = DynamicBackgroundManager()
         self._动态背景预览开启: bool = False
         self._动态背景预览索引: int = 0
         self._动态背景预览原模式: str = "关闭"
         self._动态背景预览项矩形: List[pygame.Rect] = []
+        self._菜单背景选项: List[BackgroundOption] = []
+        self._菜单视频背景选项: List[VideoBackgroundOption] = []
+        self._菜单箭头选项: List[ArrowSkinOption] = []
+        self._菜单动态背景选项: List[str] = []
+        self._菜单单踏板键位: Dict[str, int] = {}
+        self._菜单双踏板键位: Dict[str, int] = {}
+        self._当前背景选项: Optional[BackgroundOption] = None
+        self._当前视频背景选项: Optional[VideoBackgroundOption] = None
+        self._当前箭头选项: Optional[ArrowSkinOption] = None
+        self._箭头预览渲染器 = None
+        self._箭头预览皮肤目录: str = ""
+        self._菜单视频预览播放器 = None
+        self._菜单视频预览路径: str = ""
+        self._游戏ESC菜单控制器 = GameEscMenuController(self)
         self._退场黑屏开启: bool = False
         self._退场黑屏开始秒: float = 0.0
         self._退场黑屏时长秒: float = 1.0
@@ -1525,14 +1567,18 @@ class 场景_谱面播放器(场景基类):
             return
 
         self._同步GPU背景纹理缓存(渲染器)
-        try:
-            背景图 = self._读取背景视频帧()
-        except Exception:
-            背景图 = None
-        if not isinstance(背景图, pygame.Surface):
-            背景图 = getattr(self, "_背景原图", None)
-        if isinstance(背景图, pygame.Surface):
-            self._绘制GPU封面背景图(渲染器, 背景图, 屏宽, 屏高)
+        背景模式 = self._取背景渲染模式()
+        背景图 = None
+        if 背景模式 != "动态背景":
+            if 背景模式 == "视频":
+                try:
+                    背景图 = self._读取背景视频帧()
+                except Exception:
+                    背景图 = None
+            if not isinstance(背景图, pygame.Surface):
+                背景图 = self._取背景图片帧()
+            if isinstance(背景图, pygame.Surface):
+                self._绘制GPU封面背景图(渲染器, 背景图, 屏宽, 屏高)
 
         遮罩纹理 = self._取GPU背景遮罩纹理(
             渲染器, int(getattr(self, "_背景暗层alpha", 0) or 0)
@@ -1543,7 +1589,8 @@ class 场景_谱面播放器(场景基类):
             except Exception:
                 pass
 
-        self._绘制GPU动态背景模块(渲染器, 屏宽, 屏高)
+        if 背景模式 == "动态背景":
+            self._绘制GPU动态背景模块(渲染器, 屏宽, 屏高)
 
     def _更新GPU诊断行列表(self):
         if not bool(getattr(self, "_启用GPU谱面管线", False)):
@@ -1769,94 +1816,15 @@ class 场景_谱面播放器(场景基类):
     def _刷新按键映射(self):
         方向文本 = str(getattr(self, "_方向模式", "关闭") or "关闭").strip()
         是否反向 = bool("反向" in 方向文本)
-
-        if bool(getattr(self, "_是否双踏板模式", False)):
-            # 左手：Z/C/S/Q/E -> 左侧5轨（0..4）
-            # 右手：1/3/5/7/9 -> 右侧5轨（5..9）
-            按键到轨道 = {
-                pygame.K_z: 0,
-                pygame.K_c: 4,
-                pygame.K_s: 2,
-                pygame.K_q: 1,
-                pygame.K_e: 3,
-                pygame.K_1: 5,
-                pygame.K_KP1: 5,
-                pygame.K_3: 9,
-                pygame.K_KP3: 9,
-                pygame.K_5: 7,
-                pygame.K_KP5: 7,
-                pygame.K_7: 6,
-                pygame.K_KP7: 6,
-                pygame.K_9: 8,
-                pygame.K_KP9: 8,
-            }
-            轨道到按键列表 = {
-                0: [pygame.K_z],
-                1: [pygame.K_q],
-                2: [pygame.K_s],
-                3: [pygame.K_e],
-                4: [pygame.K_c],
-                5: [pygame.K_1, pygame.K_KP1],
-                6: [pygame.K_7, pygame.K_KP7],
-                7: [pygame.K_5, pygame.K_KP5],
-                8: [pygame.K_9, pygame.K_KP9],
-                9: [pygame.K_3, pygame.K_KP3],
-            }
-
-            if 是否反向:
-                按键到轨道[pygame.K_1] = 8
-                按键到轨道[pygame.K_KP1] = 8
-                按键到轨道[pygame.K_9] = 5
-                按键到轨道[pygame.K_KP9] = 5
-                按键到轨道[pygame.K_3] = 6
-                按键到轨道[pygame.K_KP3] = 6
-                按键到轨道[pygame.K_7] = 9
-                按键到轨道[pygame.K_KP7] = 9
-                轨道到按键列表[5] = [pygame.K_9, pygame.K_KP9]
-                轨道到按键列表[6] = [pygame.K_3, pygame.K_KP3]
-                轨道到按键列表[8] = [pygame.K_1, pygame.K_KP1]
-                轨道到按键列表[9] = [pygame.K_7, pygame.K_KP7]
-
-            self._按键到轨道 = 按键到轨道
-            self._轨道到按键列表 = 轨道到按键列表
-            self._同步渲染器按键反馈映射()
-            return
-
-        # 单踏板：数字键映射（兼容小键盘）
-        按键到轨道 = {
-            pygame.K_1: 0,
-            pygame.K_KP1: 0,
-            pygame.K_3: 4,
-            pygame.K_KP3: 4,
-            pygame.K_5: 2,
-            pygame.K_KP5: 2,
-            pygame.K_7: 1,
-            pygame.K_KP7: 1,
-            pygame.K_9: 3,
-            pygame.K_KP9: 3,
+        配置 = {
+            PROFILE_SINGLE: dict(getattr(self, "_菜单单踏板键位", {}) or {}),
+            PROFILE_DOUBLE: dict(getattr(self, "_菜单双踏板键位", {}) or {}),
         }
-        轨道到按键列表 = {
-            0: [pygame.K_1, pygame.K_KP1],
-            1: [pygame.K_7, pygame.K_KP7],
-            2: [pygame.K_5, pygame.K_KP5],
-            3: [pygame.K_9, pygame.K_KP9],
-            4: [pygame.K_3, pygame.K_KP3],
-        }
-
-        if 是否反向:
-            按键到轨道[pygame.K_1] = 3
-            按键到轨道[pygame.K_KP1] = 3
-            按键到轨道[pygame.K_9] = 0
-            按键到轨道[pygame.K_KP9] = 0
-            按键到轨道[pygame.K_3] = 1
-            按键到轨道[pygame.K_KP3] = 1
-            按键到轨道[pygame.K_7] = 4
-            按键到轨道[pygame.K_KP7] = 4
-            轨道到按键列表[0] = [pygame.K_9, pygame.K_KP9]
-            轨道到按键列表[1] = [pygame.K_3, pygame.K_KP3]
-            轨道到按键列表[3] = [pygame.K_1, pygame.K_KP1]
-            轨道到按键列表[4] = [pygame.K_7, pygame.K_KP7]
-
+        按键到轨道, 轨道到按键列表 = build_track_key_maps(
+            is_double=bool(getattr(self, "_是否双踏板模式", False)),
+            reverse=是否反向,
+            profiles=配置,
+        )
         self._按键到轨道 = 按键到轨道
         self._轨道到按键列表 = 轨道到按键列表
         self._同步渲染器按键反馈映射()
@@ -2135,20 +2103,6 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             pass
         try:
-            self._调试暴走血条不透明度 = float(
-                max(
-                    0.0,
-                    min(
-                        1.0,
-                        float(
-                            数据.get("调试暴走血条不透明度", self._调试暴走血条不透明度)
-                        ),
-                    ),
-                )
-            )
-        except Exception:
-            pass
-        try:
             self._调试暴走血条羽化 = float(
                 max(
                     0.0,
@@ -2349,16 +2303,11 @@ class 场景_谱面播放器(场景基类):
             pass
 
         try:
-            路径 = os.path.join(_取运行根目录(), "json", "选歌设置.json")
-            数据 = _读取选歌设置json()
+            数据 = self._读取游戏esc菜单设置()
             if not isinstance(数据, dict):
                 数据 = {}
             数据["背景遮罩alpha"] = int(值)
-            os.makedirs(os.path.dirname(路径), exist_ok=True)
-            临时 = 路径 + ".tmp"
-            with open(临时, "w", encoding="utf-8") as f:
-                json.dump(数据, f, ensure_ascii=False, indent=2)
-            os.replace(临时, 路径)
+            _写入存储作用域(_游戏esc菜单设置存储作用域, 数据)
         except Exception:
             pass
 
@@ -2381,20 +2330,21 @@ class 场景_谱面播放器(场景基类):
 
     def _保存游戏视觉设置到选歌json(self):
         try:
-            路径 = os.path.join(_取运行根目录(), "json", "选歌设置.json")
             数据 = _读取选歌设置json()
             if not isinstance(数据, dict):
                 数据 = {}
             参数 = dict(数据.get("设置参数", {}) or {})
             参数["调速"] = f"X{float(getattr(self, '_卷轴速度倍率', 4.0) or 4.0):.1f}"
-            参数["背景模式"] = (
-                "视频" if (not bool(getattr(self, "_视频背景关闭", True))) else "图片"
+            当前背景模式 = str(getattr(self, "_背景模式", "图片") or "图片")
+            当前动态背景 = str(
+                self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭") or "关闭")
             )
-            参数["动态背景"] = str(
-                self._规范动态背景模式(
-                    getattr(self, "_动态背景模式", "关闭") or "关闭"
-                )
-            )
+            if 当前背景模式 == "动态背景":
+                参数["背景模式"] = "图片"
+                参数["动态背景"] = 当前动态背景
+            else:
+                参数["背景模式"] = "视频" if 当前背景模式 == "视频" else "图片"
+                参数["动态背景"] = "关闭"
             参数["谱面"] = str(getattr(self, "_谱面设置", "正常") or "正常")
             参数["隐藏"] = str(getattr(self, "_隐藏模式", "关闭") or "关闭")
             参数["轨迹"] = str(getattr(self, "_轨迹模式", "正常") or "正常")
@@ -2402,61 +2352,74 @@ class 场景_谱面播放器(场景基类):
             参数["大小"] = self._取当前大小选项文本()
             参数.pop("击中特效", None)
             数据["设置参数"] = dict(参数)
+            数据["动态背景"] = str(参数.get("动态背景", "关闭") or "关闭")
             数据.pop("击中特效方案", None)
 
-            背景文件名 = str(数据.get("背景文件名", "") or "")
-            箭头文件名 = str(数据.get("箭头文件名", "") or "")
+            背景文件名 = str(
+                self._载荷.get("背景文件名", 数据.get("背景文件名", "")) or ""
+            ).strip()
+            视频背景文件名 = str(
+                self._载荷.get("视频背景文件名", 数据.get("视频背景文件名", "")) or ""
+            ).strip()
+            箭头文件名 = str(
+                self._载荷.get("箭头文件名", 数据.get("箭头文件名", "")) or ""
+            ).strip()
+            if 背景文件名:
+                数据["背景文件名"] = 背景文件名
+            if 视频背景文件名:
+                数据["视频背景文件名"] = 视频背景文件名
+            if 箭头文件名:
+                数据["箭头文件名"] = 箭头文件名
+
+            索引表 = dict(数据.get("索引", {}) or {})
+
+            def _更新索引(键名: str, 候选项: List[str], 当前值: str):
+                if not 候选项:
+                    return
+                try:
+                    索引表[键名] = int(候选项.index(str(当前值)))
+                except Exception:
+                    pass
+
+            _更新索引(
+                "调速",
+                ["3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5", "7.0"],
+                f"{float(getattr(self, '_卷轴速度倍率', 4.0) or 4.0):.1f}",
+            )
+            可见背景模式 = "动态背景" if self._动态背景已启用() else str(当前背景模式 or "图片")
+            _更新索引("背景模式", ["图片", "视频", "动态背景"], 可见背景模式)
+            索引表["变速"] = int(索引表.get("背景模式", 索引表.get("变速", 0)) or 0)
+            _更新索引("谱面", ["正常", "未知"], str(getattr(self, "_谱面设置", "正常") or "正常"))
+            索引表["变速类型"] = int(索引表.get("谱面", 索引表.get("变速类型", 0)) or 0)
+            _更新索引("隐藏", ["关闭", "半隐", "全隐"], str(getattr(self, "_隐藏模式", "关闭") or "关闭"))
+            _更新索引("轨迹", ["正常", "摇摆", "旋转"], str(getattr(self, "_轨迹模式", "正常") or "正常"))
+            _更新索引("方向", ["关闭", "反向"], str(getattr(self, "_方向模式", "关闭") or "关闭"))
+            _更新索引("大小", ["正常", "放大"], self._取当前大小选项文本())
+            数据["索引"] = 索引表
+
             数据["设置参数文本"] = _构建设置参数文本(
                 参数, 背景文件名=背景文件名, 箭头文件名=箭头文件名
             )
-
-            os.makedirs(os.path.dirname(路径), exist_ok=True)
-            临时路径 = 路径 + ".tmp"
-            with open(临时路径, "w", encoding="utf-8") as f:
-                json.dump(数据, f, ensure_ascii=False, indent=2)
-            os.replace(临时路径, 路径)
+            _写入存储作用域(_选歌设置存储作用域, 数据)
 
             self._载荷["设置参数"] = dict(参数)
             self._载荷["设置参数文本"] = str(数据.get("设置参数文本", "") or "")
+            self._载荷["关闭视频背景"] = bool(getattr(self, "_视频背景关闭", True))
+            if 背景文件名:
+                self._载荷["背景文件名"] = str(背景文件名)
+            if 视频背景文件名:
+                self._载荷["视频背景文件名"] = str(视频背景文件名)
+            if 箭头文件名:
+                self._载荷["箭头文件名"] = str(箭头文件名)
         except Exception:
             pass
 
-    def _取电视跟跳设置路径(self) -> str:
-        候选路径列表 = [os.path.join(_取运行根目录(), "json", "电视跟跳设置.json")]
+    def _读取游戏esc菜单设置(self) -> dict:
+        数据 = _读取存储作用域(_游戏esc菜单设置存储作用域)
+        return dict(数据) if isinstance(数据, dict) else {}
 
-        for 路径 in 候选路径列表:
-            try:
-                if 路径 and os.path.isfile(路径):
-                    return os.path.abspath(路径)
-            except Exception:
-                continue
-
-        for 路径 in 候选路径列表:
-            try:
-                if 路径:
-                    return os.path.abspath(路径)
-            except Exception:
-                continue
-
-        return os.path.abspath(
-            os.path.join(_取运行根目录(), "json", "电视跟跳设置.json")
-        )
-
-
-    def _读取电视跟跳设置(self) -> dict:
-        路径 = self._取电视跟跳设置路径()
-
-        try:
-            数据 = _安全读json(路径)
-            if isinstance(数据, dict):
-                return dict(数据)
-        except Exception:
-            pass
-
-        return {}
-
-    def _读取电视跟跳开关(self) -> bool:
-        数据 = self._读取电视跟跳设置()
+    def _读取游戏esc菜单开关(self) -> bool:
+        数据 = self._读取游戏esc菜单设置()
 
         try:
             if "开启" in 数据:
@@ -2472,8 +2435,8 @@ class 场景_谱面播放器(场景基类):
 
         return False
 
-    def _读取电视跟跳背景遮罩alpha(self) -> Optional[int]:
-        数据 = self._读取电视跟跳设置()
+    def _读取游戏esc菜单背景遮罩alpha(self) -> Optional[int]:
+        数据 = self._读取游戏esc菜单设置()
 
         try:
             if "背景遮罩alpha" not in 数据:
@@ -2483,8 +2446,8 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             return None
 
-    def _读取电视跟跳性能模式(self) -> Optional[bool]:
-        数据 = self._读取电视跟跳设置()
+    def _读取游戏esc菜单性能模式(self) -> Optional[bool]:
+        数据 = self._读取游戏esc菜单设置()
 
         try:
             if "性能模式" not in 数据:
@@ -2493,14 +2456,13 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             return None
 
-    def _保存电视跟跳开关(
+    def _保存游戏esc菜单设置(
         self,
         是否开启: Optional[bool] = None,
         背景遮罩alpha: Optional[int] = None,
         性能模式: Optional[bool] = None,
     ):
-        路径 = self._取电视跟跳设置路径()
-        原数据 = self._读取电视跟跳设置()
+        原数据 = self._读取游戏esc菜单设置()
         if not isinstance(原数据, dict):
             原数据 = {}
 
@@ -2525,11 +2487,7 @@ class 场景_谱面播放器(场景基类):
         新数据["更新时间"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
         try:
-            os.makedirs(os.path.dirname(路径), exist_ok=True)
-            临时路径 = 路径 + ".tmp"
-            with open(临时路径, "w", encoding="utf-8") as 文件:
-                json.dump(新数据, 文件, ensure_ascii=False, indent=2)
-            os.replace(临时路径, 路径)
+            _写入存储作用域(_游戏esc菜单设置存储作用域, 新数据)
         except Exception:
             pass
 
@@ -2548,11 +2506,6 @@ class 场景_谱面播放器(场景基类):
         
 
     def _同步电视跟跳状态(self):
-        持久开关已开启 = bool(getattr(self, "_电视跟跳开启", False))
-
-        if 持久开关已开启:
-            self._是否自动模式 = True
-
         try:
             if self._判定系统 is not None:
                 self._判定系统.自动模式 = bool(self._是否自动模式)
@@ -2560,40 +2513,23 @@ class 场景_谱面播放器(场景基类):
             pass
 
     def _菜单切换电视跟跳(self):
-        当前状态 = bool(getattr(self, "_电视跟跳开启", False))
-        新状态 = not 当前状态
-
-        self._电视跟跳开启 = bool(新状态)
-
-        if bool(self._电视跟跳开启):
-            self._是否自动模式 = True
-        else:
-            self._是否自动模式 = False
-
-        self._保存电视跟跳开关(bool(self._电视跟跳开启))
-        self._同步电视跟跳状态()
+        self._菜单切换自动播放()
 
     def _菜单切换自动播放(self):
-        if bool(getattr(self, "_电视跟跳开启", False)):
-            self._电视跟跳开启 = False
-            self._保存电视跟跳开关(False)
-            self._是否自动模式 = False
-            try:
-                self._载荷["自动播放"] = False
-            except Exception:
-                pass
-            self._同步电视跟跳状态()
-        else:
-            self._是否自动模式 = not bool(getattr(self, "_是否自动模式", False))
-            try:
-                if self._判定系统 is not None:
-                    self._判定系统.自动模式 = bool(self._是否自动模式)
-            except Exception:
-                pass
-            try:
-                self._载荷["自动播放"] = bool(self._是否自动模式)
-            except Exception:
-                pass
+        self._是否自动模式 = not bool(getattr(self, "_是否自动模式", False))
+        self._电视跟跳开启 = bool(self._是否自动模式)
+        try:
+            self._载荷["自动播放"] = bool(self._是否自动模式)
+        except Exception:
+            pass
+        self._保存游戏esc菜单设置(bool(self._电视跟跳开启))
+        try:
+            write_game_esc_settings_scope_patch(
+                {GAME_ESC_SETTINGS_KEY_AUTOPLAY: bool(self._是否自动模式)}
+            )
+        except Exception:
+            pass
+        self._同步电视跟跳状态()
 
     @staticmethod
     def _规范动态背景模式(值: Any) -> str:
@@ -2650,13 +2586,27 @@ class 场景_谱面播放器(场景基类):
         return f"动态背景（{模式}）"
 
     def _动态背景已启用(self) -> bool:
+        if str(getattr(self, "_背景模式", "图片") or "图片") != "动态背景":
+            return False
         return self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭")) != "关闭"
 
+    def _取背景渲染模式(self) -> str:
+        背景模式 = str(getattr(self, "_背景模式", "图片") or "图片")
+        if 背景模式 == "动态背景" and self._规范动态背景模式(
+            getattr(self, "_动态背景模式", "关闭")
+        ) != "关闭":
+            return "动态背景"
+        if 背景模式 == "视频":
+            return "视频"
+        return "图片"
+
     def _菜单切换动态背景(self):
-        if self._动态背景已启用():
-            self._动态背景模式 = "关闭"
-        else:
-            self._动态背景模式 = "唱片"
+        候选 = list(getattr(self, "_菜单动态背景选项", []) or []) or ["唱片"]
+        当前 = self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭"))
+        self._动态背景模式 = self._循环选项值(当前, 候选)
+        if str(getattr(self, "_背景模式", "图片") or "图片") != "动态背景":
+            self._背景模式 = "动态背景"
+            self._视频背景关闭 = True
         try:
             getattr(self, "_动态背景管理器", None).reset()
         except Exception:
@@ -2788,9 +2738,13 @@ class 场景_谱面播放器(场景基类):
         self._保存游戏视觉设置到选歌json()
 
     def _菜单切换背景模式(self):
-        当前 = "视频" if (not bool(getattr(self, "_视频背景关闭", True))) else "图片"
-        新值 = self._循环选项值(当前, ["图片", "视频"])
+        当前 = str(getattr(self, "_背景模式", "图片") or "图片")
+        新值 = self._循环选项值(当前, ["图片", "视频", "动态背景"])
         self._背景模式 = str(新值)
+        if self._背景模式 == "动态背景":
+            if self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭")) == "关闭":
+                候选 = list(getattr(self, "_菜单动态背景选项", []) or []) or ["唱片"]
+                self._动态背景模式 = str(候选[0])
         self._视频背景关闭 = bool(self._背景模式 != "视频")
         self._载荷["关闭视频背景"] = bool(self._视频背景关闭)
         self._应用背景视频状态()
@@ -2853,9 +2807,462 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             pass
 
-        self._保存电视跟跳开关(背景遮罩alpha=int(新值))
+        self._保存游戏esc菜单设置(背景遮罩alpha=int(新值))
 
 
+
+    def _保存当前键位绑定(self):
+        配置 = {
+            PROFILE_SINGLE: dict(getattr(self, "_菜单单踏板键位", {}) or {}),
+            PROFILE_DOUBLE: dict(getattr(self, "_菜单双踏板键位", {}) or {}),
+        }
+        try:
+            write_game_esc_settings_scope_patch(
+                {GAME_ESC_SETTINGS_KEY_BINDINGS: serialize_key_binding_profiles(配置)}
+            )
+        except Exception:
+            pass
+
+    def _切换性能模式(self):
+        self._性能模式 = not bool(self._性能模式)
+        try:
+            self._载荷["性能模式"] = bool(self._性能模式)
+        except Exception:
+            pass
+        self._保存游戏esc菜单设置(性能模式=bool(self._性能模式))
+        self._应用背景视频状态()
+        if bool(self._性能模式):
+            self._圆环频谱舞台装饰 = None
+            return
+        try:
+            from ui.圆环频谱叠加 import 圆环频谱舞台装饰
+
+            self._圆环频谱舞台装饰 = 圆环频谱舞台装饰()
+            self._应用圆环频谱调试设置()
+            if self._音频路径 and os.path.isfile(self._音频路径):
+                self._圆环频谱舞台装饰.绑定音频(str(self._音频路径))
+        except Exception:
+            self._圆环频谱舞台装饰 = None
+
+    def _应用ESC菜单背景文件(self, 背景文件名: str, save: bool = True) -> bool:
+        选项 = resolve_background_option(self._菜单背景选项, 背景文件名)
+        if 选项 is None:
+            return False
+        self._当前背景选项 = 选项
+        self._加载背景(str(选项.file_name or ""))
+        try:
+            self._载荷["背景文件名"] = str(选项.file_name or "")
+        except Exception:
+            pass
+        if bool(save):
+            self._保存游戏视觉设置到选歌json()
+        return True
+
+    def _应用ESC菜单箭头皮肤(self, 箭头文件名: str, save: bool = True) -> bool:
+        选项 = resolve_arrow_skin_option(self._菜单箭头选项, 箭头文件名)
+        if 选项 is None:
+            return False
+        self._当前箭头选项 = 选项
+        self._皮肤目录 = str(选项.skin_dir or "")
+        try:
+            self._载荷["箭头文件名"] = str(选项.file_name or "")
+        except Exception:
+            pass
+        try:
+            if self._谱面渲染器 is not None and self._皮肤目录:
+                self._谱面渲染器.设置皮肤(self._皮肤目录)
+        except Exception as 异常:
+            self._错误提示 = (
+                self._错误提示 + " | " if self._错误提示 else ""
+            ) + f"皮肤加载失败：{type(异常).__name__} {异常}"
+        try:
+            self._同步双踏板渲染器()
+        except Exception:
+            pass
+        if bool(save):
+            self._保存游戏视觉设置到选歌json()
+        return True
+
+    def _应用ESC菜单视频背景(self, 视频文件名: str, save: bool = True) -> bool:
+        选项 = resolve_video_background_option(self._菜单视频背景选项, 视频文件名)
+        if 选项 is None:
+            return False
+        self._当前视频背景选项 = 选项
+        try:
+            self._载荷["视频背景文件名"] = str(选项.file_name or "")
+        except Exception:
+            pass
+        self._应用背景视频状态()
+        if bool(save):
+            self._保存游戏视觉设置到选歌json()
+        return True
+
+    def _esc_menu_adjust(self, row_key: str, step: int = 1):
+        step = 1 if int(step or 0) >= 0 else -1
+        键名 = str(row_key or "").strip()
+        if not 键名:
+            return None
+
+        if 键名 == "scroll_speed":
+            候选 = ["3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5", "7.0"]
+            当前 = f"{float(getattr(self, '_卷轴速度倍率', 4.0) or 4.0):.1f}"
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 2
+            self._卷轴速度倍率 = float(候选[(索引 + step) % len(候选)])
+            self._滚动速度px每秒 = float(420.0 * self._卷轴速度倍率)
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"调速已切换：X{self._卷轴速度倍率:.1f}")
+            return None
+
+        if 键名 == "background_mode":
+            候选 = ["图片", "视频", "动态背景"]
+            当前 = str(getattr(self, "_背景模式", "图片") or "图片")
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 0
+            self._背景模式 = str(候选[(索引 + step) % len(候选)])
+            if self._背景模式 == "动态背景":
+                if self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭")) == "关闭":
+                    self._动态背景模式 = str(
+                        (list(getattr(self, "_菜单动态背景选项", []) or []) or ["唱片"])[0]
+                    )
+            self._视频背景关闭 = bool(self._背景模式 != "视频")
+            try:
+                self._载荷["关闭视频背景"] = bool(self._视频背景关闭)
+            except Exception:
+                pass
+            self._应用背景视频状态()
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"背景模式：{self._取背景渲染模式()}")
+            return None
+
+        if 键名 == "dynamic_background":
+            候选 = list(getattr(self, "_菜单动态背景选项", []) or []) or ["唱片"]
+            当前 = str(getattr(self, "_动态背景模式", 候选[0]) or 候选[0])
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 0
+            self._动态背景模式 = str(候选[(索引 + step) % len(候选)])
+            try:
+                getattr(self, "_动态背景管理器", None).reset()
+            except Exception:
+                pass
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"动态背景：{self._动态背景模式}")
+            return None
+
+        if 键名 == "image_background":
+            候选 = list(getattr(self, "_菜单背景选项", []) or [])
+            if not 候选:
+                return None
+            当前选项 = resolve_background_option(
+                候选, str(getattr(self, "_载荷", {}).get("背景文件名", "") or "")
+            )
+            try:
+                索引 = 候选.index(当前选项)
+            except Exception:
+                索引 = 0
+            新选项 = 候选[(索引 + step) % len(候选)]
+            self._应用ESC菜单背景文件(str(getattr(新选项, "file_name", "") or ""))
+            self._设置操作反馈(
+                f"图片背景：{getattr(新选项, 'label', getattr(新选项, 'file_name', ''))}"
+            )
+            return None
+
+        if 键名 == "video_background":
+            候选 = list(getattr(self, "_菜单视频背景选项", []) or [])
+            if not 候选:
+                return None
+            当前选项 = resolve_video_background_option(
+                候选, str(getattr(self, "_载荷", {}).get("视频背景文件名", "") or "")
+            )
+            try:
+                索引 = 候选.index(当前选项)
+            except Exception:
+                索引 = 0
+            新选项 = 候选[(索引 + step) % len(候选)]
+            self._应用ESC菜单视频背景(str(getattr(新选项, "file_name", "") or ""))
+            self._设置操作反馈(
+                f"视频背景：{getattr(新选项, 'label', getattr(新选项, 'file_name', ''))}"
+            )
+            return None
+
+        if 键名 == "hidden":
+            候选 = ["关闭", "半隐", "全隐"]
+            当前 = str(getattr(self, "_隐藏模式", "关闭") or "关闭")
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 0
+            self._隐藏模式 = str(候选[(索引 + step) % len(候选)])
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"隐藏模式：{self._隐藏模式}")
+            return None
+
+        if 键名 == "track":
+            候选 = ["正常", "摇摆", "旋转"]
+            当前 = str(getattr(self, "_轨迹模式", "正常") or "正常")
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 0
+            self._轨迹模式 = str(候选[(索引 + step) % len(候选)])
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"轨迹模式：{self._轨迹模式}")
+            return None
+
+        if 键名 == "direction":
+            候选 = ["关闭", "反向"]
+            当前 = str(getattr(self, "_方向模式", "关闭") or "关闭")
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 0
+            self._方向模式 = str(候选[(索引 + step) % len(候选)])
+            self._刷新按键映射()
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"方向模式：{self._方向模式}")
+            return None
+
+        if 键名 == "size":
+            候选 = ["正常", "放大"]
+            当前 = self._取当前大小选项文本()
+            try:
+                索引 = 候选.index(当前)
+            except Exception:
+                索引 = 0
+            新值 = str(候选[(索引 + step) % len(候选)])
+            self._尺寸倍率 = 0.8 if 新值 == "正常" else 1.0
+            try:
+                self._重算布局(强制=True)
+            except Exception:
+                pass
+            self._保存游戏视觉设置到选歌json()
+            self._设置操作反馈(f"大小模式：{新值}")
+            return None
+
+        if 键名 == "arrow_skin":
+            候选 = list(getattr(self, "_菜单箭头选项", []) or [])
+            if not 候选:
+                return None
+            当前选项 = resolve_arrow_skin_option(
+                候选, str(getattr(self, "_载荷", {}).get("箭头文件名", "") or "")
+            )
+            try:
+                索引 = 候选.index(当前选项)
+            except Exception:
+                索引 = 0
+            新选项 = 候选[(索引 + step) % len(候选)]
+            self._应用ESC菜单箭头皮肤(str(getattr(新选项, "file_name", "") or ""))
+            self._设置操作反馈(
+                f"箭头皮肤：{getattr(新选项, 'label', getattr(新选项, 'file_name', ''))}"
+            )
+            return None
+
+        if 键名 == "brightness":
+            档位 = list(self._背景亮度档位alpha())
+            if not 档位:
+                return None
+            当前 = int(max(0, min(255, int(getattr(self, "_背景暗层alpha", 0) or 0))))
+            try:
+                当前索引 = min(range(len(档位)), key=lambda i: abs(int(档位[i]) - 当前))
+            except Exception:
+                当前索引 = 0
+            self._背景暗层alpha = int(
+                max(0, min(255, int(档位[(当前索引 + step) % len(档位)])))
+            )
+            self._背景暗层缓存alpha = -1
+            try:
+                self._载荷["背景遮罩alpha"] = int(self._背景暗层alpha)
+            except Exception:
+                pass
+            self._保存游戏esc菜单设置(背景遮罩alpha=int(self._背景暗层alpha))
+            self._设置操作反馈(f"背景亮度：{self._取背景亮度菜单文本()}")
+            return None
+
+        if 键名 == "performance_mode":
+            self._切换性能模式()
+            self._设置操作反馈(f"极简性能模式已{'开启' if self._性能模式 else '关闭'}")
+            return None
+
+        if 键名 == "autoplay":
+            self._菜单切换自动播放()
+            self._设置操作反馈(f"自动播放已{'开启' if self._是否自动模式 else '关闭'}")
+            return None
+
+        return None
+
+    def _esc_menu_confirm_exit(self, target: str):
+        self._暂停菜单开启 = False
+        self._关闭ESC菜单视频预览播放器()
+        self._游戏ESC菜单控制器.close()
+        if str(target) == "match":
+            return {"切换到": "选歌", "禁用黑屏过渡": True}
+        if str(target) == "desktop":
+            return {"退出程序": True}
+        return None
+
+    def _esc_menu_should_show_exit_match(self) -> bool:
+        return True
+
+    def _esc_menu_apply_binding(self, profile_id: str, slot_id: str, keycode: int):
+        配置 = {
+            PROFILE_SINGLE: dict(getattr(self, "_菜单单踏板键位", {}) or {}),
+            PROFILE_DOUBLE: dict(getattr(self, "_菜单双踏板键位", {}) or {}),
+        }
+        新配置 = assign_profile_key(配置, str(profile_id), str(slot_id), int(keycode))
+        self._菜单单踏板键位 = dict(新配置.get(PROFILE_SINGLE, {}) or {})
+        self._菜单双踏板键位 = dict(新配置.get(PROFILE_DOUBLE, {}) or {})
+        self._保存当前键位绑定()
+        self._刷新按键映射()
+        self._设置操作反馈(
+            f"{PROFILE_LABELS.get(str(profile_id), str(profile_id))} {slot_id}：{keycode_to_display_name(keycode)}"
+        )
+
+    def _esc_menu_draw_dynamic_preview(self, 屏幕: pygame.Surface, rect: pygame.Rect) -> bool:
+        try:
+            return bool(self._绘制动态背景预览画面(屏幕, rect, time.perf_counter()))
+        except Exception:
+            return False
+
+    def _esc_menu_draw_image_preview(self, 屏幕: pygame.Surface, rect: pygame.Rect) -> bool:
+        if not isinstance(屏幕, pygame.Surface) or (not isinstance(rect, pygame.Rect)):
+            return False
+        图像 = self._取背景图片帧(time.perf_counter())
+        if not isinstance(图像, pygame.Surface):
+            return False
+        try:
+            预览 = pygame.Surface((max(1, rect.w), max(1, rect.h))).convert()
+            self._绘制cover背景面(预览, 图像)
+            屏幕.blit(预览, rect.topleft)
+            return True
+        except Exception:
+            return False
+
+    def _关闭ESC菜单视频预览播放器(self):
+        旧播放器 = getattr(self, "_菜单视频预览播放器", None)
+        try:
+            if 旧播放器 is not None and hasattr(旧播放器, "关闭"):
+                旧播放器.关闭()
+        except Exception:
+            pass
+        self._菜单视频预览播放器 = None
+        self._菜单视频预览路径 = ""
+
+    def _取当前视频背景来源(self) -> str:
+        当前选项 = getattr(self, "_当前视频背景选项", None)
+        if 当前选项 is not None:
+            路径 = str(getattr(当前选项, "path", "") or "").strip()
+            if 路径 and os.path.isfile(路径):
+                return 路径
+        return str(getattr(self, "_默认背景视频目录", "") or "").strip()
+
+    def _取ESC菜单视频预览播放器(self):
+        目标路径 = self._取当前视频背景来源()
+        if not 目标路径:
+            self._关闭ESC菜单视频预览播放器()
+            return None
+        if (
+            getattr(self, "_菜单视频预览播放器", None) is not None
+            and str(getattr(self, "_菜单视频预览路径", "") or "").strip() == 目标路径
+        ):
+            return self._菜单视频预览播放器
+
+        self._关闭ESC菜单视频预览播放器()
+        try:
+            if os.path.isdir(目标路径):
+                from core.视频 import 全局视频顺序循环播放器
+
+                播放器 = 全局视频顺序循环播放器(目标路径)
+            elif os.path.isfile(目标路径):
+                from core.视频 import 全局视频循环播放器
+
+                播放器 = 全局视频循环播放器(目标路径)
+            else:
+                return None
+            播放器.打开(是否重置进度=True)
+            self._菜单视频预览播放器 = 播放器
+            self._菜单视频预览路径 = 目标路径
+            return 播放器
+        except Exception:
+            self._关闭ESC菜单视频预览播放器()
+            return None
+
+    def _esc_menu_draw_video_preview(self, 屏幕: pygame.Surface, rect: pygame.Rect) -> bool:
+        if not isinstance(屏幕, pygame.Surface) or (not isinstance(rect, pygame.Rect)):
+            return False
+        播放器 = self._取ESC菜单视频预览播放器()
+        if 播放器 is None:
+            return False
+        try:
+            if hasattr(播放器, "读取覆盖帧"):
+                视频帧 = 播放器.读取覆盖帧(max(1, rect.w), max(1, rect.h))
+            else:
+                视频帧 = 播放器.读取帧()
+        except Exception:
+            视频帧 = None
+        if not isinstance(视频帧, pygame.Surface):
+            return False
+        try:
+            if 视频帧.get_size() == (rect.w, rect.h):
+                屏幕.blit(视频帧, rect.topleft)
+            else:
+                预览 = pygame.Surface((max(1, rect.w), max(1, rect.h))).convert()
+                self._绘制cover背景面(预览, 视频帧)
+                屏幕.blit(预览, rect.topleft)
+            return True
+        except Exception:
+            return False
+
+    def _esc_menu_draw_arrow_preview(self, 屏幕: pygame.Surface, rect: pygame.Rect) -> bool:
+        if not isinstance(屏幕, pygame.Surface) or (not isinstance(rect, pygame.Rect)):
+            return False
+        渲染器 = getattr(self, "_谱面渲染器", None)
+        if 渲染器 is None:
+            return False
+        try:
+            图集 = getattr(getattr(渲染器, "_皮肤包", None), "arrow", None)
+        except Exception:
+            图集 = None
+        if 图集 is None:
+            return False
+        内框 = rect.inflate(-18, -18)
+        if 内框.w <= 0 or 内框.h <= 0:
+            return False
+        try:
+            lane_gap = max(6, int(内框.w * 0.02))
+            lane_width = max(12, int((内框.w - lane_gap * 4) / 5))
+            for 轨道 in range(5):
+                方位 = 渲染器._轨道到arrow方位码(轨道)
+                名称 = f"arrow_body_{方位}.png"
+                原图 = 图集.取(名称)
+                lane_x = 内框.x + 轨道 * (lane_width + lane_gap)
+                lane_rect = pygame.Rect(lane_x, 内框.y, lane_width, 内框.h)
+                pygame.draw.rect(屏幕, (16, 24, 38), lane_rect, border_radius=10)
+                pygame.draw.rect(屏幕, (38, 58, 90), lane_rect, width=1, border_radius=10)
+                if not isinstance(原图, pygame.Surface):
+                    continue
+                比例 = min(
+                    float(lane_rect.w) / float(max(1, 原图.get_width())),
+                    float(lane_rect.h * 0.82) / float(max(1, 原图.get_height())),
+                )
+                宽 = max(8, int(round(原图.get_width() * 比例)))
+                高 = max(8, int(round(原图.get_height() * 比例)))
+                图像 = pygame.transform.smoothscale(原图, (宽, 高)).convert_alpha()
+                屏幕.blit(
+                    图像,
+                    (
+                        int(lane_rect.centerx - 图像.get_width() * 0.5),
+                        int(lane_rect.centery - 图像.get_height() * 0.5),
+                    ),
+                )
+            return True
+        except Exception:
+            return False
 
     def _刷新双踏板强制判定线y(self):
         if not bool(getattr(self, "_是否双踏板模式", False)):
@@ -2940,19 +3347,20 @@ class 场景_谱面播放器(场景基类):
 
     def 进入(self, 载荷=None):
         状态 = {}
-        状态载荷 = {}
         try:
             状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
-            临时载荷 = (状态 or {}).get("加载页_载荷", {})
-            if isinstance(临时载荷, dict):
-                状态载荷 = dict(临时载荷)
         except Exception:
-            状态载荷 = {}
-        传入载荷 = dict(载荷) if isinstance(载荷, dict) else {}
-        self._载荷 = _合并载荷源(_读取加载页载荷json(), 状态载荷, 传入载荷)
+            状态 = {}
+        落盘载荷 = _读取加载页载荷json()
+        if (not 落盘载荷) and isinstance(载荷, dict) and 载荷:
+            try:
+                落盘载荷 = _覆盖存储作用域(_加载页存储作用域, dict(载荷))
+            except Exception:
+                落盘载荷 = dict(载荷)
+        self._载荷 = dict(落盘载荷) if isinstance(落盘载荷, dict) else {}
         try:
             if isinstance(状态, dict):
-                状态["加载页_载荷"] = dict(self._载荷)
+                状态.pop("加载页_载荷", None)
         except Exception:
             pass
         self._刷新布局调试设置(强制=True)
@@ -2979,23 +3387,29 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             默认背景遮罩alpha = int(round(255.0 * 0.70))
 
-        self._电视跟跳开启 = bool(self._读取电视跟跳开关())
+        游戏esc菜单设置 = self._读取游戏esc菜单设置()
+        self._电视跟跳开启 = bool(self._读取游戏esc菜单开关())
 
-        电视跟跳背景遮罩alpha = self._读取电视跟跳背景遮罩alpha()
-        if 电视跟跳背景遮罩alpha is not None:
+        游戏esc菜单背景遮罩alpha = self._读取游戏esc菜单背景遮罩alpha()
+        if 游戏esc菜单背景遮罩alpha is not None:
             默认背景遮罩alpha = int(
-                max(0, min(255, int(电视跟跳背景遮罩alpha)))
+                max(0, min(255, int(游戏esc菜单背景遮罩alpha)))
             )
 
-        电视跟跳性能模式 = self._读取电视跟跳性能模式()
+        游戏esc菜单性能模式 = self._读取游戏esc菜单性能模式()
 
         载荷自动模式 = bool(
             self._载荷.get("自动播放", self._载荷.get("自动模式", False))
         )
-        self._是否自动模式 = bool(self._电视跟跳开启 or 载荷自动模式)
+        存档自动模式 = read_saved_autoplay(游戏esc菜单设置)
+        if 存档自动模式 is None:
+            self._是否自动模式 = bool(self._电视跟跳开启 or 载荷自动模式)
+        else:
+            self._是否自动模式 = bool(存档自动模式)
+        self._电视跟跳开启 = bool(self._是否自动模式)
 
-        if 电视跟跳性能模式 is not None:
-            self._性能模式 = bool(电视跟跳性能模式)
+        if 游戏esc菜单性能模式 is not None:
+            self._性能模式 = bool(游戏esc菜单性能模式)
         else:
             self._性能模式 = bool(self._载荷.get("性能模式", False))
 
@@ -3014,8 +3428,9 @@ class 场景_谱面播放器(场景基类):
             self._背景暗层alpha = int(默认背景遮罩alpha)
         self._背景暗层缓存alpha = -1
         self._暂停菜单开启 = False
-        self._暂停菜单索引 = 0
         self._暂停菜单打开前播放中 = False
+        self._关闭ESC菜单视频预览播放器()
+        self._游戏ESC菜单控制器.close()
         self._显示按键提示 = bool(self._载荷.get("显示按键提示", False))
         self._显示准备动画 = bool(self._载荷.get("显示准备动画", True))
         self._准备动画开始秒 = 0.0
@@ -3051,6 +3466,14 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             根目录 = ""
 
+        self._菜单背景选项 = scan_background_options(根目录)
+        self._菜单视频背景选项 = scan_video_background_options(根目录)
+        self._菜单箭头选项 = scan_arrow_skin_options(根目录)
+        self._菜单动态背景选项 = get_dynamic_background_modes(include_off=False) or ["唱片"]
+        键位配置 = load_key_binding_profiles(游戏esc菜单设置)
+        self._菜单单踏板键位 = dict(键位配置.get(PROFILE_SINGLE, {}) or {})
+        self._菜单双踏板键位 = dict(键位配置.get(PROFILE_DOUBLE, {}) or {})
+
         try:
             from ui.谱面渲染器 import 谱面渲染器
 
@@ -3075,6 +3498,7 @@ class 场景_谱面播放器(场景基类):
         设置参数 = {}
         参数文本 = ""
         设置背景文件名 = ""
+        设置视频背景文件名 = ""
         设置箭头文件名 = ""
 
         选歌设置 = _读取选歌设置json()
@@ -3094,24 +3518,82 @@ class 场景_谱面播放器(场景基类):
             except Exception:
                 设置背景文件名 = ""
             try:
+                设置视频背景文件名 = str(选歌设置.get("视频背景文件名", "") or "")
+            except Exception:
+                设置视频背景文件名 = ""
+            try:
                 设置箭头文件名 = str(选歌设置.get("箭头文件名", "") or "")
             except Exception:
                 设置箭头文件名 = ""
 
-        if not 设置参数:
+        修正选歌设置补丁 = {}
+        载荷背景文件名 = str(self._载荷.get("背景文件名", "") or "").strip()
+        if (not str(设置背景文件名 or "").strip()) or str(设置背景文件名 or "").strip() == "关闭":
+            if 载荷背景文件名 and 载荷背景文件名 != "关闭":
+                设置背景文件名 = 载荷背景文件名
+                修正选歌设置补丁["背景文件名"] = str(设置背景文件名)
+
+        载荷视频背景文件名 = str(self._载荷.get("视频背景文件名", "") or "").strip()
+        if (not str(设置视频背景文件名 or "").strip()) and 载荷视频背景文件名:
+            设置视频背景文件名 = 载荷视频背景文件名
+            修正选歌设置补丁["视频背景文件名"] = str(设置视频背景文件名)
+
+        载荷箭头文件名 = str(self._载荷.get("箭头文件名", "") or "").strip()
+        if (not str(设置箭头文件名 or "").strip()) and 载荷箭头文件名:
+            设置箭头文件名 = 载荷箭头文件名
+            修正选歌设置补丁["箭头文件名"] = str(设置箭头文件名)
+
+        if 修正选歌设置补丁:
+            try:
+                if 设置参数 or 参数文本:
+                    修正选歌设置补丁["设置参数文本"] = _构建设置参数文本(
+                        设置参数, 背景文件名=设置背景文件名, 箭头文件名=设置箭头文件名
+                    )
+                _写入存储作用域(_选歌设置存储作用域, 修正选歌设置补丁)
+            except Exception:
+                pass
+
+        持久化设置存在 = bool(设置参数) or bool(str(参数文本 or "").strip())
+        持久化设置存在 = 持久化设置存在 or bool(str(设置背景文件名 or "").strip())
+        持久化设置存在 = 持久化设置存在 or bool(str(设置视频背景文件名 or "").strip())
+        持久化设置存在 = 持久化设置存在 or bool(str(设置箭头文件名 or "").strip())
+        if not 持久化设置存在:
             try:
                 值 = self._载荷.get("设置参数", None)
                 if isinstance(值, dict):
-                    设置参数 = dict(值)
+                    设置参数 = _合并载荷源(设置参数, 值)
             except Exception:
-                设置参数 = {}
+                pass
 
-        if not 参数文本:
-            参数文本 = str(self._载荷.get("设置参数文本", "") or "")
+            try:
+                载荷参数文本 = str(self._载荷.get("设置参数文本", "") or "").strip()
+                if 载荷参数文本:
+                    参数文本 = 载荷参数文本
+            except Exception:
+                pass
+            if 载荷背景文件名:
+                设置背景文件名 = 载荷背景文件名
+            if 载荷视频背景文件名:
+                设置视频背景文件名 = 载荷视频背景文件名
+            if 载荷箭头文件名:
+                设置箭头文件名 = 载荷箭头文件名
+
         if not 参数文本:
             参数文本 = _构建设置参数文本(
                 设置参数, 背景文件名=设置背景文件名, 箭头文件名=设置箭头文件名
             )
+
+        try:
+            self._载荷["设置参数"] = dict(设置参数)
+            self._载荷["设置参数文本"] = str(参数文本)
+            if 设置背景文件名:
+                self._载荷["背景文件名"] = str(设置背景文件名)
+            if 设置视频背景文件名:
+                self._载荷["视频背景文件名"] = str(设置视频背景文件名)
+            if 设置箭头文件名:
+                self._载荷["箭头文件名"] = str(设置箭头文件名)
+        except Exception:
+            pass
 
         self._歌曲名 = str(
             self._载荷.get("歌名", self._载荷.get("歌曲名", "")) or ""
@@ -3167,6 +3649,10 @@ class 场景_谱面播放器(场景基类):
         self._动态背景模式 = self._规范动态背景模式(
             动态背景原值 or "关闭"
         )
+        if self._背景模式 == "动态背景" and self._动态背景模式 == "关闭":
+            self._动态背景模式 = str(
+                (list(getattr(self, "_菜单动态背景选项", []) or []) or ["唱片"])[0]
+            )
         self._同步动态背景管理器(True)
 
         默认关闭视频 = bool(self._背景模式 != "视频")
@@ -3177,33 +3663,51 @@ class 场景_谱面播放器(场景基类):
                 self._视频背景关闭 = bool(默认关闭视频)
         else:
             self._视频背景关闭 = bool(默认关闭视频)
+        if self._背景模式 != "视频":
+            self._视频背景关闭 = True
 
-        背景文件 = _从设置参数文本提取(参数文本, "背景")
+        背景文件 = str(设置背景文件名 or "").strip()
         if not 背景文件:
-            背景文件 = str(设置背景文件名 or "")
+            背景文件 = _从设置参数文本提取(参数文本, "背景")
+        self._当前背景选项 = resolve_background_option(self._菜单背景选项, 背景文件)
+        if self._当前背景选项 is not None:
+            背景文件 = str(self._当前背景选项.file_name or 背景文件)
         self._加载背景(背景文件)
+        视频背景文件 = str(设置视频背景文件名 or "").strip()
+        self._当前视频背景选项 = resolve_video_background_option(
+            self._菜单视频背景选项, 视频背景文件
+        )
+        if self._当前视频背景选项 is not None:
+            视频背景文件 = str(self._当前视频背景选项.file_name or 视频背景文件)
         self._默认背景视频目录 = os.path.join(_取项目根目录(), "backmovies", "游戏中")
         self._应用背景视频状态()
         self._加载联网图标()
         self._准备动画图 = 加载准备动画图片(_取项目根目录())
         self._加载准备动画音效()
 
-        箭头文件 = _从设置参数文本提取(参数文本, "箭头")
+        箭头文件 = str(设置箭头文件名 or "").strip()
         if not 箭头文件:
-            箭头文件 = str(设置箭头文件名 or "")
-        箭头编号 = "03"
-        数字匹配 = re.search(r"(\d{1,3})", str(箭头文件 or ""))
-        if 数字匹配:
-            try:
-                数字 = int(数字匹配.group(1))
-                if 1 <= 数字 <= 99:
-                    箭头编号 = f"{数字:02d}"
-            except Exception:
-                pass
-
-        self._皮肤目录 = os.path.join(
-            _取项目根目录(), "UI-img", "游戏界面", "箭头", 箭头编号
-        )
+            箭头文件 = _从设置参数文本提取(参数文本, "箭头")
+        self._当前箭头选项 = resolve_arrow_skin_option(self._菜单箭头选项, 箭头文件)
+        if self._当前箭头选项 is not None:
+            箭头文件 = str(self._当前箭头选项.file_name or 箭头文件)
+        try:
+            if 背景文件:
+                self._载荷["背景文件名"] = str(背景文件)
+            if 视频背景文件:
+                self._载荷["视频背景文件名"] = str(视频背景文件)
+            if 箭头文件:
+                self._载荷["箭头文件名"] = str(箭头文件)
+            self._载荷["关闭视频背景"] = bool(self._视频背景关闭)
+            self._载荷["自动播放"] = bool(self._是否自动模式)
+        except Exception:
+            pass
+        if self._当前箭头选项 is not None:
+            self._皮肤目录 = str(self._当前箭头选项.skin_dir or "")
+        else:
+            self._皮肤目录 = os.path.join(
+                _取项目根目录(), "UI-img", "游戏界面", "箭头", "01"
+            )
 
         关键1 = os.path.join(self._皮肤目录, "arrow", "skin.json")
         关键2 = os.path.join(self._皮肤目录, "key", "skin.json")
@@ -3240,6 +3744,12 @@ class 场景_谱面播放器(场景基类):
         self._谱面列数 = 5
         self._谱面chart类型 = ""
         self._是否双踏板模式 = bool(优先双踏板)
+        try:
+            self._游戏ESC菜单控制器._binding_profile_id = (
+                PROFILE_DOUBLE if self._是否双踏板模式 else PROFILE_SINGLE
+            )
+        except Exception:
+            pass
         self._轨道数 = 10 if self._是否双踏板模式 else 5
         self._刷新按键映射()
         self._同步双踏板渲染器()
@@ -3633,10 +4143,11 @@ class 场景_谱面播放器(场景基类):
 
     def 处理事件(self, 事件):
         if bool(self._暂停菜单开启):
-            if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_ESCAPE:
+            结果 = self._游戏ESC菜单控制器.handle_event(事件)
+            if isinstance(结果, dict) and bool(结果.get("close_menu", False)):
                 self._关闭暂停菜单(恢复播放=True)
                 return None
-            return self._处理暂停菜单按键(事件)
+            return 结果
 
         if 事件.type != pygame.KEYDOWN:
             return None
@@ -3646,18 +4157,7 @@ class 场景_谱面播放器(场景基类):
             return None
 
         if 事件.key == pygame.K_F2:
-            if bool(getattr(self, "_电视跟跳开启", False)):
-                self._是否自动模式 = True
-                self._同步电视跟跳状态()
-                self._设置操作反馈("自动播放已在ESC菜单开启，请到ESC菜单关闭")
-                return None
-
-            self._是否自动模式 = not bool(self._是否自动模式)
-            if self._判定系统 is not None:
-                try:
-                    self._判定系统.自动模式 = bool(self._是否自动模式)
-                except Exception:
-                    pass
+            self._菜单切换自动播放()
             self._设置操作反馈(
                 f"F2:自动播放已{'开启' if self._是否自动模式 else '关闭'}"
             )
@@ -3984,7 +4484,6 @@ class 场景_谱面播放器(场景基类):
                 渲染输入对象.调试_血条晃荡速度 = float(self._调试血条晃荡速度)
                 渲染输入对象.调试_血条晃荡幅度 = float(self._调试血条晃荡幅度)
                 渲染输入对象.调试_暴走血条速度 = float(self._调试暴走血条速度)
-                渲染输入对象.调试_暴走血条不透明度 = float(self._调试暴走血条不透明度)
                 渲染输入对象.调试_暴走血条羽化 = float(self._调试暴走血条羽化)
                 渲染输入对象.调试_头像框特效速度 = float(self._调试头像框特效速度)
                 渲染输入对象.调试_圆环频谱_启用旋转 = bool(self._调试圆环频谱启用旋转)
@@ -4244,10 +4743,8 @@ class 场景_谱面播放器(场景基类):
         if bool(self._暂停菜单开启):
             return
         self._暂停菜单开启 = True
-        self._暂停菜单索引 = 0
         self._暂停菜单打开前播放中 = bool(self._播放中)
-        self._暂停菜单项矩形 = []
-        self._暂停菜单关闭按钮 = pygame.Rect(0, 0, 0, 0)
+        self._游戏ESC菜单控制器.open()
         if bool(self._播放中):
             self.暂停()
         self._设置操作反馈("ESC:已暂停")
@@ -4258,218 +4755,13 @@ class 场景_谱面播放器(场景基类):
         应恢复 = bool(恢复播放 and self._暂停菜单打开前播放中)
         self._暂停菜单开启 = False
         self._暂停菜单打开前播放中 = False
+        self._关闭ESC菜单视频预览播放器()
+        self._游戏ESC菜单控制器.close()
         if bool(getattr(self, "_动态背景预览开启", False)):
             self._关闭动态背景预览(False)
         if 应恢复 and (not bool(self._播放中)):
             self.播放()
             self._设置操作反馈("ESC:继续游戏")
-
-    def _取暂停菜单项文本(self) -> List[str]:
-        背景状态 = "图片" if bool(self._视频背景关闭) else "视频"
-        性能状态 = "已开启" if bool(self._性能模式) else "已关闭"
-        调速文本 = f"X{float(getattr(self, '_卷轴速度倍率', 4.0) or 4.0):.1f}"
-        背景亮度文本 = self._取背景亮度菜单文本()
-        自动播放状态 = "已开启" if bool(getattr(self, "_是否自动模式", False)) else "已关闭"
-
-        return [
-            f"调速（{调速文本}）",
-            f"背景（{背景状态}）",
-            self._取动态背景菜单文本(),
-            f"隐藏（{str(getattr(self, '_隐藏模式', '关闭') or '关闭')}）",
-            f"轨迹（{str(getattr(self, '_轨迹模式', '正常') or '正常')}）",
-            f"方向（{str(getattr(self, '_方向模式', '关闭') or '关闭')}）",
-            f"大小（{self._取当前大小选项文本()}）",
-            f"切换背景亮度（{背景亮度文本}）",
-            f"极简性能模式（{性能状态}）",
-            f"自动播放（{自动播放状态}）",
-            "退出本局",
-            "退出到桌面",
-        ]
-
-    def _处理暂停菜单按键(self, 事件):
-        菜单项 = self._取暂停菜单项文本()
-        if not 菜单项:
-            return None
-
-        if bool(getattr(self, "_动态背景预览开启", False)):
-            候选列表 = self._取动态背景候选列表()
-            if 事件.type == pygame.KEYDOWN:
-                if 事件.key == pygame.K_ESCAPE:
-                    self._关闭动态背景预览(False)
-                    self._设置操作反馈("动态背景预览已取消")
-                    return None
-                if 事件.key in (
-                    pygame.K_LEFT,
-                    pygame.K_UP,
-                    pygame.K_KP1,
-                    pygame.K_KP7,
-                ):
-                    self._动态背景预览索引 = (
-                        int(self._动态背景预览索引) - 1
-                    ) % len(候选列表)
-                    return None
-                if 事件.key in (
-                    pygame.K_RIGHT,
-                    pygame.K_DOWN,
-                    pygame.K_KP3,
-                    pygame.K_KP9,
-                ):
-                    self._动态背景预览索引 = (
-                        int(self._动态背景预览索引) + 1
-                    ) % len(候选列表)
-                    return None
-                if 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP5):
-                    新模式 = self._取动态背景生效模式()
-                    self._关闭动态背景预览(True)
-                    self._设置操作反馈(f"动态背景：{新模式}")
-                    return None
-                return None
-
-            if 事件.type == pygame.MOUSEMOTION:
-                for idx, rect in enumerate(getattr(self, "_动态背景预览项矩形", []) or []):
-                    if rect.collidepoint(事件.pos):
-                        self._动态背景预览索引 = int(idx)
-                        break
-                return None
-
-            if 事件.type == pygame.MOUSEBUTTONDOWN and int(getattr(事件, "button", 0)) == 1:
-                for idx, rect in enumerate(getattr(self, "_动态背景预览项矩形", []) or []):
-                    if rect.collidepoint(事件.pos):
-                        self._动态背景预览索引 = int(idx)
-                        新模式 = self._取动态背景生效模式()
-                        self._关闭动态背景预览(True)
-                        self._设置操作反馈(f"动态背景：{新模式}")
-                        return None
-                self._关闭动态背景预览(False)
-                self._设置操作反馈("动态背景预览已取消")
-                return None
-            return None
-
-        if 事件.type == pygame.KEYDOWN:
-            if 事件.key in (
-                pygame.K_LEFT,
-                pygame.K_UP,
-                pygame.K_KP1,
-                pygame.K_KP7,
-            ):
-                self._暂停菜单索引 = (int(self._暂停菜单索引) - 1) % len(菜单项)
-                return None
-            if 事件.key in (
-                pygame.K_RIGHT,
-                pygame.K_DOWN,
-                pygame.K_KP3,
-                pygame.K_KP9,
-            ):
-                self._暂停菜单索引 = (int(self._暂停菜单索引) + 1) % len(菜单项)
-                return None
-
-            if 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP5):
-                return self._执行暂停菜单确认()
-            return None
-
-        if 事件.type == pygame.MOUSEMOTION:
-            for idx, rect in enumerate(getattr(self, "_暂停菜单项矩形", []) or []):
-                if rect.collidepoint(事件.pos):
-                    self._暂停菜单索引 = int(idx)
-                    break
-            return None
-
-        if 事件.type == pygame.MOUSEBUTTONDOWN and int(getattr(事件, "button", 0)) == 1:
-            if getattr(self, "_暂停菜单关闭按钮", pygame.Rect(0, 0, 0, 0)).collidepoint(
-                事件.pos
-            ):
-                self._关闭暂停菜单(恢复播放=True)
-                return None
-            for idx, rect in enumerate(getattr(self, "_暂停菜单项矩形", []) or []):
-                if rect.collidepoint(事件.pos):
-                    self._暂停菜单索引 = int(idx)
-                    return self._执行暂停菜单确认()
-            return None
-        return None
-
-    def _执行暂停菜单确认(self):
-        项列表 = self._取暂停菜单项文本()
-        if not 项列表:
-            return None
-        选项索引 = int(max(0, min(len(项列表) - 1, int(self._暂停菜单索引))))
-
-        if 选项索引 == 0:
-            self._菜单切换调速()
-            self._设置操作反馈(f"调速已切换：X{float(self._卷轴速度倍率):.1f}")
-            return None
-
-        if 选项索引 == 1:
-            self._菜单切换背景模式()
-            self._设置操作反馈(
-                f"背景模式已切换：{'视频' if (not self._视频背景关闭) else '图片'}"
-            )
-            return None
-
-        if 选项索引 == 2:
-            self._菜单切换动态背景()
-            self._设置操作反馈(
-                f"动态背景：{'开启' if self._动态背景已启用() else '关闭'}"
-            )
-            return None
-
-        if 选项索引 == 3:
-            self._菜单切换隐藏()
-            self._设置操作反馈(f"隐藏模式：{self._隐藏模式}")
-            return None
-
-        if 选项索引 == 4:
-            self._菜单切换轨迹()
-            self._设置操作反馈(f"轨迹模式：{self._轨迹模式}")
-            return None
-
-        if 选项索引 == 5:
-            self._菜单切换方向()
-            self._设置操作反馈(f"方向模式：{self._方向模式}")
-            return None
-
-        if 选项索引 == 6:
-            self._菜单切换大小()
-            self._设置操作反馈(f"大小模式：{self._取当前大小选项文本()}")
-            return None
-
-        if 选项索引 == 7:
-            self._切换背景亮度档位()
-            self._设置操作反馈(f"背景亮度：{self._取背景亮度菜单文本()}")
-            return None
-
-        if 选项索引 == 8:
-            self._性能模式 = not bool(self._性能模式)
-            self._载荷["性能模式"] = bool(self._性能模式)
-            self._保存电视跟跳开关(性能模式=bool(self._性能模式))
-            self._应用背景视频状态()
-            if bool(self._性能模式):
-                self._圆环频谱舞台装饰 = None
-            else:
-                try:
-                    from ui.圆环频谱叠加 import 圆环频谱舞台装饰
-
-                    self._圆环频谱舞台装饰 = 圆环频谱舞台装饰()
-                    self._应用圆环频谱调试设置()
-                    if self._音频路径 and os.path.isfile(self._音频路径):
-                        self._圆环频谱舞台装饰.绑定音频(str(self._音频路径))
-                except Exception:
-                    self._圆环频谱舞台装饰 = None
-            self._设置操作反馈(f"极简性能模式已{'开启' if self._性能模式 else '关闭'}")
-            return None
-
-        if 选项索引 == 9:
-            self._菜单切换自动播放()
-            self._设置操作反馈(
-                f"自动播放已{'开启' if bool(getattr(self, '_是否自动模式', False)) else '关闭'}"
-            )
-            return None
-
-        if 选项索引 == 10:
-            self._暂停菜单开启 = False
-            return {"切换到": "选歌", "禁用黑屏过渡": True}
-
-        self._暂停菜单开启 = False
-        return {"退出程序": True}
 
     def _取可见血量HP(self) -> int:
         return int(
@@ -4571,17 +4863,30 @@ class 场景_谱面播放器(场景基类):
             状态 = {}
         投币键显示 = str(状态.get("投币快捷键显示", "F1") or "F1").upper()
 
+        单踏板摘要 = " / ".join(
+            keycode_to_display_name(self._菜单单踏板键位.get(键名))
+            for 键名 in ("左下", "左上", "中间", "右上", "右下")
+        )
+        双踏板左摘要 = " / ".join(
+            keycode_to_display_name(self._菜单双踏板键位.get(键名))
+            for 键名 in ("左区左下", "左区左上", "左区中间", "左区右上", "左区右下")
+        )
+        双踏板右摘要 = " / ".join(
+            keycode_to_display_name(self._菜单双踏板键位.get(键名))
+            for 键名 in ("右区左下", "右区左上", "右区中间", "右区右上", "右区右下")
+        )
         行列表 = [
             f"{投币键显示} 投币",
-            "F2 自动播放",
+            f"F2 自动播放 {'开' if bool(getattr(self, '_是否自动模式', False)) else '关'}",
             "SPACE 暂停/继续",
             "R 重载歌曲",
-            "ESC 暂停菜单",
+            "ESC 设置菜单",
         ]
         if bool(getattr(self, "_是否双踏板模式", False)):
-            行列表.append("左手 Z/C/S/Q/E  右手 1/3/5/7/9")
+            行列表.append(f"双踏板 左侧: {双踏板左摘要}")
+            行列表.append(f"双踏板 右侧: {双踏板右摘要}")
         else:
-            行列表.append("1/3/5/7/9 打击轨道")
+            行列表.append(f"单踏板: {单踏板摘要}")
 
         文图列表 = []
         最大宽 = 0
@@ -4668,7 +4973,7 @@ class 场景_谱面播放器(场景基类):
                     ),
                 )
 
-        if not bool(getattr(self, "_电视跟跳开启", False)):
+        if not bool(getattr(self, "_是否自动模式", False)):
             return
 
         try:
@@ -4734,197 +5039,10 @@ class 场景_谱面播放器(场景基类):
             pass
 
     def _绘制暂停菜单(self, 屏幕: pygame.Surface):
-        self._暂停菜单项矩形 = []
-        self._暂停菜单关闭按钮 = pygame.Rect(0, 0, 0, 0)
-        self._动态背景预览项矩形 = []
         if not bool(self._暂停菜单开启):
             return
-        if self._小字体 is None:
-            return
         try:
-            屏宽, 屏高 = 屏幕.get_size()
-            项列表 = self._取暂停菜单项文本()
-            项数量 = max(1, len(项列表))
-            遮罩 = pygame.Surface((屏宽, 屏高), pygame.SRCALPHA)
-            遮罩.fill((0, 0, 0, 188))
-            屏幕.blit(遮罩, (0, 0))
-
-            面板宽 = int(max(880, min(1180, 屏宽 * 0.88)))
-            面板高 = int(max(560, min(int(屏高 * 0.94), 屏高 - 24)))
-            面板 = pygame.Rect(
-                int((屏宽 - 面板宽) // 2),
-                int((屏高 - 面板高) // 2),
-                int(面板宽),
-                int(面板高),
-            )
-
-            标题字 = self._字体 if self._字体 is not None else self._小字体
-            标题面 = 标题字.render("PAUSE MENU", True, (240, 246, 255)).convert_alpha()
-            屏幕.blit(标题面, (面板.x + 24, 面板.y + 2))
-            副标题面 = self._小字体.render(
-                "IN-GAME SYSTEM", True, (126, 164, 225)
-            ).convert_alpha()
-            try:
-                副标题面.set_alpha(170)
-            except Exception:
-                pass
-            屏幕.blit(副标题面, (面板.x + 26, 面板.y + 48))
-            self._暂停菜单关闭按钮 = pygame.Rect(0, 0, 0, 0)
-
-            状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
-            if not isinstance(状态, dict):
-                状态 = {}
-            投币键显示 = str(状态.get("投币快捷键显示", "F1") or "F1").upper()
-            提示行 = [
-                f"{投币键显示}投币   ESC关闭",
-                "鼠标点击 / 小键盘1-3切换 / 5确认",
-                "游戏中小键盘1/3/5/7/9控制踏板",
-            ]
-            按钮间距 = 8
-            分组间距 = 18
-            分组内边距 = 14
-            选项字 = self._小字体
-            y = int(面板.y + 92)
-            左列数量 = int(min(7, len(项列表)))
-            右列数量 = int(max(0, len(项列表) - 左列数量))
-            最大列数量 = int(max(1, 左列数量, 右列数量))
-            按钮可用高 = int(max(320, 面板.h - 92 - 84))
-            if 最大列数量 > 0:
-                按钮高 = int(
-                    max(
-                        34,
-                        min(
-                            52,
-                            (
-                                按钮可用高
-                                - 2 * 分组内边距
-                                - max(0, 最大列数量 - 1) * 按钮间距
-                            )
-                            / 最大列数量,
-                        ),
-                    )
-                )
-            else:
-                按钮高 = 42
-
-            分组宽 = int((面板.w - 48 - 分组间距) // 2)
-            左分组rect = pygame.Rect(int(面板.x + 24), int(y), int(分组宽), 0)
-            右分组rect = pygame.Rect(
-                int(左分组rect.right + 分组间距),
-                int(y),
-                int(分组宽),
-                0,
-            )
-            分组高 = int(
-                2 * 分组内边距
-                + 最大列数量 * 按钮高
-                + max(0, 最大列数量 - 1) * 按钮间距
-            )
-            左分组rect.h = int(分组高)
-            右分组rect.h = int(分组高)
-
-            for 分组rect in (左分组rect, 右分组rect):
-                pygame.draw.rect(屏幕, (10, 16, 28), 分组rect, border_radius=18)
-                pygame.draw.rect(
-                    屏幕,
-                    (56, 82, 124),
-                    分组rect,
-                    width=1,
-                    border_radius=18,
-                )
-
-            for idx, 项 in enumerate(项列表):
-                选中 = idx == int(self._暂停菜单索引)
-                if idx < 左列数量:
-                    所在列rect = 左分组rect
-                    列内索引 = int(idx)
-                else:
-                    所在列rect = 右分组rect
-                    列内索引 = int(idx - 左列数量)
-                行rect = pygame.Rect(
-                    int(所在列rect.x + 分组内边距),
-                    int(所在列rect.y + 分组内边距 + 列内索引 * (按钮高 + 按钮间距)),
-                    int(所在列rect.w - 2 * 分组内边距),
-                    int(按钮高),
-                )
-                pygame.draw.rect(
-                    屏幕,
-                    (22, 30, 48) if 选中 else (15, 22, 36),
-                    行rect,
-                    border_radius=14,
-                )
-                pygame.draw.rect(
-                    屏幕,
-                    (110, 240, 255) if 选中 else (74, 96, 134),
-                    行rect,
-                    width=2 if 选中 else 1,
-                    border_radius=14,
-                )
-                if 选中:
-                    高亮 = pygame.Surface((行rect.w, 行rect.h), pygame.SRCALPHA)
-                    pygame.draw.rect(
-                        高亮,
-                        (0, 239, 251, 30),
-                        pygame.Rect(0, 0, 行rect.w, 行rect.h),
-                        border_radius=14,
-                    )
-                    pygame.draw.rect(
-                        高亮,
-                        (255, 80, 164, 160),
-                        pygame.Rect(0, 10, 5, 行rect.h - 20),
-                        border_radius=3,
-                    )
-                    屏幕.blit(高亮, 行rect.topleft)
-                序号面 = self._小字体.render(
-                    f"{idx + 1:02d}", True, (114, 146, 196)
-                ).convert_alpha()
-                屏幕.blit(
-                    序号面,
-                    (
-                        int(行rect.x + 16),
-                        int(行rect.y + (行rect.h - 序号面.get_height()) // 2),
-                    ),
-                )
-                项面 = 选项字.render(
-                    str(项),
-                    True,
-                    (255, 245, 164) if 选中 else (225, 233, 248),
-                ).convert_alpha()
-                屏幕.blit(
-                    项面,
-                    (
-                        int(行rect.x + 64),
-                        int(行rect.y + (行rect.h - 项面.get_height()) // 2),
-                    ),
-                )
-                self._暂停菜单项矩形.append(行rect)
-
-            提示y = int(max(左分组rect.bottom, 右分组rect.bottom) + 16)
-            for 文本 in 提示行:
-                行面 = self._小字体.render(
-                    str(文本), True, (132, 148, 178)
-                ).convert_alpha()
-                try:
-                    行面.set_alpha(145)
-                except Exception:
-                    pass
-                屏幕.blit(行面, (面板.x + 24, 提示y))
-                提示y += int(行面.get_height()) + 2
-
-            if bool(self._动态背景已启用()) and (面板.bottom - 提示y) >= 164:
-                预览框 = pygame.Rect(
-                    int(面板.right - 272),
-                    int(面板.bottom - 188),
-                    236,
-                    132,
-                )
-                标题面 = self._小字体.render("动态背景预览", True, (236, 244, 255)).convert_alpha()
-                屏幕.blit(标题面, (预览框.x, 预览框.y - 24))
-                pygame.draw.rect(屏幕, (12, 18, 30), 预览框, border_radius=14)
-                pygame.draw.rect(屏幕, (82, 132, 204), 预览框, width=2, border_radius=14)
-                内框 = 预览框.inflate(-12, -12)
-                if not bool(self._绘制动态背景预览画面(屏幕, 内框, time.perf_counter())):
-                    pygame.draw.rect(屏幕, (6, 10, 18), 内框, border_radius=12)
+            self._游戏ESC菜单控制器.draw(屏幕)
         except Exception:
             pass
 
@@ -5145,10 +5263,109 @@ class 场景_谱面播放器(场景基类):
             self._字体 = pygame.font.Font(None, 20)
             self._小字体 = pygame.font.Font(None, 16)
 
+    def _清理背景GIF缓存(self):
+        self._背景GIF帧列表 = []
+        self._背景GIF帧时长 = []
+        self._背景GIF总时长 = 0.0
+        self._背景GIF开始时间 = 0.0
+        self._背景GIF路径 = ""
+
+    def _加载GIF背景(self, 路径: str) -> Optional[pygame.Surface]:
+        路径 = str(路径 or "").strip()
+        if not 路径 or (not os.path.isfile(路径)):
+            return None
+        try:
+            from PIL import Image, ImageSequence
+        except Exception:
+            return None
+        try:
+            动画 = Image.open(路径)
+        except Exception:
+            return None
+
+        帧列表: List[pygame.Surface] = []
+        时长列表: List[float] = []
+        try:
+            底图 = None
+            for frame in ImageSequence.Iterator(动画):
+                try:
+                    frame_rgba = frame.convert("RGBA")
+                except Exception:
+                    continue
+                if 底图 is None:
+                    底图 = Image.new("RGBA", frame_rgba.size)
+                try:
+                    合成图 = 底图.copy()
+                    合成图.paste(frame_rgba, (0, 0), frame_rgba)
+                except Exception:
+                    合成图 = frame_rgba
+                底图 = 合成图
+                try:
+                    surface = pygame.image.frombuffer(
+                        合成图.tobytes(), 合成图.size, "RGBA"
+                    ).convert_alpha()
+                except Exception:
+                    try:
+                        surface = pygame.image.frombuffer(
+                            合成图.tobytes(), 合成图.size, "RGBA"
+                        ).convert()
+                    except Exception:
+                        continue
+                帧列表.append(surface)
+                时长ms = frame.info.get("duration", None)
+                if 时长ms is None:
+                    try:
+                        时长ms = getattr(动画, "info", {}).get("duration", 100)
+                    except Exception:
+                        时长ms = 100
+                try:
+                    时长ms = int(时长ms)
+                except Exception:
+                    时长ms = 100
+                时长列表.append(max(0.02, float(时长ms) / 1000.0))
+        except Exception:
+            帧列表 = []
+            时长列表 = []
+
+        if not 帧列表:
+            return None
+        if len(时长列表) != len(帧列表):
+            时长列表 = [0.1 for _ in 帧列表]
+        self._背景GIF帧列表 = 帧列表
+        self._背景GIF帧时长 = 时长列表
+        self._背景GIF总时长 = float(sum(时长列表))
+        self._背景GIF开始时间 = time.perf_counter()
+        self._背景GIF路径 = 路径
+        return 帧列表[0]
+
+    def _取背景图片帧(self, 现在秒: Optional[float] = None) -> Optional[pygame.Surface]:
+        帧列表 = getattr(self, "_背景GIF帧列表", None) or []
+        if 帧列表:
+            if 现在秒 is None:
+                现在秒 = time.perf_counter()
+            if not float(getattr(self, "_背景GIF开始时间", 0.0) or 0.0):
+                self._背景GIF开始时间 = float(现在秒)
+            时长列表 = getattr(self, "_背景GIF帧时长", None) or []
+            if len(时长列表) != len(帧列表):
+                时长列表 = [0.1 for _ in 帧列表]
+                self._背景GIF帧时长 = 时长列表
+                self._背景GIF总时长 = float(sum(时长列表))
+            总时长 = float(getattr(self, "_背景GIF总时长", 0.0) or 0.0)
+            if 总时长 <= 0:
+                return 帧列表[0]
+            t = (float(现在秒) - float(self._背景GIF开始时间)) % 总时长
+            for idx, dur in enumerate(时长列表):
+                if t <= float(dur):
+                    return 帧列表[idx]
+                t -= float(dur)
+            return 帧列表[-1]
+        return getattr(self, "_背景原图", None)
+
     def _加载背景(self, 背景文件名: str):
         根目录 = _取项目根目录()
         背景文件名 = str(背景文件名 or "").strip()
         self._背景图片路径 = ""
+        self._清理背景GIF缓存()
 
         候选路径: List[str] = []
         if 背景文件名:
@@ -5162,6 +5379,12 @@ class 场景_谱面播放器(场景基类):
         for p in 候选路径:
             if p and os.path.isfile(p):
                 try:
+                    小写路径 = str(p).lower()
+                    if 小写路径.endswith(".gif"):
+                        背景图 = self._加载GIF背景(p)
+                        if isinstance(背景图, pygame.Surface):
+                            self._背景图片路径 = str(p)
+                            break
                     背景图 = pygame.image.load(p).convert()
                     self._背景图片路径 = str(p)
                     break
@@ -5176,7 +5399,7 @@ class 场景_谱面播放器(场景基类):
         if bool(self._性能模式) or bool(self._视频背景关闭):
             self._加载背景视频("")
         else:
-            self._加载背景视频(str(self._默认背景视频目录 or ""))
+            self._加载背景视频(self._取当前视频背景来源())
 
     def _加载联网图标(self):
         self._联网原图 = None
@@ -5897,6 +6120,7 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             pass
 
+        self._关闭ESC菜单视频预览播放器()
         self._关闭背景视频播放器()
 
     def _加载背景视频(self, 视频来源: str):
@@ -5944,19 +6168,22 @@ class 场景_谱面播放器(场景基类):
         w, h = 屏幕.get_size()
         已绘制背景 = False
 
-        try:
-            视频帧 = self._读取背景视频帧()
-            if isinstance(视频帧, pygame.Surface):
-                self._绘制cover背景面(屏幕, 视频帧)
-                已绘制背景 = True
-        except Exception:
-            已绘制背景 = False
+        背景模式 = self._取背景渲染模式()
+        if 背景模式 == "视频":
+            try:
+                视频帧 = self._读取背景视频帧()
+                if isinstance(视频帧, pygame.Surface):
+                    self._绘制cover背景面(屏幕, 视频帧)
+                    已绘制背景 = True
+            except Exception:
+                已绘制背景 = False
 
         if not 已绘制背景:
-            if self._背景原图 is None:
-                屏幕.fill((15, 15, 18))
+            背景图 = self._取背景图片帧()
+            if isinstance(背景图, pygame.Surface):
+                self._绘制cover背景面(屏幕, 背景图)
             else:
-                self._绘制cover背景面(屏幕, self._背景原图)
+                屏幕.fill((15, 15, 18))
 
         if bool(getattr(self, "_显示准备动画", False)) and (
             not bool(getattr(self, "_准备动画已完成", True))

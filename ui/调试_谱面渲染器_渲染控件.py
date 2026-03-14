@@ -1512,12 +1512,6 @@ class 谱面渲染器布局管理器:
             不透明度 = float(_取数(控件定义.get("不透明度"), 1.0))
         except Exception:
             不透明度 = 1.0
-        try:
-            不透明度 = float(
-                _取数(上下文.get("调试_暴走血条不透明度", 不透明度), 不透明度)
-            )
-        except Exception:
-            pass
         不透明度 = float(max(0.0, min(1.0, 不透明度)))
 
         try:

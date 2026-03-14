@@ -12,6 +12,15 @@ from core.常量与路径 import (
     取运行根目录 as _公共取运行根目录,
     取songs根目录 as _公共取songs根目录,
 )
+from core.sqlite_store import (
+    SCOPE_GAME_ESC_MENU_SETTINGS as _游戏esc菜单设置存储作用域,
+    SCOPE_LOADING_PAYLOAD as _加载页存储作用域,
+    SCOPE_SELECT_SETTINGS as _选歌设置存储作用域,
+    get_runtime_store_path as _取运行存储路径,
+    read_scope as _读取存储作用域,
+    replace_scope as _覆盖存储作用域,
+    write_scope_patch as _写入存储作用域,
+)
 from core.歌曲记录 import 读取歌曲记录索引, 取歌曲记录键
 from core.对局状态 import 取当前关卡, 取累计S数, 是否赠送第四把
 from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
@@ -548,7 +557,7 @@ class 场景_选歌(场景基类):
                 载荷 = {}
 
             try:
-                状态["加载页_载荷"] = dict(载荷)
+                状态.pop("加载页_载荷", None)
             except Exception:
                 pass
 
@@ -575,7 +584,7 @@ class 场景_选歌(场景基类):
             except Exception:
                 pass
 
-            return {"切换到": "加载页", "载荷": 载荷, "禁用黑屏过渡": True}
+            return {"切换到": "加载页", "禁用黑屏过渡": True}
 
         if 退出状态 == "RESELECT_MAIN":
             try:
@@ -733,7 +742,7 @@ def _设置页_配置项定义() -> Dict[str, Dict[str, str]]:
     }
 
 def _设置页_持久化文件路径(self) -> str:
-    return os.path.join(_取运行根目录(), "json", "选歌设置.json")
+    return _取运行存储路径()
 
 def _设置页_从参数文本提取(参数文本: str, 键名: str) -> str:
     return 设置参数文本提取值(str(参数文本 or ""), str(键名 or ""))
@@ -751,27 +760,13 @@ def _设置页_构建参数文本(
     )
 
 def _设置页_读取持久化设置(self) -> dict:
-    路径 = _设置页_持久化文件路径(self)
-    if (not 路径) or (not os.path.isfile(路径)):
-        return {}
-    for 编码 in ("utf-8-sig", "utf-8", "gbk"):
-        try:
-            with open(路径, "r", encoding=编码) as f:
-                数据 = json.load(f)
-            return dict(数据) if isinstance(数据, dict) else {}
-        except Exception:
-            continue
-    return {}
+    数据 = _读取存储作用域(_选歌设置存储作用域)
+    return dict(数据) if isinstance(数据, dict) else {}
 
 def _设置页_写入持久化设置(self, 数据: dict) -> bool:
     try:
-        路径 = _设置页_持久化文件路径(self)
-        if not 路径:
-            return False
-        os.makedirs(os.path.dirname(路径), exist_ok=True)
-        with open(路径, "w", encoding="utf-8") as f:
-            json.dump(dict(数据 or {}), f, ensure_ascii=False, indent=2)
-        return True
+        新数据 = _写入存储作用域(_选歌设置存储作用域, dict(数据 or {}))
+        return isinstance(新数据, dict)
     except Exception:
         return False
 
@@ -946,7 +941,7 @@ def _确保设置页资源(self):
 
     背景目录 = _资源路径("冷资源", "backimages", "背景图")
     if os.path.isdir(背景目录):
-        支持后缀 = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+        支持后缀 = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
         for 文件名 in sorted(os.listdir(背景目录)):
             小写名 = str(文件名 or "").lower()
             if not 小写名.endswith(支持后缀):
@@ -1573,6 +1568,12 @@ def _设置页_切换选项(self, 行键: str, 方向: int):
     except Exception:
         pass
 
+    try:
+        if str(定义.get("参数键", "") or "") == "背景模式":
+            self._加载背景图()
+    except Exception:
+        pass
+
     self._设置页_上次屏幕尺寸 = (0, 0)
     self._设置页_最后绘制表面 = None
     self._设置页_最后缩放 = 1.0
@@ -1597,6 +1598,11 @@ def _设置页_切换背景(self, 方向: int):
 
     try:
         self._设置页_保存持久化设置()
+    except Exception:
+        pass
+
+    try:
+        self._加载背景图()
     except Exception:
         pass
 
@@ -4268,12 +4274,15 @@ class 选歌游戏:
         self._当前歌曲列表缓存值: Tuple[List[歌曲信息], List[int]] = ([], [])
         self._背景暗层缓存: Optional[pygame.Surface] = None
         self._背景暗层缓存键: Tuple[int, int, int] = (0, 0, 0)
+        self._背景遮罩alpha: int = 60
+        self._背景遮罩设置最近读取时间: float = -999.0
         self._背景音乐路径存在缓存键 = ""
         self._背景音乐路径存在缓存值 = False
         self._详情浮层静态缓存键 = None
         self._详情浮层静态缓存图: Optional[pygame.Surface] = None
 
         self._加载背景图()
+        self._刷新背景遮罩设置(True)
 
         self.重算布局()
         self.确保播放背景音乐()
@@ -5451,6 +5460,13 @@ class 选歌游戏:
             "游玩次数": int(游玩次数),
             "设置参数": dict(设置参数),
             "设置参数文本": str(设置参数文本),
+            "背景文件名": str(背景文件名),
+            "箭头文件名": str(箭头文件名),
+            "关闭视频背景": bool(
+                str(设置参数.get("动态背景", "关闭") or "关闭").strip() != "关闭"
+                or str(设置参数.get("背景模式", 设置参数.get("变速", "图片")) or "图片").strip()
+                != "视频"
+            ),
             # ✅ 给 StepMania 用
             "类型": 类型,
             "模式": 模式,
@@ -5465,17 +5481,7 @@ class 选歌游戏:
 
     def _写入加载页json(self, 载荷: dict):
         try:
-            import json
-        except Exception:
-            return
-
-        try:
-            根目录 = _取运行根目录()
-            目录 = os.path.join(根目录, "json")
-            os.makedirs(目录, exist_ok=True)
-            路径 = os.path.join(目录, "加载页.json")
-            with open(路径, "w", encoding="utf-8") as 文件:
-                json.dump(dict(载荷 or {}), 文件, ensure_ascii=False, indent=2)
+            _覆盖存储作用域(_加载页存储作用域, dict(载荷 or {}))
         except Exception:
             return
 
@@ -5904,13 +5910,90 @@ class 选歌游戏:
     def _加载背景图(self):
         try:
             脚本目录 = _取项目根目录()
-            路径 = os.path.join(脚本目录, "冷资源", "backimages", "选歌界面.png")
+            默认路径 = os.path.join(脚本目录, "冷资源", "backimages", "选歌界面.png")
+            路径 = 默认路径
+
+            设置参数 = {}
+            背景文件名 = ""
+            try:
+                if isinstance(getattr(self, "设置_参数", None), dict):
+                    设置参数 = dict(getattr(self, "设置_参数", {}) or {})
+                背景文件名 = str(getattr(self, "设置_背景大图文件名", "") or "").strip()
+            except Exception:
+                设置参数 = {}
+                背景文件名 = ""
+
+            try:
+                持久化数据 = self._设置页_读取持久化设置()
+            except Exception:
+                持久化数据 = {}
+            if isinstance(持久化数据, dict):
+                if not 设置参数:
+                    try:
+                        值 = 持久化数据.get("设置参数", {})
+                        if isinstance(值, dict):
+                            设置参数 = dict(值)
+                    except Exception:
+                        设置参数 = {}
+                if not 背景文件名:
+                    try:
+                        背景文件名 = str(持久化数据.get("背景文件名", "") or "").strip()
+                    except Exception:
+                        背景文件名 = ""
+
+            动态背景 = str(设置参数.get("动态背景", "关闭") or "关闭").strip()
+            背景模式 = str(
+                设置参数.get("背景模式", 设置参数.get("变速", "图片")) or "图片"
+            ).strip()
+            if 背景模式 == "图片" and 动态背景 == "关闭" and 背景文件名:
+                候选路径列表 = [
+                    os.path.join(脚本目录, "冷资源", "backimages", "背景图", 背景文件名),
+                    os.path.join(脚本目录, "冷资源", "backimages", 背景文件名),
+                ]
+                for 候选路径 in 候选路径列表:
+                    if 候选路径 and os.path.isfile(候选路径):
+                        路径 = 候选路径
+                        break
+
             if os.path.isfile(路径):
-                self.背景图_原图 = pygame.image.load(路径).convert()
+                背景图 = pygame.image.load(路径)
+                self.背景图_原图 = (
+                    背景图.convert_alpha()
+                    if 背景图.get_alpha() is not None
+                    else 背景图.convert()
+                )
             else:
                 self.背景图_原图 = None
         except Exception:
             self.背景图_原图 = None
+        self.背景图_缩放缓存 = None
+        self.背景图_缩放尺寸 = (0, 0)
+
+    def _刷新背景遮罩设置(self, 强制: bool = False):
+        现在时刻 = float(time.perf_counter())
+        if (not bool(强制)) and (
+            现在时刻 - float(getattr(self, "_背景遮罩设置最近读取时间", -999.0) or -999.0)
+        ) < 0.25:
+            return
+
+        self._背景遮罩设置最近读取时间 = 现在时刻
+        新alpha = 60
+        try:
+            持久化数据 = _读取存储作用域(_游戏esc菜单设置存储作用域)
+        except Exception:
+            持久化数据 = {}
+
+        if isinstance(持久化数据, dict):
+            try:
+                新alpha = int(持久化数据.get("背景遮罩alpha", 新alpha) or 新alpha)
+            except Exception:
+                新alpha = 60
+
+        新alpha = max(0, min(255, int(新alpha)))
+        if 新alpha != int(getattr(self, "_背景遮罩alpha", 60) or 60):
+            self._背景遮罩alpha = int(新alpha)
+            self._背景暗层缓存 = None
+            self._背景暗层缓存键 = (0, 0, 0)
 
     def _确保top栏缓存(self):
         self._确保top栏资源()
@@ -7019,6 +7102,7 @@ class 选歌游戏:
 
 
     def 绘制背景(self):
+        self._刷新背景遮罩设置(False)
         if self.背景图_原图 is not None:
             目标尺寸 = (self.宽, self.高)
             if self.背景图_缩放缓存 is None or self.背景图_缩放尺寸 != 目标尺寸:
@@ -7038,12 +7122,13 @@ class 选歌游戏:
         else:
             self.屏幕.fill((10, 10, 18))
 
-        # 轻微暗化遮罩：保证文字可读
-        暗层键 = (int(self.宽), int(self.高), 60)
+        # 背景遮罩亮度来自 SQLite 持久化设置
+        遮罩alpha = max(0, min(255, int(getattr(self, "_背景遮罩alpha", 60) or 60)))
+        暗层键 = (int(self.宽), int(self.高), int(遮罩alpha))
         暗层 = self._背景暗层缓存 if self._背景暗层缓存键 == 暗层键 else None
         if 暗层 is None:
             暗层 = pygame.Surface((self.宽, self.高), pygame.SRCALPHA)
-            暗层.fill((0, 0, 0, 60))
+            暗层.fill((0, 0, 0, int(遮罩alpha)))
             self._背景暗层缓存 = 暗层
             self._背景暗层缓存键 = 暗层键
         self.屏幕.blit(暗层, (0, 0))

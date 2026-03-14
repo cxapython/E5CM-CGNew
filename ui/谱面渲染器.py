@@ -3169,12 +3169,6 @@ class 谱面渲染器:
         except Exception:
             pass
         try:
-            上下文["调试_暴走血条不透明度"] = float(
-                getattr(输入, "调试_暴走血条不透明度", 1.0) or 1.0
-            )
-        except Exception:
-            pass
-        try:
             上下文["调试_暴走血条羽化"] = float(
                 getattr(输入, "调试_暴走血条羽化", 8.0) or 8.0
             )

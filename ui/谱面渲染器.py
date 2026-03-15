@@ -3,6 +3,7 @@ import io
 import json
 import math
 import os
+import re
 import time
 import zipfile
 from dataclasses import dataclass
@@ -132,6 +133,24 @@ class _皮肤包:
         self.压缩包路径 = 真实路径 if 源类型 == "zip" else ""
         self.压缩包前缀 = 前缀 if 源类型 == "zip" else ""
 
+        if self.源类型 == "sm_dir":
+            self.arrow = self._尝试读stepmania箭头_目录(self.根路径)
+            self.arrow_hold设置 = {"body_mode": "stretch"}
+            self.key = self._合并贴图集(
+                self._尝试读stepmania判定区_目录(self.根路径),
+                self._尝试读贴图集_目录(self.根路径, "key"),
+                self._尝试读默认箭头贴图集("key"),
+            )
+            self.key_effect = (
+                self._尝试读stepmania击中特效_目录(self.根路径)
+                or self._尝试读贴图集_目录(self.根路径, "key_effect")
+                or self._尝试读默认箭头贴图集("key_effect")
+            )
+            self.blood_bar = self._尝试读固定贴图集("blood_bar")
+            self.judge = self._尝试读固定贴图集("judge")
+            self.number = self._尝试读固定贴图集("number")
+            return
+
         if self.源类型 == "dir":
             self.arrow = self._尝试读贴图集_目录(self.根路径, "arrow")
             self.arrow_hold设置 = self._尝试读可选json_路径(
@@ -195,6 +214,9 @@ class _皮肤包:
         if os.path.isfile(目录json):
             return ("dir", 皮肤根路径, "")
 
+        if _皮肤包._是否stepmania皮肤目录(皮肤根路径):
+            return ("sm_dir", 皮肤根路径, "")
+
         if os.path.isfile(皮肤根路径) and str(皮肤根路径).lower().endswith(".zip"):
             压缩包路径 = 皮肤根路径
             前缀 = _皮肤包._推断zip前缀(压缩包路径)
@@ -206,8 +228,25 @@ class _皮肤包:
             return ("zip", 压缩包候选, 前缀)
 
         raise FileNotFoundError(
-            f"找不到皮肤：目录缺少 arrow/skin.json 且不存在 zip：{皮肤根路径}"
+            f"找不到皮肤：目录既不是原生箭头皮肤也不是 StepMania noteskin，且不存在 zip：{皮肤根路径}"
         )
+
+    @staticmethod
+    def _是否stepmania皮肤目录(皮肤根路径: str) -> bool:
+        根路径 = os.path.abspath(str(皮肤根路径 or "").strip())
+        if not 根路径 or (not os.path.isdir(根路径)):
+            return False
+        try:
+            for 名 in os.listdir(根路径):
+                if (not str(名).lower().endswith(".png")) or (
+                    "tap note" not in str(名).lower()
+                ):
+                    continue
+                if os.path.isfile(os.path.join(根路径, 名)):
+                    return True
+        except Exception:
+            return False
+        return False
 
     @staticmethod
     def _推断zip前缀(压缩包路径: str) -> str:
@@ -394,6 +433,333 @@ class _皮肤包:
             return None
         return self._尝试读贴图集_路径(目录路径, f"固定:{子夹}")
 
+    @staticmethod
+    def _合并贴图集(*图集列表: Optional[_贴图集]) -> Optional[_贴图集]:
+        帧表: Dict[str, pygame.Surface] = {}
+        for 图集 in 图集列表:
+            if not isinstance(图集, _贴图集):
+                continue
+            for 名, 图 in (图集.帧表 or {}).items():
+                if 名 not in 帧表 and isinstance(图, pygame.Surface):
+                    帧表[名] = 图
+        return _贴图集(帧表) if 帧表 else None
+
+    def _尝试读默认箭头贴图集(self, 子夹: str) -> Optional[_贴图集]:
+        当前根路径 = os.path.abspath(str(self.根路径 or "").strip())
+        箭头根目录 = os.path.dirname(当前根路径)
+        if (not 箭头根目录) or (not os.path.isdir(箭头根目录)):
+            return None
+
+        优先顺序 = ["02", "01"]
+        try:
+            for 名 in sorted(os.listdir(箭头根目录)):
+                名 = str(名 or "").strip()
+                if (not 名) or 名 in 优先顺序:
+                    continue
+                优先顺序.append(名)
+        except Exception:
+            pass
+
+        for 箭头编号 in 优先顺序:
+            候选根 = os.path.abspath(os.path.join(箭头根目录, 箭头编号))
+            if 候选根 == 当前根路径:
+                continue
+            候选目录 = os.path.join(候选根, str(子夹 or ""))
+            if os.path.isfile(os.path.join(候选目录, "skin.json")) and os.path.isfile(
+                os.path.join(候选目录, "skin.png")
+            ):
+                return self._尝试读贴图集_路径(候选目录, f"默认箭头:{箭头编号}/{子夹}")
+        return None
+
+    @staticmethod
+    def _标准化stepmania文件名(文件名: str) -> str:
+        基名 = os.path.splitext(os.path.basename(str(文件名 or "")))[0]
+        基名 = re.sub(r"\([^)]*\)", " ", 基名)
+        基名 = 基名.replace("_", " ")
+        基名 = re.sub(r"[^0-9A-Za-z]+", " ", 基名)
+        return re.sub(r"\s+", " ", 基名).strip().lower()
+
+    @staticmethod
+    def _解析stepmania帧网格(文件名: str) -> Tuple[int, int]:
+        基名 = os.path.splitext(os.path.basename(str(文件名 or "")))[0]
+        基名 = re.sub(r"\([^)]*\)", " ", 基名)
+        匹配结果 = re.findall(r"(?<!\d)(\d{1,2})x(\d{1,2})(?!\d)", 基名, flags=re.I)
+        if 匹配结果:
+            try:
+                列数, 行数 = 匹配结果[-1]
+                return max(1, int(列数)), max(1, int(行数))
+            except Exception:
+                pass
+        return 1, 1
+
+    @staticmethod
+    def _列出stepmania图片文件(根路径: str) -> List[str]:
+        try:
+            return sorted(
+                [
+                    str(名)
+                    for 名 in os.listdir(根路径)
+                    if str(名).lower().endswith(".png")
+                    and os.path.isfile(os.path.join(根路径, 名))
+                ]
+            )
+        except Exception:
+            return []
+
+    def _查找stepmania图片(
+        self,
+        图片文件列表: List[str],
+        按钮名: str = "",
+        包含词: Optional[List[str]] = None,
+    ) -> List[str]:
+        标准按钮 = self._标准化stepmania文件名(按钮名) if 按钮名 else ""
+        标准包含词 = [
+            self._标准化stepmania文件名(词)
+            for 词 in list(包含词 or [])
+            if str(词 or "").strip()
+        ]
+        结果: List[str] = []
+        for 文件名 in 图片文件列表:
+            标准名 = self._标准化stepmania文件名(文件名)
+            if 标准按钮 and (not 标准名.startswith(标准按钮)):
+                continue
+            if any(词 not in 标准名 for 词 in 标准包含词):
+                continue
+            结果.append(文件名)
+        return 结果
+
+    @staticmethod
+    def _切stepmania帧(
+        图: Optional[pygame.Surface], 列数: int, 行数: int, 帧索引: int = 0
+    ) -> Optional[pygame.Surface]:
+        if not isinstance(图, pygame.Surface):
+            return None
+        try:
+            列数 = max(1, int(列数))
+            行数 = max(1, int(行数))
+            帧索引 = max(0, int(帧索引))
+            帧宽 = int(图.get_width() // 列数)
+            帧高 = int(图.get_height() // 行数)
+            if 帧宽 <= 0 or 帧高 <= 0:
+                return None
+            总帧数 = int(列数 * 行数)
+            if 帧索引 >= 总帧数:
+                帧索引 = 0
+            列 = int(帧索引 % 列数)
+            行 = int(帧索引 // 列数)
+            return _皮肤包._安全转alpha(
+                图.subsurface(
+                    pygame.Rect(int(列 * 帧宽), int(行 * 帧高), int(帧宽), int(帧高))
+                ).copy()
+            )
+        except Exception:
+            return None
+
+    def _取stepmania首帧(
+        self,
+        根路径: str,
+        图片文件列表: List[str],
+        按钮候选: List[Tuple[str, bool]],
+        包含词: List[str],
+        标识: str,
+    ) -> Optional[pygame.Surface]:
+        已载入图: Dict[str, Optional[pygame.Surface]] = {}
+
+        def _载图(文件名: str) -> Optional[pygame.Surface]:
+            文件名 = str(文件名 or "").strip()
+            if 文件名 in 已载入图:
+                return 已载入图[文件名]
+            路径 = os.path.join(根路径, 文件名)
+            if not os.path.isfile(路径):
+                已载入图[文件名] = None
+                return None
+            try:
+                已载入图[文件名] = self._安全转alpha(pygame.image.load(路径))
+            except Exception as 异常:
+                self.加载告警.append(
+                    f"stepmania兼容图加载失败：{文件名} {type(异常).__name__} {异常}"
+                )
+                已载入图[文件名] = None
+            return 已载入图[文件名]
+
+        for 按钮名, 水平翻转 in 按钮候选:
+            文件候选 = self._查找stepmania图片(图片文件列表, 按钮名, 包含词)
+            for 文件名 in 文件候选:
+                图 = _载图(文件名)
+                if not isinstance(图, pygame.Surface):
+                    continue
+                列数, 行数 = self._解析stepmania帧网格(文件名)
+                帧图 = self._切stepmania帧(图, 列数, 行数, 0)
+                if not isinstance(帧图, pygame.Surface):
+                    continue
+                if bool(水平翻转):
+                    try:
+                        帧图 = pygame.transform.flip(帧图, True, False).convert_alpha()
+                    except Exception:
+                        帧图 = pygame.transform.flip(帧图, True, False)
+                return 帧图
+
+        self.加载告警.append(f"stepmania兼容缺失：{标识}")
+        return None
+
+    def _生成stepmania序列帧(
+        self,
+        根路径: str,
+        文件名: str,
+        输出帧数: int = 18,
+    ) -> List[pygame.Surface]:
+        路径 = os.path.join(根路径, str(文件名 or "").strip())
+        if not os.path.isfile(路径):
+            return []
+        try:
+            图 = self._安全转alpha(pygame.image.load(路径))
+        except Exception as 异常:
+            self.加载告警.append(
+                f"stepmania兼容图加载失败：{文件名} {type(异常).__name__} {异常}"
+            )
+            return []
+
+        列数, 行数 = self._解析stepmania帧网格(文件名)
+        源帧数 = max(1, int(列数 * 行数))
+        源帧列表: List[pygame.Surface] = []
+        for 索引 in range(源帧数):
+            帧图 = self._切stepmania帧(图, 列数, 行数, 索引)
+            if isinstance(帧图, pygame.Surface):
+                源帧列表.append(帧图)
+        if not 源帧列表:
+            return []
+
+        if len(源帧列表) == 输出帧数:
+            return 源帧列表
+
+        输出列表: List[pygame.Surface] = []
+        if len(源帧列表) == 1:
+            return [源帧列表[0]] * int(max(1, 输出帧数))
+
+        for 目标索引 in range(int(max(1, 输出帧数))):
+            源索引 = min(
+                len(源帧列表) - 1,
+                int((目标索引 * len(源帧列表)) / max(1, int(输出帧数))),
+            )
+            输出列表.append(源帧列表[源索引])
+        return 输出列表
+
+    def _尝试读stepmania箭头_目录(self, 根路径: str) -> Optional[_贴图集]:
+        根路径 = os.path.abspath(str(根路径 or "").strip())
+        if not 根路径 or (not os.path.isdir(根路径)):
+            return None
+
+        图片文件列表 = self._列出stepmania图片文件(根路径)
+        方向映射 = {
+            "lb": [("DownLeft", False), ("Center", False)],
+            "lt": [("UpLeft", False), ("Center", False)],
+            "cc": [("Center", False), ("UpLeft", False), ("DownLeft", False)],
+            "rt": [("UpRight", False), ("UpLeft", True), ("Center", False)],
+            "rb": [("DownRight", False), ("DownLeft", True), ("Center", False)],
+        }
+
+        帧表: Dict[str, pygame.Surface] = {}
+        for 后缀, 按钮候选 in 方向映射.items():
+            tap图 = self._取stepmania首帧(
+                根路径,
+                图片文件列表,
+                按钮候选,
+                ["tap", "note"],
+                f"{后缀}:tap",
+            )
+            body图 = self._取stepmania首帧(
+                根路径,
+                图片文件列表,
+                按钮候选,
+                ["hold", "body", "active"],
+                f"{后缀}:hold_body",
+            )
+            cap图 = self._取stepmania首帧(
+                根路径,
+                图片文件列表,
+                按钮候选,
+                ["hold", "bottomcap", "active"],
+                f"{后缀}:hold_cap",
+            )
+            if isinstance(tap图, pygame.Surface):
+                帧表[f"arrow_body_{后缀}.png"] = tap图
+            if isinstance(body图, pygame.Surface):
+                帧表[f"arrow_repeat_{后缀}.png"] = body图
+            if isinstance(cap图, pygame.Surface):
+                帧表[f"arrow_mask_{后缀}.png"] = cap图
+                帧表[f"arrow_tail_{后缀}.png"] = cap图
+
+        if not 帧表:
+            self.加载告警.append("stepmania兼容箭头生成失败：未得到任何可用帧")
+            return None
+        return _贴图集(帧表)
+
+    def _尝试读stepmania判定区_目录(self, 根路径: str) -> Optional[_贴图集]:
+        根路径 = os.path.abspath(str(根路径 or "").strip())
+        if not 根路径 or (not os.path.isdir(根路径)):
+            return None
+
+        图片文件列表 = self._列出stepmania图片文件(根路径)
+        if not any("ready receptor" in self._标准化stepmania文件名(名) for 名 in 图片文件列表):
+            return None
+
+        方向映射 = {
+            "key_bl.png": [("DownLeft", False), ("Center", False)],
+            "key_tl.png": [("UpLeft", False), ("Center", False)],
+            "key_cc.png": [("Center", False), ("UpLeft", False), ("DownLeft", False)],
+            "key_tr.png": [("UpRight", False), ("UpLeft", True), ("Center", False)],
+            "key_br.png": [("DownRight", False), ("DownLeft", True), ("Center", False)],
+        }
+        帧表: Dict[str, pygame.Surface] = {}
+        for 文件名, 按钮候选 in 方向映射.items():
+            图 = self._取stepmania首帧(
+                根路径,
+                图片文件列表,
+                按钮候选,
+                ["ready", "receptor"],
+                文件名,
+            )
+            if isinstance(图, pygame.Surface):
+                帧表[文件名] = 图
+        return _贴图集(帧表) if 帧表 else None
+
+    def _尝试读stepmania击中特效_目录(self, 根路径: str) -> Optional[_贴图集]:
+        根路径 = os.path.abspath(str(根路径 or "").strip())
+        if not 根路径 or (not os.path.isdir(根路径)):
+            return None
+
+        图片文件列表 = self._列出stepmania图片文件(根路径)
+        if not 图片文件列表:
+            return None
+
+        def _取首个文件(包含词: List[str]) -> str:
+            候选 = self._查找stepmania图片(图片文件列表, "", 包含词)
+            return str(候选[0]) if 候选 else ""
+
+        公共爆炸 = _取首个文件(["explosion"])
+        tap爆炸 = _取首个文件(["tap", "explosion"]) or 公共爆炸
+        center爆炸 = _取首个文件(["center", "explosion"]) or tap爆炸 or 公共爆炸
+
+        if not tap爆炸 and not center爆炸:
+            return None
+
+        tap序列 = self._生成stepmania序列帧(根路径, tap爆炸 or center爆炸, 18)
+        center序列 = self._生成stepmania序列帧(根路径, center爆炸 or tap爆炸, 18)
+        if not tap序列 and not center序列:
+            return None
+        if not tap序列:
+            tap序列 = list(center序列)
+        if not center序列:
+            center序列 = list(tap序列)
+
+        帧表: Dict[str, pygame.Surface] = {}
+        for 索引 in range(min(18, len(tap序列))):
+            帧表[f"image_084_{索引:04d}.png"] = tap序列[索引]
+            帧表[f"image_085_{索引:04d}.png"] = tap序列[索引]
+        for 索引 in range(min(18, len(center序列))):
+            帧表[f"image_086_{索引:04d}.png"] = center序列[索引]
+        return _贴图集(帧表) if 帧表 else None
+
     def _尝试读贴图集_zip(
         self, 压缩包: zipfile.ZipFile, 前缀: str, 子夹: str
     ) -> Optional[_贴图集]:
@@ -497,6 +863,7 @@ class 谱面渲染器:
         self._GPUStage前景项缓存: List[Dict[str, Any]] = []
         self._GPUStage缓存屏幕尺寸: Optional[Tuple[int, int]] = None
         self._准备动画遮罩缓存: Dict[Tuple[int, int, int], pygame.Surface] = {}
+        self._准备动画局部图缓存: Dict[Tuple[Any, ...], pygame.Surface] = {}
         self._准备动画判定区组层缓存: Optional[pygame.Surface] = None
         self._准备动画判定区组矩形缓存: Optional[pygame.Rect] = None
         self._准备动画判定区组层签名: Optional[Tuple[Any, ...]] = None
@@ -680,6 +1047,35 @@ class 谱面渲染器:
         if len(self._已命中tap过期表毫秒) != 5:
             self._已命中tap过期表毫秒 = [{} for _ in range(5)]
 
+    def 重置瞬态表现状态(self):
+        self._确保命中映射缓存()
+        self._按下反馈剩余秒 = [0.0] * 5
+        self._击中特效进行秒 = [-1.0] * 5
+        self._击中特效开始谱面秒 = [-999.0] * 5
+        self._击中特效循环到谱面秒 = [-999.0] * 5
+        self._最近击中谱面秒 = [-999.0] * 5
+        self._命中hold开始谱面秒 = [-999.0] * 5
+        self._命中hold结束谱面秒 = [-999.0] * 5
+        self._hold当前按下中 = [False] * 5
+        self._hold松手系统秒 = [None] * 5
+        self._待选择命中谱面秒 = [-999.0] * 5
+        self._命中tap目标谱面秒 = [-999.0] * 5
+        self._命中tap目标过期谱面秒 = [-999.0] * 5
+        self._待命中队列毫秒 = [[] for _ in range(5)]
+        self._已命中tap过期表毫秒 = [{} for _ in range(5)]
+        self._计数动画剩余秒 = 0.0
+        self._计数动画判定 = ""
+        self._计数动画combo = 0
+        self._计数动画队列 = []
+        self._计数动画距上次触发秒 = 999.0
+        self._计数动画停留剩余秒 = 0.0
+        self._分数动画剩余秒 = 0.0
+        self._上次显示分数 = None
+        self._判定提示 = ""
+        self._判定提示剩余秒 = 0.0
+        self._combo轻闪剩余秒 = 0.0
+        self._combo轻闪combo = 0
+
     @staticmethod
     def _复制锚点字典(值: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(值, dict):
@@ -821,6 +1217,7 @@ class 谱面渲染器:
         self._GPUStage前景项缓存 = []
         self._GPUStage缓存屏幕尺寸 = None
         self._准备动画遮罩缓存 = {}
+        self._准备动画局部图缓存 = {}
         self._准备动画判定区组层缓存 = None
         self._准备动画判定区组矩形缓存 = None
         self._准备动画判定区组层签名 = None
@@ -834,6 +1231,7 @@ class 谱面渲染器:
         self._顶部HUD静态层签名 = None
         self._顶部HUD半静态层缓存 = None
         self._顶部HUD半静态层签名 = None
+        self._准备动画局部图缓存 = {}
         self._notes静态层缓存 = None
         self._notes静态层签名 = None
         self._判定区层缓存 = None
@@ -2484,7 +2882,13 @@ class 谱面渲染器:
             return None, 组矩形
 
         try:
-            图层 = pygame.Surface(屏幕.get_size(), pygame.SRCALPHA)
+            图层 = pygame.Surface(屏幕.get_size(), pygame.SRCALPHA, 32).convert_alpha()
+        except Exception:
+            try:
+                图层 = pygame.Surface(屏幕.get_size(), pygame.SRCALPHA)
+            except Exception:
+                return None, 组矩形
+        try:
             图层.fill((0, 0, 0, 0))
             调试 = 调试状态(显示全部边框=False, 选中控件id="")
             布局.绘制(
@@ -2497,6 +2901,37 @@ class 谱面渲染器:
             return 图层, 组矩形
         except Exception:
             return None, 组矩形
+
+    def _取准备动画局部源图(
+        self,
+        图层: Optional[pygame.Surface],
+        区域: Optional[pygame.Rect],
+        缓存前缀: str,
+    ) -> Optional[pygame.Surface]:
+        if (not isinstance(图层, pygame.Surface)) or (not isinstance(区域, pygame.Rect)):
+            return None
+        key = (
+            str(缓存前缀 or ""),
+            int(id(图层)),
+            int(区域.x),
+            int(区域.y),
+            int(区域.w),
+            int(区域.h),
+        )
+        结果 = self._准备动画局部图缓存.get(key)
+        if isinstance(结果, pygame.Surface):
+            return 结果
+        try:
+            结果 = 图层.subsurface(区域).copy().convert_alpha()
+        except Exception:
+            try:
+                结果 = 图层.subsurface(区域).copy()
+            except Exception:
+                return None
+        if len(self._准备动画局部图缓存) >= 64:
+            self._准备动画局部图缓存.clear()
+        self._准备动画局部图缓存[key] = 结果
+        return 结果
 
     def 取准备动画判定区图层(
         self, 屏幕: pygame.Surface, 输入: 渲染输入
@@ -2656,15 +3091,23 @@ class 谱面渲染器:
                 判定区图层, 判定区矩形 = self._取准备动画控件组缓存图层(屏幕, 输入, "判定区组")
                 if isinstance(判定区图层, pygame.Surface) and isinstance(判定区矩形, pygame.Rect):
                     try:
-                        源图 = 判定区图层.subsurface(判定区矩形).copy().convert_alpha()
-                        判定alpha = int(round(255.0 * (判定区t * 判定区t * (3.0 - 2.0 * 判定区t))))
-                        判定缩放 = 1.18 - 0.18 * (1.0 - pow(1.0 - 判定区t, 3))
-                        目标宽 = int(max(2, round(float(源图.get_width()) * 判定缩放)))
-                        目标高 = int(max(2, round(float(源图.get_height()) * 判定缩放)))
-                        图2 = pygame.transform.smoothscale(源图, (目标宽, 目标高)).convert_alpha()
-                        图2.set_alpha(判定alpha)
-                        rr = 图2.get_rect(center=(判定区矩形.centerx, 判定区矩形.centery))
-                        屏幕.blit(图2, rr.topleft)
+                        源图 = self._取准备动画局部源图(
+                            判定区图层, 判定区矩形, "判定区组"
+                        )
+                        if isinstance(源图, pygame.Surface):
+                            判定alpha = int(round(255.0 * (判定区t * 判定区t * (3.0 - 2.0 * 判定区t))))
+                            判定缩放 = 1.18 - 0.18 * (1.0 - pow(1.0 - 判定区t, 3))
+                            目标宽 = int(max(2, round(float(源图.get_width()) * 判定缩放)))
+                            目标高 = int(max(2, round(float(源图.get_height()) * 判定缩放)))
+                            图2 = self._取指定尺寸缩放图(
+                                f"准备判定区:{int(id(源图))}",
+                                源图,
+                                目标宽,
+                                目标高,
+                            )
+                            图2.set_alpha(判定alpha)
+                            rr = 图2.get_rect(center=(判定区矩形.centerx, 判定区矩形.centery))
+                            屏幕.blit(图2, rr.topleft)
                     except Exception:
                         pass
 
@@ -5108,7 +5551,15 @@ class 谱面渲染器:
         特效翻转列表: List[bool] = [False] * 5
 
         for i in range(5):
+            开始谱面秒 = float(self._击中特效开始谱面秒[i])
             循环到 = float(self._击中特效循环到谱面秒[i])
+
+            # seek / 重开后如果当前谱面秒回到了特效起点之前，直接清掉旧状态。
+            if 开始谱面秒 > -900.0 and 当前谱面秒 + 0.08 < 开始谱面秒:
+                self._击中特效进行秒[i] = -1.0
+                self._击中特效开始谱面秒[i] = -999.0
+                self._击中特效循环到谱面秒[i] = -999.0
+                continue
 
             if 循环到 > 0.0:
                 if 当前谱面秒 > 循环到 + 0.02:

@@ -96,6 +96,18 @@ def _收集可用箭头皮肤编号(项目根: str) -> List[str]:
                 continue
             if os.path.isfile(os.path.join(子目录, "arrow", "skin.json")):
                 结果.append(str(名))
+                continue
+            已识别为stepmania = False
+            try:
+                已识别为stepmania = any(
+                    str(文件名).lower().endswith(".png")
+                    and "tap note" in str(文件名).lower()
+                    for 文件名 in os.listdir(子目录)
+                )
+            except Exception:
+                pass
+            if 已识别为stepmania:
+                结果.append(str(名))
     except Exception:
         return ["03"]
 

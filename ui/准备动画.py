@@ -439,9 +439,18 @@ def 绘制透明控件组回放(
         if alpha >= 255:
             屏幕.blit(图层, 目标点)
             return True
-        临时图 = 图层.copy().convert_alpha()
-        临时图.set_alpha(alpha)
-        屏幕.blit(临时图, 目标点)
+        原alpha = 图层.get_alpha()
+        try:
+            图层.set_alpha(alpha, pygame.RLEACCEL)
+        except Exception:
+            图层.set_alpha(alpha)
+        try:
+            屏幕.blit(图层, 目标点)
+        finally:
+            try:
+                图层.set_alpha(原alpha)
+            except Exception:
+                pass
         return True
     except Exception:
         return False

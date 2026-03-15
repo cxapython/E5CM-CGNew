@@ -29,6 +29,7 @@ from core.game_esc_menu_settings import (
     assign_profile_key,
     build_track_key_maps,
     get_dynamic_background_modes,
+    _is_stepmania_arrow_skin_dir,
     keycode_to_display_name,
     load_key_binding_profiles,
     read_saved_autoplay,
@@ -1107,6 +1108,7 @@ class 场景_谱面播放器(场景基类):
         self._音频可用: bool = False
         self._音频已开始: bool = False
         self._音频暂停中: bool = False
+        self._音频已加载路径: Optional[str] = None
         self._音频开始系统秒: float = 0.0
 
         # 轨道/皮肤
@@ -3754,16 +3756,17 @@ class 场景_谱面播放器(场景基类):
                 _取项目根目录(), "UI-img", "游戏界面", "箭头", "01"
             )
 
-        关键1 = os.path.join(self._皮肤目录, "arrow", "skin.json")
-        关键2 = os.path.join(self._皮肤目录, "key", "skin.json")
-        if not os.path.isfile(关键1):
-            self._错误提示 = (
-                self._错误提示 + " | " if self._错误提示 else ""
-            ) + f"缺少：{关键1}"
-        if not os.path.isfile(关键2):
-            self._错误提示 = (
-                self._错误提示 + " | " if self._错误提示 else ""
-            ) + f"缺少：{关键2}"
+        if not _is_stepmania_arrow_skin_dir(self._皮肤目录):
+            关键1 = os.path.join(self._皮肤目录, "arrow", "skin.json")
+            关键2 = os.path.join(self._皮肤目录, "key", "skin.json")
+            if not os.path.isfile(关键1):
+                self._错误提示 = (
+                    self._错误提示 + " | " if self._错误提示 else ""
+                ) + f"缺少：{关键1}"
+            if not os.path.isfile(关键2):
+                self._错误提示 = (
+                    self._错误提示 + " | " if self._错误提示 else ""
+                ) + f"缺少：{关键2}"
 
         if self._谱面渲染器 is not None:
             try:
@@ -3801,6 +3804,7 @@ class 场景_谱面播放器(场景基类):
         self._谱面总时长秒 = 0.0
         self._offset = 0.0
         self._音频路径 = None
+        self._音频已加载路径 = None
         self._谱面格式 = "sm"
         self._json_bpms_line = []
         self._json_tick每拍 = 96
@@ -3927,6 +3931,7 @@ class 场景_谱面播放器(场景基类):
         self._音频已开始 = False
         self._音频暂停中 = False
         self._音频开始系统秒 = 0.0
+        self._预加载音频()
 
         try:
             资源 = self.上下文.get("资源", None)
@@ -4235,6 +4240,9 @@ class 场景_谱面播放器(场景基类):
             self._设置操作反馈(
                 f"F2:自动播放已{'开启' if self._是否自动模式 else '关闭'}"
             )
+            return None
+
+        if self._准备动画激活中():
             return None
 
         if 事件.key == pygame.K_SPACE:
@@ -5250,6 +5258,54 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             self._音频可用 = False
 
+    def _确保音频已加载(self, 强制重载: bool = False) -> bool:
+        if (
+            (not self._音频可用)
+            or (not self._音频路径)
+            or (not os.path.isfile(self._音频路径))
+        ):
+            self._音频已加载路径 = None
+            return False
+
+        try:
+            目标路径 = os.path.abspath(str(self._音频路径))
+        except Exception:
+            目标路径 = str(self._音频路径)
+
+        已加载路径 = str(getattr(self, "_音频已加载路径", "") or "")
+        if (not 强制重载) and 已加载路径 and os.path.abspath(已加载路径) == 目标路径:
+            return True
+
+        try:
+            pygame.mixer.music.load(self._音频路径)
+        except Exception:
+            self._音频已加载路径 = None
+            self._错误提示 = (
+                self._错误提示 or "音频加载失败（mp3可能缺解码，优先换ogg）"
+            )
+            return False
+
+        self._音频已加载路径 = 目标路径
+        return True
+
+    def _预加载音频(self):
+        try:
+            self._确保音频已加载(False)
+        except Exception:
+            pass
+
+    def _重置渲染器瞬态表现(self):
+        for 渲染器 in (
+            getattr(self, "_谱面渲染器", None),
+            getattr(self, "_谱面渲染器_右", None),
+        ):
+            if 渲染器 is None:
+                continue
+            try:
+                渲染器.重置瞬态表现状态()
+            except Exception:
+                continue
+
     def 播放(self):
         if self._播放中:
             return
@@ -5263,18 +5319,22 @@ class 场景_谱面播放器(场景基类):
         ):
             return
 
+        if self._音频暂停中 and self._音频已开始:
+            try:
+                pygame.mixer.music.unpause()
+                self._音频暂停中 = False
+                self._音频开始系统秒 = time.perf_counter()
+                return
+            except Exception:
+                self._音频暂停中 = False
+
+        if not self._确保音频已加载(False):
+            return
+
         try:
             pygame.mixer.music.stop()
         except Exception:
             pass
-
-        try:
-            pygame.mixer.music.load(self._音频路径)
-        except Exception:
-            self._错误提示 = (
-                self._错误提示 or "音频加载失败（mp3可能缺解码，优先换ogg）"
-            )
-            return
 
         # ✅ 核心修复：事件秒已应用 offset，所以音频起点=谱面秒（不再 -offset）
         音频起点 = max(0.0, float(self._暂停时刻谱面秒))
@@ -5322,6 +5382,14 @@ class 场景_谱面播放器(场景基类):
         self._暂停时刻谱面秒 = 新秒
         self._起始系统秒 = time.perf_counter() - 新秒
 
+        try:
+            if self._音频可用:
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
+        self._音频已开始 = False
+        self._音频暂停中 = False
+
         # seek 时：为了避免“跳时间后还能判到过去的 note”，这里直接重置玩法状态
         try:
             if self._计分系统 is not None:
@@ -5334,6 +5402,7 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             pass
 
+        self._重置渲染器瞬态表现()
         self._判定光 = [0.0] * 5
 
     # ---------------- 判定光 ----------------

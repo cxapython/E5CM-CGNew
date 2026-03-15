@@ -105,6 +105,21 @@ class VideoBackgroundOption:
     path: str
 
 
+def _is_stepmania_arrow_skin_dir(path: str) -> bool:
+    root = os.path.abspath(str(path or "").strip())
+    if not root or (not os.path.isdir(root)):
+        return False
+    try:
+        for name in os.listdir(root):
+            lower = str(name).lower()
+            if lower.endswith(".png") and ("tap note" in lower):
+                if os.path.isfile(os.path.join(root, str(name))):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def read_game_esc_settings_scope() -> Dict[str, object]:
     data = read_scope(SCOPE_GAME_ESC_MENU_SETTINGS)
     return dict(data) if isinstance(data, dict) else {}
@@ -345,7 +360,9 @@ def scan_arrow_skin_options(project_root: str) -> List[ArrowSkinOption]:
             continue
         arrow_json = os.path.join(skin_dir, "arrow", "skin.json")
         key_json = os.path.join(skin_dir, "key", "skin.json")
-        if not (os.path.isfile(arrow_json) and os.path.isfile(key_json)):
+        is_native = os.path.isfile(arrow_json) and os.path.isfile(key_json)
+        is_stepmania = _is_stepmania_arrow_skin_dir(skin_dir)
+        if not (is_native or is_stepmania):
             continue
         skin_id = str(name).strip()
         if not skin_id:
@@ -437,8 +454,10 @@ def resolve_arrow_skin_option(
         for option in option_list:
             if selected in (option.file_name, option.skin_id, option.label):
                 return option
-            if digits and digits == option.skin_id:
-                return option
+        if digits:
+            for option in option_list:
+                if digits == option.skin_id:
+                    return option
     return option_list[0]
 
 

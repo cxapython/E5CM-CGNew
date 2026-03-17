@@ -8,6 +8,8 @@ import time
 import zipfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+from core.game_esc_menu_settings import is_binding_pressed
 from core.常量与路径 import 取布局配置路径, 取运行根目录
 import pygame
 
@@ -795,12 +797,12 @@ class 谱面渲染器:
 
         self._按下反馈剩余秒: List[float] = [0.0] * 5
         self._按下反馈总时长秒: float = 0.12
-        self._按键反馈轨道到按键列表: Dict[int, List[int]] = {
-            0: [pygame.K_1, pygame.K_KP1],
-            1: [pygame.K_7, pygame.K_KP7],
-            2: [pygame.K_5, pygame.K_KP5],
-            3: [pygame.K_9, pygame.K_KP9],
-            4: [pygame.K_3, pygame.K_KP3],
+        self._按键反馈轨道到按键列表: Dict[int, List[str]] = {
+            0: [f"key:{int(pygame.K_1)}", f"key:{int(pygame.K_KP1)}"],
+            1: [f"key:{int(pygame.K_7)}", f"key:{int(pygame.K_KP7)}"],
+            2: [f"key:{int(pygame.K_5)}", f"key:{int(pygame.K_KP5)}"],
+            3: [f"key:{int(pygame.K_9)}", f"key:{int(pygame.K_KP9)}"],
+            4: [f"key:{int(pygame.K_3)}", f"key:{int(pygame.K_KP3)}"],
         }
 
         # 击中特效
@@ -1307,25 +1309,24 @@ class 谱面渲染器:
         if 0 <= 轨道序号 < 5:
             self._按下反馈剩余秒[轨道序号] = float(self._按下反馈总时长秒)
 
-    def 设置按键反馈映射(self, 轨道到按键列表: Optional[Dict[int, List[int]]]):
-        默认映射: Dict[int, List[int]] = {
-            0: [pygame.K_1, pygame.K_KP1],
-            1: [pygame.K_7, pygame.K_KP7],
-            2: [pygame.K_5, pygame.K_KP5],
-            3: [pygame.K_9, pygame.K_KP9],
-            4: [pygame.K_3, pygame.K_KP3],
+    def 设置按键反馈映射(self, 轨道到按键列表: Optional[Dict[int, List[str]]]):
+        默认映射: Dict[int, List[str]] = {
+            0: [f"key:{int(pygame.K_1)}", f"key:{int(pygame.K_KP1)}"],
+            1: [f"key:{int(pygame.K_7)}", f"key:{int(pygame.K_KP7)}"],
+            2: [f"key:{int(pygame.K_5)}", f"key:{int(pygame.K_KP5)}"],
+            3: [f"key:{int(pygame.K_9)}", f"key:{int(pygame.K_KP9)}"],
+            4: [f"key:{int(pygame.K_3)}", f"key:{int(pygame.K_KP3)}"],
         }
-        结果: Dict[int, List[int]] = {}
+        结果: Dict[int, List[str]] = {}
         if isinstance(轨道到按键列表, dict):
             for 轨道 in range(5):
                 原值 = 轨道到按键列表.get(int(轨道), [])
                 if isinstance(原值, (list, tuple)):
-                    键表 = []
+                    键表: List[str] = []
                     for k in 原值:
-                        try:
-                            键表.append(int(k))
-                        except Exception:
-                            continue
+                        文本 = str(k or "").strip()
+                        if 文本:
+                            键表.append(文本)
                     结果[int(轨道)] = 键表
                 else:
                     结果[int(轨道)] = []
@@ -1467,22 +1468,17 @@ class 谱面渲染器:
         )
         if not 轨道到按键列表:
             轨道到按键列表 = {
-                0: [pygame.K_1, pygame.K_KP1],
-                1: [pygame.K_7, pygame.K_KP7],
-                2: [pygame.K_5, pygame.K_KP5],
-                3: [pygame.K_9, pygame.K_KP9],
-                4: [pygame.K_3, pygame.K_KP3],
+                0: [f"key:{int(pygame.K_1)}", f"key:{int(pygame.K_KP1)}"],
+                1: [f"key:{int(pygame.K_7)}", f"key:{int(pygame.K_KP7)}"],
+                2: [f"key:{int(pygame.K_5)}", f"key:{int(pygame.K_KP5)}"],
+                3: [f"key:{int(pygame.K_9)}", f"key:{int(pygame.K_KP9)}"],
+                4: [f"key:{int(pygame.K_3)}", f"key:{int(pygame.K_KP3)}"],
             }
 
         def _轨道是否按下(轨道: int) -> bool:
-            if 按下数组 is None:
-                return False
             for 键 in 轨道到按键列表.get(int(轨道), []):
-                try:
-                    if 按下数组[键]:
-                        return True
-                except Exception:
-                    continue
+                if is_binding_pressed(键, 按下数组):
+                    return True
             return False
 
         按下速度 = 26.0
@@ -5452,22 +5448,17 @@ class 谱面渲染器:
         )
         if not 轨道到按键列表:
             轨道到按键列表 = {
-                0: [pygame.K_1, pygame.K_KP1],
-                1: [pygame.K_7, pygame.K_KP7],
-                2: [pygame.K_5, pygame.K_KP5],
-                3: [pygame.K_9, pygame.K_KP9],
-                4: [pygame.K_3, pygame.K_KP3],
+                0: [f"key:{int(pygame.K_1)}", f"key:{int(pygame.K_KP1)}"],
+                1: [f"key:{int(pygame.K_7)}", f"key:{int(pygame.K_KP7)}"],
+                2: [f"key:{int(pygame.K_5)}", f"key:{int(pygame.K_KP5)}"],
+                3: [f"key:{int(pygame.K_9)}", f"key:{int(pygame.K_KP9)}"],
+                4: [f"key:{int(pygame.K_3)}", f"key:{int(pygame.K_KP3)}"],
             }
 
         def _轨道是否按下(轨道: int) -> bool:
-            if 按下数组 is None:
-                return False
             for k in 轨道到按键列表.get(int(轨道), []):
-                try:
-                    if 按下数组[k]:
-                        return True
-                except Exception:
-                    continue
+                if is_binding_pressed(k, 按下数组):
+                    return True
             return False
 
         self._确保命中映射缓存()

@@ -34,9 +34,11 @@ from core.game_esc_menu_settings import (
     CHART_VISUAL_OFFSET_STEP_MS,
     VideoBackgroundOption,
     assign_profile_key,
+    binding_from_event,
     build_track_key_maps,
     clamp_chart_visual_offset_ms,
     format_chart_visual_offset_ms,
+    is_binding_pressed,
     get_dynamic_background_modes,
     _is_stepmania_arrow_skin_dir,
     keycode_to_display_name,
@@ -1760,8 +1762,8 @@ class 场景_谱面播放器(场景基类):
         self._菜单视频背景选项: List[VideoBackgroundOption] = []
         self._菜单箭头选项: List[ArrowSkinOption] = []
         self._菜单动态背景选项: List[str] = []
-        self._菜单单踏板键位: Dict[str, int] = {}
-        self._菜单双踏板键位: Dict[str, int] = {}
+        self._菜单单踏板键位: Dict[str, str] = {}
+        self._菜单双踏板键位: Dict[str, str] = {}
         self._当前背景选项: Optional[BackgroundOption] = None
         self._当前视频背景选项: Optional[VideoBackgroundOption] = None
         self._当前箭头选项: Optional[ArrowSkinOption] = None
@@ -1791,8 +1793,8 @@ class 场景_谱面播放器(场景基类):
         self._平滑性能统计: Dict[str, float] = {}
         self._性能统计平滑系数: float = 0.18
 
-        self._按键到轨道: Dict[int, int] = {}
-        self._轨道到按键列表: Dict[int, List[int]] = {}
+        self._按键到轨道: Dict[str, int] = {}
+        self._轨道到按键列表: Dict[int, List[str]] = {}
         self._刷新按键映射()
 
     def _应启用GPU谱面管线(self) -> bool:
@@ -2465,7 +2467,7 @@ class 场景_谱面播放器(场景基类):
     def _同步渲染器按键反馈映射(self):
         try:
             双踏板 = bool(getattr(self, "_是否双踏板模式", False))
-            左映射: Dict[int, List[int]] = {}
+            左映射: Dict[int, List[str]] = {}
             for i in range(5):
                 左映射[i] = list(getattr(self, "_轨道到按键列表", {}).get(i, []) or [])
             if self._谱面渲染器 is not None and hasattr(
@@ -2474,7 +2476,7 @@ class 场景_谱面播放器(场景基类):
                 self._谱面渲染器.设置按键反馈映射(左映射)
 
             if 双踏板 and getattr(self, "_谱面渲染器_右", None) is not None:
-                右映射: Dict[int, List[int]] = {}
+                右映射: Dict[int, List[str]] = {}
                 for i in range(5):
                     右映射[i] = list(
                         getattr(self, "_轨道到按键列表", {}).get(i + 5, []) or []
@@ -3988,12 +3990,12 @@ class 场景_谱面播放器(场景基类):
     def _esc_menu_should_show_exit_match(self) -> bool:
         return True
 
-    def _esc_menu_apply_binding(self, profile_id: str, slot_id: str, keycode: int):
+    def _esc_menu_apply_binding(self, profile_id: str, slot_id: str, keycode: object):
         配置 = {
             PROFILE_SINGLE: dict(getattr(self, "_菜单单踏板键位", {}) or {}),
             PROFILE_DOUBLE: dict(getattr(self, "_菜单双踏板键位", {}) or {}),
         }
-        新配置 = assign_profile_key(配置, str(profile_id), str(slot_id), int(keycode))
+        新配置 = assign_profile_key(配置, str(profile_id), str(slot_id), keycode)
         self._菜单单踏板键位 = dict(新配置.get(PROFILE_SINGLE, {}) or {})
         self._菜单双踏板键位 = dict(新配置.get(PROFILE_DOUBLE, {}) or {})
         self._保存当前键位绑定()
@@ -5044,16 +5046,16 @@ class 场景_谱面播放器(场景基类):
 
         # 玩法更新（miss + hold tick）
         if self._判定系统 is not None and self._计分系统 is not None:
-            按下数组 = pygame.key.get_pressed()
+            try:
+                按下数组 = pygame.key.get_pressed()
+            except Exception:
+                按下数组 = None
 
             def _轨道是否按下(轨道序号: int) -> bool:
                 键列表 = self._轨道到按键列表.get(int(轨道序号), [])
                 for k in 键列表:
-                    try:
-                        if 按下数组[k]:
-                            return True
-                    except Exception:
-                        continue
+                    if is_binding_pressed(k, 按下数组):
+                        return True
                 return False
 
             回报列表 = self._判定系统.更新(float(self._当前谱面秒), _轨道是否按下)
@@ -5136,14 +5138,14 @@ class 场景_谱面播放器(场景基类):
         if bool(getattr(self._结算前成就动画, "是否激活", lambda: False)()):
             return None
 
-        if 事件.type != pygame.KEYDOWN:
+        if 事件.type not in (pygame.KEYDOWN, pygame.JOYBUTTONDOWN):
             return None
 
-        if 事件.key == pygame.K_ESCAPE:
+        if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_ESCAPE:
             self._打开暂停菜单()
             return None
 
-        if 事件.key == pygame.K_F2:
+        if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_F2:
             self._菜单切换自动播放()
             self._设置操作反馈(
                 f"F2:自动播放已{'开启' if self._是否自动模式 else '关闭'}"
@@ -5153,7 +5155,7 @@ class 场景_谱面播放器(场景基类):
         if self._准备动画激活中():
             return None
 
-        if 事件.key == pygame.K_SPACE:
+        if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_SPACE:
             if self._播放中:
                 self.暂停()
                 self._设置操作反馈("SPACE:谱面播放已暂停")
@@ -5162,7 +5164,7 @@ class 场景_谱面播放器(场景基类):
                 self._设置操作反馈("SPACE:谱面播放已继续")
             return None
 
-        if 事件.key == pygame.K_r:
+        if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_r:
             新载荷 = dict(self._载荷)
             新载荷["操作反馈文本"] = "R:歌曲重载成功"
             return {
@@ -5171,7 +5173,8 @@ class 场景_谱面播放器(场景基类):
                 "禁用黑屏过渡": True,
             }
 
-        轨道 = self._按键到轨道.get(事件.key, None)
+        输入标识 = binding_from_event(事件)
+        轨道 = self._按键到轨道.get(str(输入标识 or ""), None)
         if 轨道 is not None:
             self._触发轨道按下反馈(int(轨道))
 

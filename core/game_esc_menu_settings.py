@@ -53,27 +53,7 @@ DOUBLE_SLOT_ORDER: List[Tuple[str, str]] = [
     ("右区右下", "右区 右下"),
 ]
 
-DEFAULT_BINDINGS: Dict[str, Dict[str, int]] = {
-    PROFILE_SINGLE: {
-        "左下": int(pygame.K_1),
-        "左上": int(pygame.K_7),
-        "中间": int(pygame.K_5),
-        "右上": int(pygame.K_9),
-        "右下": int(pygame.K_3),
-    },
-    PROFILE_DOUBLE: {
-        "左区左下": int(pygame.K_z),
-        "左区左上": int(pygame.K_q),
-        "左区中间": int(pygame.K_s),
-        "左区右上": int(pygame.K_e),
-        "左区右下": int(pygame.K_c),
-        "右区左下": int(pygame.K_1),
-        "右区左上": int(pygame.K_7),
-        "右区中间": int(pygame.K_5),
-        "右区右上": int(pygame.K_9),
-        "右区右下": int(pygame.K_3),
-    },
-}
+BindingToken = str
 
 _REVERSE_TRACK_ORDER = [3, 4, 2, 0, 1]
 _DIGIT_KEYCODE_ALIASES: Dict[int, Tuple[int, int]] = {
@@ -86,6 +66,56 @@ _DIGIT_KEYCODE_ALIASES: Dict[int, Tuple[int, int]] = {
 for _primary, _aliases in list(_DIGIT_KEYCODE_ALIASES.items()):
     for _alias in _aliases:
         _DIGIT_KEYCODE_ALIASES[int(_alias)] = tuple(int(v) for v in _aliases)
+
+
+def _make_key_binding_token(keycode: object) -> Optional[BindingToken]:
+    try:
+        value = int(keycode)
+    except Exception:
+        return None
+    aliases = _DIGIT_KEYCODE_ALIASES.get(int(value))
+    if aliases:
+        value = int(aliases[0])
+    if value <= 0:
+        return None
+    return f"key:{int(value)}"
+
+
+def _make_joy_button_binding_token(
+    joy_index: object,
+    button_index: object,
+) -> Optional[BindingToken]:
+    try:
+        joy_number = int(joy_index)
+        button_number = int(button_index)
+    except Exception:
+        return None
+    if joy_number <= 0 or button_number < 0:
+        return None
+    return f"joy:{int(joy_number)}:{int(button_number)}"
+
+
+DEFAULT_BINDINGS: Dict[str, Dict[str, BindingToken]] = {
+    PROFILE_SINGLE: {
+        "左下": str(_make_key_binding_token(pygame.K_1) or ""),
+        "左上": str(_make_key_binding_token(pygame.K_7) or ""),
+        "中间": str(_make_key_binding_token(pygame.K_5) or ""),
+        "右上": str(_make_key_binding_token(pygame.K_9) or ""),
+        "右下": str(_make_key_binding_token(pygame.K_3) or ""),
+    },
+    PROFILE_DOUBLE: {
+        "左区左下": str(_make_key_binding_token(pygame.K_z) or ""),
+        "左区左上": str(_make_key_binding_token(pygame.K_q) or ""),
+        "左区中间": str(_make_key_binding_token(pygame.K_s) or ""),
+        "左区右上": str(_make_key_binding_token(pygame.K_e) or ""),
+        "左区右下": str(_make_key_binding_token(pygame.K_c) or ""),
+        "右区左下": str(_make_key_binding_token(pygame.K_1) or ""),
+        "右区左上": str(_make_key_binding_token(pygame.K_7) or ""),
+        "右区中间": str(_make_key_binding_token(pygame.K_5) or ""),
+        "右区右上": str(_make_key_binding_token(pygame.K_9) or ""),
+        "右区右下": str(_make_key_binding_token(pygame.K_3) or ""),
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -162,17 +192,133 @@ def iter_profile_slots(profile_id: str) -> List[Tuple[str, str]]:
     return list(SINGLE_SLOT_ORDER)
 
 
-def normalize_keycode(keycode: object) -> Optional[int]:
+def _binding_token_to_keycode(binding: object) -> Optional[int]:
+    token = str(binding or "").strip().lower()
+    if not token.startswith("key:"):
+        return None
     try:
-        value = int(keycode)
+        return int(token.split(":", 1)[1])
     except Exception:
         return None
-    aliases = _DIGIT_KEYCODE_ALIASES.get(int(value))
-    if aliases:
-        return int(aliases[0])
-    if value <= 0:
+
+
+def _binding_token_to_joy_button(binding: object) -> Optional[Tuple[int, int]]:
+    token = str(binding or "").strip().lower()
+    if not token.startswith("joy:"):
         return None
-    return int(value)
+    parts = token.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        joy_number = int(parts[1])
+        button_index = int(parts[2])
+    except Exception:
+        return None
+    if joy_number <= 0 or button_index < 0:
+        return None
+    return int(joy_number), int(button_index)
+
+
+def _resolve_joystick_index_from_event(event: object) -> Optional[int]:
+    try:
+        instance_id = getattr(event, "instance_id", None)
+    except Exception:
+        instance_id = None
+    if instance_id is not None:
+        try:
+            pygame.joystick.init()
+            count = int(pygame.joystick.get_count() or 0)
+        except Exception:
+            count = 0
+        for index in range(count):
+            try:
+                joystick = pygame.joystick.Joystick(index)
+                if not bool(joystick.get_init()):
+                    joystick.init()
+                if int(joystick.get_instance_id()) == int(instance_id):
+                    return int(index) + 1
+            except Exception:
+                continue
+    try:
+        joy = getattr(event, "joy", None)
+        if joy is not None:
+            return int(joy) + 1
+    except Exception:
+        pass
+    return None
+
+
+def normalize_binding(binding: object) -> Optional[BindingToken]:
+    if isinstance(binding, dict):
+        data = dict(binding)
+        kind = str(data.get("kind", data.get("type", "")) or "").strip().lower()
+        if kind in ("key", "keyboard"):
+            return _make_key_binding_token(data.get("keycode", data.get("key", None)))
+        if kind in ("joy", "joy_button", "joystick", "joystick_button"):
+            button = data.get("button", data.get("button_index", data.get("btn", None)))
+            joy_index = data.get("joy_index", data.get("joy", data.get("joystick", None)))
+            return _make_joy_button_binding_token(joy_index, button)
+        return None
+    if isinstance(binding, int):
+        return _make_key_binding_token(binding)
+
+    text = str(binding or "").strip()
+    if not text:
+        return None
+
+    token_match = re.fullmatch(r"(key|joy):(.+)", text, re.IGNORECASE)
+    if token_match:
+        kind = str(token_match.group(1) or "").strip().lower()
+        payload = str(token_match.group(2) or "").strip()
+        if kind == "key":
+            try:
+                return _make_key_binding_token(int(payload))
+            except Exception:
+                return None
+        parts = [part.strip() for part in payload.split(":")]
+        if len(parts) != 2:
+            return None
+        try:
+            return _make_joy_button_binding_token(int(parts[0]), int(parts[1]))
+        except Exception:
+            return None
+
+    text_lower = text.lower()
+    joy_match = re.fullmatch(
+        r"joy\s*(\d+)\s*(?:[:\s_-]*)\s*b(?:utton)?\s*(\d+)",
+        text_lower,
+        re.IGNORECASE,
+    )
+    if joy_match:
+        try:
+            joy_number = int(joy_match.group(1))
+            button_number = int(joy_match.group(2))
+        except Exception:
+            return None
+        return _make_joy_button_binding_token(joy_number, button_number - 1)
+
+    digit_alias = {
+        "kp1": int(pygame.K_1),
+        "[1]": int(pygame.K_1),
+        "kp3": int(pygame.K_3),
+        "[3]": int(pygame.K_3),
+        "kp5": int(pygame.K_5),
+        "[5]": int(pygame.K_5),
+        "kp7": int(pygame.K_7),
+        "[7]": int(pygame.K_7),
+        "kp9": int(pygame.K_9),
+        "[9]": int(pygame.K_9),
+    }
+    if text_lower in digit_alias:
+        return _make_key_binding_token(int(digit_alias[text_lower]))
+    try:
+        return _make_key_binding_token(pygame.key.key_code(text_lower))
+    except Exception:
+        return None
+
+
+def normalize_keycode(keycode: object) -> Optional[int]:
+    return _binding_token_to_keycode(normalize_binding(keycode))
 
 
 def expand_keycode_aliases(keycode: object) -> List[int]:
@@ -185,25 +331,54 @@ def expand_keycode_aliases(keycode: object) -> List[int]:
     return [int(normalized)]
 
 
+def expand_binding_aliases(binding: object) -> List[BindingToken]:
+    normalized = normalize_binding(binding)
+    if normalized is None:
+        return []
+    keycode = _binding_token_to_keycode(normalized)
+    if keycode is not None:
+        result: List[BindingToken] = []
+        for alias in expand_keycode_aliases(keycode):
+            token = _make_key_binding_token(alias)
+            if token and token not in result:
+                result.append(str(token))
+        return result
+    return [str(normalized)]
+
+
 def keycode_to_storage_name(keycode: object) -> str:
-    normalized = normalize_keycode(keycode)
+    normalized = normalize_binding(keycode)
     if normalized is None:
         return ""
+    joy_binding = _binding_token_to_joy_button(normalized)
+    if joy_binding is not None:
+        joy_number, button_index = joy_binding
+        return f"joy{int(joy_number)}:b{int(button_index) + 1}"
+    normalized_keycode = _binding_token_to_keycode(normalized)
+    if normalized_keycode is None:
+        return ""
     try:
-        name = str(pygame.key.name(int(normalized)) or "").strip()
+        name = str(pygame.key.name(int(normalized_keycode)) or "").strip()
     except Exception:
         name = ""
     return name
 
 
 def keycode_to_display_name(keycode: object) -> str:
-    normalized = normalize_keycode(keycode)
+    normalized = normalize_binding(keycode)
     if normalized is None:
         return "未绑定"
-    if int(normalized) in _DIGIT_KEYCODE_ALIASES:
-        return str(pygame.key.name(int(normalized)) or "").upper() or "?"
+    joy_binding = _binding_token_to_joy_button(normalized)
+    if joy_binding is not None:
+        joy_number, button_index = joy_binding
+        return f"Joy{int(joy_number)} B{int(button_index) + 1}"
+    normalized_keycode = _binding_token_to_keycode(normalized)
+    if normalized_keycode is None:
+        return "?"
+    if int(normalized_keycode) in _DIGIT_KEYCODE_ALIASES:
+        return str(pygame.key.name(int(normalized_keycode)) or "").upper() or "?"
     try:
-        text = str(pygame.key.name(int(normalized)) or "").strip()
+        text = str(pygame.key.name(int(normalized_keycode)) or "").strip()
     except Exception:
         text = ""
     if not text:
@@ -234,53 +409,83 @@ def keycode_to_display_name(keycode: object) -> str:
     return str(special.get(text.lower(), text.upper()))
 
 
-def _parse_saved_key(value: object) -> Optional[int]:
-    if isinstance(value, int):
-        return normalize_keycode(value)
-    text = str(value or "").strip()
-    if not text:
-        return None
-    text = text.lower()
-    digit_alias = {
-        "kp1": int(pygame.K_1),
-        "[1]": int(pygame.K_1),
-        "kp3": int(pygame.K_3),
-        "[3]": int(pygame.K_3),
-        "kp5": int(pygame.K_5),
-        "[5]": int(pygame.K_5),
-        "kp7": int(pygame.K_7),
-        "[7]": int(pygame.K_7),
-        "kp9": int(pygame.K_9),
-        "[9]": int(pygame.K_9),
-    }
-    if text in digit_alias:
-        return int(digit_alias[text])
+def binding_from_event(event: object) -> Optional[BindingToken]:
     try:
-        return normalize_keycode(pygame.key.key_code(text))
+        event_type = getattr(event, "type", None)
     except Exception:
-        return None
+        event_type = None
+    if event_type == pygame.KEYDOWN:
+        return _make_key_binding_token(getattr(event, "key", None))
+    if event_type == pygame.JOYBUTTONDOWN:
+        joy_number = _resolve_joystick_index_from_event(event)
+        if joy_number is None:
+            return None
+        return _make_joy_button_binding_token(joy_number, getattr(event, "button", None))
+    return None
 
 
-def load_key_binding_profiles(scope_data: Optional[Dict[str, object]] = None) -> Dict[str, Dict[str, int]]:
+def is_binding_pressed(binding: object, keyboard_state: object = None) -> bool:
+    normalized = normalize_binding(binding)
+    if normalized is None:
+        return False
+    normalized_keycode = _binding_token_to_keycode(normalized)
+    if normalized_keycode is not None:
+        if keyboard_state is None:
+            try:
+                keyboard_state = pygame.key.get_pressed()
+            except Exception:
+                keyboard_state = None
+        if keyboard_state is None:
+            return False
+        for alias in expand_keycode_aliases(normalized_keycode):
+            try:
+                if bool(keyboard_state[int(alias)]):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    joy_binding = _binding_token_to_joy_button(normalized)
+    if joy_binding is None:
+        return False
+    joy_number, button_index = joy_binding
+    try:
+        pygame.joystick.init()
+        joystick_index = int(joy_number) - 1
+        if joystick_index < 0 or joystick_index >= int(pygame.joystick.get_count() or 0):
+            return False
+        joystick = pygame.joystick.Joystick(joystick_index)
+        if not bool(joystick.get_init()):
+            joystick.init()
+        return bool(joystick.get_button(int(button_index)))
+    except Exception:
+        return False
+
+
+def load_key_binding_profiles(
+    scope_data: Optional[Dict[str, object]] = None,
+) -> Dict[str, Dict[str, BindingToken]]:
     data = dict(scope_data or {}) if isinstance(scope_data, dict) else read_game_esc_settings_scope()
     saved = data.get(GAME_ESC_SETTINGS_KEY_BINDINGS, {})
     saved = dict(saved) if isinstance(saved, dict) else {}
 
-    profiles: Dict[str, Dict[str, int]] = {}
+    profiles: Dict[str, Dict[str, BindingToken]] = {}
     for profile_id, defaults in DEFAULT_BINDINGS.items():
         current = dict(defaults)
         profile_label = PROFILE_LABELS.get(profile_id, profile_id)
         raw_profile = saved.get(profile_id, saved.get(profile_label, {}))
         raw_profile = dict(raw_profile) if isinstance(raw_profile, dict) else {}
         for slot_id, _slot_label in iter_profile_slots(profile_id):
-            parsed = _parse_saved_key(raw_profile.get(slot_id))
+            parsed = normalize_binding(raw_profile.get(slot_id))
             if parsed is not None:
-                current[slot_id] = int(parsed)
+                current[slot_id] = str(parsed)
         profiles[profile_id] = current
     return profiles
 
 
-def serialize_key_binding_profiles(profiles: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, str]]:
+def serialize_key_binding_profiles(
+    profiles: Dict[str, Dict[str, BindingToken]],
+) -> Dict[str, Dict[str, str]]:
     result: Dict[str, Dict[str, str]] = {}
     for profile_id, slots in (profiles or {}).items():
         profile_map: Dict[str, str] = {}
@@ -293,15 +498,15 @@ def serialize_key_binding_profiles(profiles: Dict[str, Dict[str, int]]) -> Dict[
 
 
 def assign_profile_key(
-    profiles: Dict[str, Dict[str, int]],
+    profiles: Dict[str, Dict[str, BindingToken]],
     profile_id: str,
     slot_id: str,
     keycode: object,
-) -> Dict[str, Dict[str, int]]:
-    normalized = normalize_keycode(keycode)
+) -> Dict[str, Dict[str, BindingToken]]:
+    normalized = normalize_binding(keycode)
     if normalized is None:
         return profiles
-    updated: Dict[str, Dict[str, int]] = {
+    updated: Dict[str, Dict[str, BindingToken]] = {
         key: dict(value or {}) for key, value in dict(profiles or {}).items()
     }
     if profile_id not in updated:
@@ -312,14 +517,19 @@ def assign_profile_key(
     for current_slot, current_keycode in profile.items():
         if current_slot == slot_id:
             continue
-        if normalize_keycode(current_keycode) == normalized:
+        if normalize_binding(current_keycode) == normalized:
             other_slot = current_slot
             break
-    profile[slot_id] = int(normalized)
+    profile[slot_id] = str(normalized)
     if other_slot is not None and previous is not None:
-        profile[other_slot] = int(previous)
+        previous_normalized = normalize_binding(previous)
+        if previous_normalized is not None:
+            profile[other_slot] = str(previous_normalized)
     elif other_slot is not None:
-        profile[other_slot] = int(DEFAULT_BINDINGS.get(profile_id, {}).get(other_slot, normalized))
+        profile[other_slot] = str(
+            normalize_binding(DEFAULT_BINDINGS.get(profile_id, {}).get(other_slot, normalized))
+            or normalized
+        )
     return updated
 
 
@@ -327,10 +537,10 @@ def build_track_key_maps(
     *,
     is_double: bool,
     reverse: bool,
-    profiles: Dict[str, Dict[str, int]],
-) -> Tuple[Dict[int, int], Dict[int, List[int]]]:
-    key_to_track: Dict[int, int] = {}
-    track_to_keys: Dict[int, List[int]] = {}
+    profiles: Dict[str, Dict[str, BindingToken]],
+) -> Tuple[Dict[BindingToken, int], Dict[int, List[BindingToken]]]:
+    key_to_track: Dict[BindingToken, int] = {}
+    track_to_keys: Dict[int, List[BindingToken]] = {}
 
     if is_double:
         left_slots = [slot_id for slot_id, _ in DOUBLE_SLOT_ORDER[:5]]
@@ -338,33 +548,33 @@ def build_track_key_maps(
         double_profile = dict((profiles or {}).get(PROFILE_DOUBLE, {}) or {})
 
         for index, slot_id in enumerate(left_slots):
-            keys = expand_keycode_aliases(double_profile.get(slot_id))
+            keys = expand_binding_aliases(double_profile.get(slot_id))
             track = int(index)
             if keys:
                 track_to_keys[track] = list(keys)
                 for keycode in keys:
-                    key_to_track[int(keycode)] = int(track)
+                    key_to_track[str(keycode)] = int(track)
 
         for index, slot_id in enumerate(right_slots):
-            keys = expand_keycode_aliases(double_profile.get(slot_id))
+            keys = expand_binding_aliases(double_profile.get(slot_id))
             target_index = _REVERSE_TRACK_ORDER[index] if reverse else index
             track = int(5 + target_index)
             if keys:
                 track_to_keys[track] = list(keys)
                 for keycode in keys:
-                    key_to_track[int(keycode)] = int(track)
+                    key_to_track[str(keycode)] = int(track)
         return key_to_track, track_to_keys
 
     single_profile = dict((profiles or {}).get(PROFILE_SINGLE, {}) or {})
     single_slots = [slot_id for slot_id, _ in SINGLE_SLOT_ORDER]
     for index, slot_id in enumerate(single_slots):
-        keys = expand_keycode_aliases(single_profile.get(slot_id))
+        keys = expand_binding_aliases(single_profile.get(slot_id))
         track = int(_REVERSE_TRACK_ORDER[index] if reverse else index)
         if not keys:
             continue
         track_to_keys[track] = list(keys)
         for keycode in keys:
-            key_to_track[int(keycode)] = int(track)
+            key_to_track[str(keycode)] = int(track)
     return key_to_track, track_to_keys
 
 

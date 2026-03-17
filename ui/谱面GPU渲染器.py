@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pygame
 
+from core.game_esc_menu_settings import is_binding_pressed
+
 try:
     from pygame._sdl2 import video as _sdl2_video
 except Exception:
@@ -1119,22 +1121,17 @@ class 谱面GPU管线渲染器:
         )
         if not 轨道到按键列表:
             轨道到按键列表 = {
-                0: [pygame.K_1, pygame.K_KP1],
-                1: [pygame.K_7, pygame.K_KP7],
-                2: [pygame.K_5, pygame.K_KP5],
-                3: [pygame.K_9, pygame.K_KP9],
-                4: [pygame.K_3, pygame.K_KP3],
+                0: [f"key:{int(pygame.K_1)}", f"key:{int(pygame.K_KP1)}"],
+                1: [f"key:{int(pygame.K_7)}", f"key:{int(pygame.K_KP7)}"],
+                2: [f"key:{int(pygame.K_5)}", f"key:{int(pygame.K_KP5)}"],
+                3: [f"key:{int(pygame.K_9)}", f"key:{int(pygame.K_KP9)}"],
+                4: [f"key:{int(pygame.K_3)}", f"key:{int(pygame.K_KP3)}"],
             }
 
         def _轨道是否按下(轨道: int) -> bool:
-            if 按下数组 is None:
-                return False
             for 键 in 轨道到按键列表.get(int(轨道), []):
-                try:
-                    if 按下数组[键]:
-                        return True
-                except Exception:
-                    continue
+                if is_binding_pressed(键, 按下数组):
+                    return True
             return False
 
         def _变速显示beat(beat值: float) -> float:

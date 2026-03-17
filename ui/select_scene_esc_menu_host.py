@@ -64,8 +64,8 @@ class SelectSceneEscMenuHost:
         self._菜单视频背景选项: List[VideoBackgroundOption] = []
         self._菜单箭头选项: List[ArrowSkinOption] = []
         self._菜单动态背景选项: List[str] = []
-        self._菜单单踏板键位: Dict[str, int] = {}
-        self._菜单双踏板键位: Dict[str, int] = {}
+        self._菜单单踏板键位: Dict[str, str] = {}
+        self._菜单双踏板键位: Dict[str, str] = {}
         self._当前背景选项: Optional[BackgroundOption] = None
         self._当前视频背景选项: Optional[VideoBackgroundOption] = None
         self._当前箭头选项: Optional[ArrowSkinOption] = None
@@ -377,12 +377,12 @@ class SelectSceneEscMenuHost:
             write_game_esc_settings_scope_patch({GAME_ESC_SETTINGS_KEY_AUTOPLAY: bool(self._是否自动模式)})
             return None
 
-    def _esc_menu_apply_binding(self, profile_id: str, slot_id: str, keycode: int):
+    def _esc_menu_apply_binding(self, profile_id: str, slot_id: str, keycode: object):
         profiles = {
             PROFILE_SINGLE: dict(self._菜单单踏板键位),
             PROFILE_DOUBLE: dict(self._菜单双踏板键位),
         }
-        updated = assign_profile_key(profiles, str(profile_id), str(slot_id), int(keycode))
+        updated = assign_profile_key(profiles, str(profile_id), str(slot_id), keycode)
         self._菜单单踏板键位 = dict(updated.get(PROFILE_SINGLE, {}) or {})
         self._菜单双踏板键位 = dict(updated.get(PROFILE_DOUBLE, {}) or {})
         write_game_esc_settings_scope_patch(

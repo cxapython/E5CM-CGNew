@@ -9,6 +9,7 @@ from core.game_esc_menu_settings import (
     PROFILE_DOUBLE,
     PROFILE_LABELS,
     PROFILE_SINGLE,
+    binding_from_event,
     format_chart_visual_offset_ms,
     iter_profile_slots,
     keycode_to_display_name,
@@ -316,15 +317,17 @@ class EscMenuController:
                 self._waiting_binding = None
                 self._feedback("已取消键位修改")
                 return None
+        if event.type in (pygame.KEYDOWN, pygame.JOYBUTTONDOWN):
+            binding = binding_from_event(event)
             waiting = self._waiting_binding
             self._waiting_binding = None
-            if waiting is None:
+            if waiting is None or binding is None:
                 return None
             profile_id, slot_id = waiting
             applier = getattr(self._host, "_esc_menu_apply_binding", None)
             if callable(applier):
                 try:
-                    applier(str(profile_id), str(slot_id), int(getattr(event, "key", 0)))
+                    applier(str(profile_id), str(slot_id), binding)
                 except Exception:
                     pass
             self._binding_focus_id = str(slot_id)

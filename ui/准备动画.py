@@ -22,6 +22,8 @@ class 全屏透明叠加层:
         self._画布: Optional[pygame.Surface] = None
         self._纹理 = None
         self._纹理渲染器id: int = 0
+        self._内容版本: int = 0
+        self._纹理内容版本: int = -1
         self._尺寸: Tuple[int, int] = (0, 0)
         self._有内容: bool = False
 
@@ -49,6 +51,7 @@ class 全屏透明叠加层:
                 self._画布 = None
         self._尺寸 = tuple(目标尺寸)
         self._纹理 = None
+        self._纹理内容版本 = -1
         return self._画布
 
     def 开始绘制(
@@ -68,6 +71,7 @@ class 全屏透明叠加层:
             except Exception:
                 pass
         self._有内容 = True
+        self._内容版本 += 1
         return 画布
 
     def 清空(self, 清除画布: bool = False):
@@ -77,11 +81,14 @@ class 全屏透明叠加层:
                 self._画布.fill((0, 0, 0, 0))
             except Exception:
                 pass
+            self._内容版本 += 1
 
     def 重置(self):
         self._画布 = None
         self._纹理 = None
         self._纹理渲染器id = 0
+        self._内容版本 = 0
+        self._纹理内容版本 = -1
         self._尺寸 = (0, 0)
         self._有内容 = False
 
@@ -98,18 +105,22 @@ class 全屏透明叠加层:
         if 当前渲染器id != int(self._纹理渲染器id):
             self._纹理 = None
             self._纹理渲染器id = 当前渲染器id
+            self._纹理内容版本 = -1
         if self._纹理 is None:
             try:
                 self._纹理 = _sdl2_video.Texture.from_surface(渲染器, 画布)
+                self._纹理内容版本 = int(self._内容版本)
             except Exception:
                 self._纹理 = None
                 return None
-        else:
+        elif int(self._纹理内容版本) != int(self._内容版本):
             try:
                 self._纹理.update(画布)
+                self._纹理内容版本 = int(self._内容版本)
             except Exception:
                 try:
                     self._纹理 = _sdl2_video.Texture.from_surface(渲染器, 画布)
+                    self._纹理内容版本 = int(self._内容版本)
                 except Exception:
                     self._纹理 = None
                     return None

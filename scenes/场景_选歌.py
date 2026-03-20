@@ -844,9 +844,9 @@ def _设置页_构建参数文本(
     箭头文件名: str = "",
 ) -> str:
     return 构建设置参数文本(
-        设置参数=设置参数,
-        背景文件名=背景文件名,
-        箭头文件名=箭头文件名,
+        settings_params=设置参数,
+        background_filename=背景文件名,
+        arrow_filename=箭头文件名,
     )
 
 def _设置页_读取持久化设置(self) -> dict:
@@ -859,6 +859,125 @@ def _设置页_写入持久化设置(self, 数据: dict) -> bool:
         return isinstance(新数据, dict)
     except Exception:
         return False
+
+
+def _设置页_提取同步快照(数据: Optional[dict]) -> dict:
+    原始 = dict(数据 or {}) if isinstance(数据, dict) else {}
+    参数 = 原始.get("设置参数", {})
+    if not isinstance(参数, dict):
+        参数 = {}
+    索引 = 原始.get("索引", {})
+    if not isinstance(索引, dict):
+        索引 = {}
+    return {
+        "设置参数": dict(参数),
+        "设置参数文本": str(原始.get("设置参数文本", "") or ""),
+        "动态背景": str(原始.get("动态背景", "") or ""),
+        "背景文件名": str(原始.get("背景文件名", "") or ""),
+        "视频背景文件名": str(原始.get("视频背景文件名", "") or ""),
+        "箭头文件名": str(原始.get("箭头文件名", "") or ""),
+        "索引": dict(索引),
+    }
+
+
+def _设置页_计算同步签名(数据: Optional[dict]) -> str:
+    try:
+        return json.dumps(
+            _设置页_提取同步快照(数据),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except Exception:
+        return ""
+
+
+def _设置页_同步外部持久化设置(
+    self,
+    强制: bool = False,
+    刷新界面: bool = True,
+) -> bool:
+    if not hasattr(self, "设置_调速选项"):
+        return False
+
+    try:
+        当前秒 = float(time.perf_counter())
+    except Exception:
+        当前秒 = 0.0
+
+    if (not bool(强制)) and (
+        当前秒
+        - float(getattr(self, "_设置页_同步最近读取时间", -999.0) or -999.0)
+    ) < 0.20:
+        return False
+    self._设置页_同步最近读取时间 = 当前秒
+
+    try:
+        数据 = _设置页_读取持久化设置(self)
+    except Exception:
+        数据 = {}
+
+    新签名 = _设置页_计算同步签名(数据)
+    旧签名 = str(getattr(self, "_设置页_最近持久化签名", "") or "")
+    if (not bool(强制)) and 新签名 == 旧签名:
+        return False
+
+    try:
+        旧参数 = dict(getattr(self, "设置_参数", {}) or {})
+    except Exception:
+        旧参数 = {}
+    旧背景状态 = (
+        str(旧参数.get("背景模式", 旧参数.get("变速", "图片")) or "图片").strip(),
+        str(旧参数.get("动态背景", "关闭") or "关闭").strip(),
+        str(getattr(self, "设置_背景大图文件名", "") or "").strip(),
+    )
+    旧箭头文件名 = str(getattr(self, "设置_箭头文件名", "") or "").strip()
+
+    try:
+        self._设置页_加载持久化设置()
+    except Exception:
+        pass
+    try:
+        self._设置页_同步参数()
+    except Exception:
+        pass
+
+    self._设置页_最近持久化签名 = str(新签名 or "")
+
+    try:
+        新参数 = dict(getattr(self, "设置_参数", {}) or {})
+    except Exception:
+        新参数 = {}
+    新背景状态 = (
+        str(新参数.get("背景模式", 新参数.get("变速", "图片")) or "图片").strip(),
+        str(新参数.get("动态背景", "关闭") or "关闭").strip(),
+        str(getattr(self, "设置_背景大图文件名", "") or "").strip(),
+    )
+    新箭头文件名 = str(getattr(self, "设置_箭头文件名", "") or "").strip()
+
+    背景已变更 = 旧背景状态 != 新背景状态
+    展示已变更 = bool(背景已变更 or 旧箭头文件名 != 新箭头文件名)
+
+    if 背景已变更:
+        try:
+            self._加载背景图()
+        except Exception:
+            pass
+
+    if bool(刷新界面) and 展示已变更:
+        try:
+            self._设置页_上次屏幕尺寸 = (0, 0)
+            self._设置页_最后绘制表面 = None
+            self._设置页_最后缩放 = 1.0
+        except Exception:
+            pass
+        if bool(getattr(self, "是否设置页", False)):
+            try:
+                self._重算设置页布局(强制=True)
+            except Exception:
+                pass
+
+    return True
 
 def _设置页_加载持久化设置(self):
     数据 = _设置页_读取持久化设置(self)
@@ -943,6 +1062,11 @@ def _设置页_加载持久化设置(self):
             pass
 
 def _设置页_保存持久化设置(self) -> bool:
+    try:
+        self._设置页_同步外部持久化设置(强制=False, 刷新界面=False)
+    except Exception:
+        pass
+
     配置定义 = _设置页_配置项定义()
 
     设置参数 = dict(getattr(self, "设置_参数", {}) or {})
@@ -979,7 +1103,15 @@ def _设置页_保存持久化设置(self) -> bool:
         ),
         "索引": 索引表,
     }
-    return _设置页_写入持久化设置(self, 数据)
+    结果 = _设置页_写入持久化设置(self, 数据)
+    if bool(结果):
+        try:
+            self._设置页_最近持久化签名 = _设置页_计算同步签名(
+                _设置页_读取持久化设置(self)
+            )
+        except Exception:
+            self._设置页_最近持久化签名 = _设置页_计算同步签名(数据)
+    return bool(结果)
 
 
 def _确保设置页资源(self):
@@ -1046,6 +1178,8 @@ def _确保设置页资源(self):
     self.设置_参数 = {}
     self.设置_背景大图文件名 = ""
     self.设置_箭头文件名 = ""
+    self._设置页_同步最近读取时间 = -999.0
+    self._设置页_最近持久化签名 = ""
 
     try:
         self._设置页_加载持久化设置()
@@ -1058,6 +1192,12 @@ def _确保设置页资源(self):
         self._设置页_保存持久化设置()
     except Exception:
         pass
+    try:
+        self._设置页_最近持久化签名 = _设置页_计算同步签名(
+            self._设置页_读取持久化设置()
+        )
+    except Exception:
+        self._设置页_最近持久化签名 = ""
 
     self._设置页_缩放缓存 = {}
     self._设置页_背景图原图 = 安全加载图片(
@@ -1603,6 +1743,10 @@ def 绘制设置页(self):
     
 def 打开设置页(self):
     self._确保设置页资源()
+    try:
+        self._设置页_同步外部持久化设置(强制=True, 刷新界面=True)
+    except Exception:
+        pass
 
     try:
         self.是否星级筛选页 = False
@@ -5930,6 +6074,10 @@ class 选歌游戏:
             self._背景暗层缓存键 = (0, 0, 0)
 
     def _取当前背景设置参数(self) -> dict:
+        try:
+            self._设置页_同步外部持久化设置(强制=False, 刷新界面=False)
+        except Exception:
+            pass
         参数 = {}
         try:
             if isinstance(getattr(self, "设置_参数", None), dict):

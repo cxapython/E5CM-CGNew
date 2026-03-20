@@ -2276,20 +2276,12 @@ class 谱面渲染器:
                         比例 = 1.0
 
                     try:
-                        判定区目标宽_布局 = float(
-                            上下文.get("判定区_receptor宽_布局", 1.0) or 1.0
-                        )
-                    except Exception:
-                        判定区目标宽_布局 = 1.0
-                    try:
                         特效目标宽_布局 = float(
                             上下文.get("特效目标宽_布局", 40.0) or 40.0
                         )
                     except Exception:
                         特效目标宽_布局 = 40.0
-                    宽度比例 = float(
-                        max(0.1, 特效目标宽_布局 / max(0.01, 判定区目标宽_布局))
-                    )
+                    目标宽 = int(max(48, round(float(特效目标宽_布局) * float(比例))))
 
                     try:
                         特效显式x偏移 = float(
@@ -2322,9 +2314,6 @@ class 谱面渲染器:
 
                     for 轨道, 判定矩形 in 判定区矩形表.items():
                         try:
-                            目标宽 = int(
-                                max(48, round(float(判定矩形.w) * float(宽度比例)))
-                            )
                             中心x = int(
                                 round(
                                     float(判定矩形.centerx)

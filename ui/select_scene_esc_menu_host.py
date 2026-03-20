@@ -42,6 +42,9 @@ from core.select_speed_settings import (
     get_select_scroll_speed_options,
     parse_select_scroll_speed,
 )
+from core.select_scene_settings_layout import (
+    build_select_settings_param_text,
+)
 from core.sqlite_store import (
     SCOPE_GAME_ESC_MENU_SETTINGS,
     SCOPE_SELECT_SETTINGS,
@@ -204,15 +207,25 @@ class SelectSceneEscMenuHost:
             "方向": str(self._方向模式 or "关闭"),
             "大小": self._取当前大小选项文本(),
         }
+        背景文件名 = str(getattr(self._当前背景选项, "file_name", "") or "")
+        视频背景文件名 = str(getattr(self._当前视频背景选项, "file_name", "") or "")
+        箭头文件名 = str(getattr(self._当前箭头选项, "file_name", "") or "")
+        参数文本 = build_select_settings_param_text(
+            settings_params=params,
+            background_filename=背景文件名,
+            arrow_filename=箭头文件名,
+        )
         patch = {
             "设置参数": dict(params),
+            "设置参数文本": str(参数文本 or ""),
             "动态背景": str(动态背景模式 or "关闭"),
-            "背景文件名": str(getattr(self._当前背景选项, "file_name", "") or ""),
-            "视频背景文件名": str(getattr(self._当前视频背景选项, "file_name", "") or ""),
-            "箭头文件名": str(getattr(self._当前箭头选项, "file_name", "") or ""),
+            "背景文件名": str(背景文件名),
+            "视频背景文件名": str(视频背景文件名),
+            "箭头文件名": str(箭头文件名),
         }
         write_scope_patch(SCOPE_SELECT_SETTINGS, patch)
         self._载荷.update(patch)
+        self._载荷["设置参数"] = dict(params)
         self._载荷["关闭视频背景"] = bool(self._背景模式 != "视频")
 
     def _save_esc_scope_patch(self, patch: Dict[str, object]):

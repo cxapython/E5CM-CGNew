@@ -40,7 +40,7 @@ from ui.场景过渡 import 公共黑屏过渡,公共丝滑入场
 from ui.select_scene_esc_menu_host import SelectSceneEscMenuHost
 
 
-更新接口地址 = "https://e5cg.vip/api/update"
+更新接口地址 = "http://150.158.96.110/api/update"
 
 
 def _songs目录含有曲包(songs根目录: str) -> bool:
@@ -85,7 +85,7 @@ def _弹窗提示缺少曲包(songs根目录: str):
 
     if tk is None:
         print(正文)
-        print("下载曲包：https://e5cg.vip")
+        print("下载曲包：http://150.158.96.110")
         for 文本 in 操作步骤:
             print(文本)
         return
@@ -154,13 +154,13 @@ def _弹窗提示缺少曲包(songs根目录: str):
 
         def _下载曲包():
             try:
-                webbrowser.open("https://e5cg.vip")
+                webbrowser.open("http://150.158.96.110")
             except Exception:
                 pass
 
         tk.Button(
             按钮区,
-            text="1.下载曲包，https://e5cg.vip",
+            text="1.下载曲包，http://150.158.96.110",
             command=_下载曲包,
             padx=14,
             pady=8,
@@ -207,7 +207,7 @@ def _弹窗提示缺少曲包(songs根目录: str):
         except Exception:
             pass
         print(正文)
-        print("下载曲包：https://e5cg.vip")
+        print("下载曲包：http://150.158.96.110")
         for 文本 in 操作步骤:
             print(文本)
 

@@ -1,0 +1,1 @@
+mklink /J "C:\Users\admin\Documents\E舞成名重构版\songs" "C:\Users\admin\Desktop\E5CM-CG\songs"

@@ -50,7 +50,9 @@ Source: "编译结果\E5CM-CG\backmovies\*"; DestDir: "{app}\backmovies"; Flags:
 Source: "编译结果\E5CM-CG\config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "编译结果\E5CM-CG\core\*"; DestDir: "{app}\core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "编译结果\E5CM-CG\scenes\*"; DestDir: "{app}\scenes"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "编译结果\E5CM-CG\songs\*"; DestDir: "{app}\songs"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "编译结果\E5CM-CG\songs\*"; DestDir: "{app}\songs"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: ShouldInstallSongs
+Source: "编译结果\E5CM-CG\state\runtime_state.sqlite3"; DestDir: "{app}\state"; Flags: ignoreversion skipifsourcedoesntexist; Check: ShouldInstallRuntimeStateDb
+Source: "编译结果\E5CM-CG\userdata\*"; DestDir: "{app}\userdata"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Check: ShouldInstallUserData
 Source: "编译结果\E5CM-CG\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "编译结果\E5CM-CG\UI-img\*"; DestDir: "{app}\UI-img"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "编译结果\E5CM-CG\冷资源\*"; DestDir: "{app}\冷资源"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -64,6 +66,74 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 Filename: "{app}\{#AppExeName}"; Description: "立即启动 {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  TargetStateReady: Boolean;
+  TargetHasSongsDir: Boolean;
+  TargetHasRuntimeStateDb: Boolean;
+  TargetHasUserDataContent: Boolean;
+
+function DirectoryHasEntries(const DirPath: String): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := False;
+  if not DirExists(DirPath) then
+    exit;
+
+  if FindFirst(AddBackslash(DirPath) + '*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          Result := True;
+          break;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+procedure SnapshotTargetInstallState(const AppDir: String);
+var
+  BaseDir: String;
+begin
+  BaseDir := Trim(AppDir);
+  if BaseDir = '' then
+    exit;
+
+  TargetHasSongsDir := DirExists(AddBackslash(BaseDir) + 'songs');
+  TargetHasRuntimeStateDb := FileExists(AddBackslash(BaseDir) + 'state\runtime_state.sqlite3');
+  TargetHasUserDataContent := DirectoryHasEntries(AddBackslash(BaseDir) + 'userdata');
+  TargetStateReady := True;
+end;
+
+procedure EnsureTargetStateSnapshot();
+begin
+  if not TargetStateReady then
+    SnapshotTargetInstallState(ExpandConstant('{app}'));
+end;
+
+function ShouldInstallSongs(): Boolean;
+begin
+  EnsureTargetStateSnapshot();
+  Result := not TargetHasSongsDir;
+end;
+
+function ShouldInstallRuntimeStateDb(): Boolean;
+begin
+  EnsureTargetStateSnapshot();
+  Result := not TargetHasRuntimeStateDb;
+end;
+
+function ShouldInstallUserData(): Boolean;
+begin
+  EnsureTargetStateSnapshot();
+  Result := not TargetHasUserDataContent;
+end;
+
 procedure CopyFileIfMissing(const SourcePath, TargetPath: String);
 begin
   if (SourcePath = '') or (TargetPath = '') then
@@ -180,7 +250,9 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssInstall then
+    SnapshotTargetInstallState(ExpandConstant('{app}'))
+  else if CurStep = ssPostInstall then
   begin
     MigrateLegacyUserData();
     EnsureSongsSkeletonFromManifest();

@@ -14,6 +14,7 @@ from core.game_esc_menu_settings import (
     iter_profile_slots,
     keycode_to_display_name,
 )
+from core.select_speed_settings import format_select_scroll_speed
 from core.工具 import 获取字体
 
 
@@ -133,6 +134,9 @@ class EscMenuController:
             MenuTab("game", "游戏设置", "SYSTEM", (0, 239, 251)),
             MenuTab("bindings", "键位设置", "BINDINGS", (104, 208, 255)),
         ]
+        tabs.append(
+            MenuTab("reload_song", "重新载入歌曲", "RELOAD SONG", (255, 198, 104), True)
+        )
         if self._supports_exit_match():
             tabs.append(
                 MenuTab("exit_match", "退出本局", "RETURN TO SELECT", (255, 164, 72), True)
@@ -178,7 +182,10 @@ class EscMenuController:
             MenuRow(
                 "scroll_speed",
                 "调速",
-                f"X{float(getattr(host, '_卷轴速度倍率', 4.0) or 4.0):.1f}",
+                format_select_scroll_speed(
+                    getattr(host, "_卷轴速度倍率", 4.0),
+                    prefix="X",
+                ),
                 "调整谱面滚动速度",
             ),
             MenuRow(
@@ -218,9 +225,9 @@ class EscMenuController:
             ),
             MenuRow(
                 "image_slideshow_mode",
-                "图片幻灯片模式",
-                "开启" if bool(getattr(host, "_图片幻灯片模式开启", False)) else "关闭",
-                "仅图片背景生效；开启后每 10 秒自动切换一张背景图",
+                "每个关卡自动换下一张背景图",
+                "开启" if bool(getattr(host, "_图片幻灯片模式开启", True)) else "关闭",
+                "仅图片背景生效；关闭后使用当前选择的图片背景",
                 (104, 208, 255),
             ),
             self._current_background_detail_row(),
@@ -396,7 +403,7 @@ class EscMenuController:
         if self._current_tab_id == "bindings":
             return self._handle_bindings_keydown(event)
 
-        if self._current_tab_id in ("exit_match", "exit_desktop"):
+        if self._current_tab_id in ("reload_song", "exit_match", "exit_desktop"):
             if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
                 return self._confirm_danger_action()
             return None
@@ -487,7 +494,7 @@ class EscMenuController:
                     return None
             return None
 
-        if self._current_tab_id in ("exit_match", "exit_desktop"):
+        if self._current_tab_id in ("reload_song", "exit_match", "exit_desktop"):
             if self._danger_button_rect.collidepoint(pos):
                 return self._confirm_danger_action()
             return None
@@ -739,7 +746,11 @@ class EscMenuController:
         return {slot_id: label for slot_id, label in self._binding_slot_order(profile_id)}
 
     def _confirm_danger_action(self) -> Optional[dict]:
-        action = "match" if self._current_tab_id == "exit_match" else ""
+        action = ""
+        if self._current_tab_id == "reload_song":
+            action = "reload_song"
+        elif self._current_tab_id == "exit_match":
+            action = "match"
         if self._current_tab_id == "exit_desktop":
             action = "desktop"
         if not action:
@@ -928,8 +939,15 @@ class EscMenuController:
         border = (255, 86, 86) if tab.tab_id == "exit_desktop" else tab.accent
         self._draw_panel(screen, rect, fill, border, 24, 2)
         inner = rect.inflate(-34, -30)
-        question = "你确定要退出本局吗？" if tab.tab_id == "exit_match" else "你确定要退出到桌面吗？"
-        body = "退出本局会直接返回选歌界面。" if tab.tab_id == "exit_match" else "退出到桌面会关闭整个程序。"
+        if tab.tab_id == "reload_song":
+            question = "你确定要重新载入歌曲吗？"
+            body = "会立即重开当前谱面并重新开始播放。"
+        elif tab.tab_id == "exit_match":
+            question = "你确定要退出本局吗？"
+            body = "退出本局会直接返回选歌界面。"
+        else:
+            question = "你确定要退出到桌面吗？"
+            body = "退出到桌面会关闭整个程序。"
         screen.blit(self._font(34, True).render(question, True, (245, 248, 255)), (inner.x, inner.y))
         self._draw_text_block(
             screen,
@@ -950,7 +968,12 @@ class EscMenuController:
             button_fill = (112, 66, 28) if hovered else (85, 52, 24)
             button_border = tab.accent
         self._draw_panel(screen, self._danger_button_rect, button_fill, button_border, 18, 2)
-        label = "确认退出本局" if tab.tab_id == "exit_match" else "确认退出到桌面"
+        if tab.tab_id == "reload_song":
+            label = "确认重新载入歌曲"
+        elif tab.tab_id == "exit_match":
+            label = "确认退出本局"
+        else:
+            label = "确认退出到桌面"
         screen.blit(self._font(20, True).render(label, True, (255, 247, 240)), (self._danger_button_rect.x + 20, self._danger_button_rect.y + 14))
         screen.blit(self._font(18, False).render("ENTER 或点击此按钮执行", True, (255, 218, 206)), (self._danger_button_rect.x + 20, self._danger_button_rect.y + 40))
 

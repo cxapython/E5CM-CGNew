@@ -19,6 +19,9 @@ from core.常量与路径 import (
     取调试配置路径 as _公共取调试配置路径,
 )
 from core.动态背景 import DynamicBackgroundContext, DynamicBackgroundManager
+from core.game_esc_menu_settings import (
+    GAME_ESC_SETTINGS_KEY_IMAGE_SLIDESHOW as _游戏esc图片幻灯片模式键,
+)
 from core.工具 import 获取字体 as _公共获取字体
 from core.图片缓存 import 本地图片缓存 as _本地图片缓存
 from core.sqlite_store import (
@@ -1190,6 +1193,17 @@ def _读取关卡背景映射(
     _同步关卡背景状态(self, 关卡背景映射)
     return dict(关卡背景映射)
 
+def _图片幻灯片模式是否开启(self, 默认值: bool = True) -> bool:
+    try:
+        esc数据 = _读取存储作用域(_游戏esc菜单设置存储作用域)
+    except Exception:
+        esc数据 = {}
+    if not isinstance(esc数据, dict):
+        return bool(默认值)
+    if _游戏esc图片幻灯片模式键 not in esc数据:
+        return bool(默认值)
+    return bool(esc数据.get(_游戏esc图片幻灯片模式键))
+
 def _按关卡解析图片背景文件名(
     self,
     背景文件名: str,
@@ -1217,9 +1231,10 @@ def _按关卡解析图片背景文件名(
     )
     当前关卡 = _取当前对局关卡(self, 1)
     关卡键 = str(int(当前关卡))
+    图片幻灯片模式开启 = bool(_图片幻灯片模式是否开启(self, 默认值=True))
 
     # 图片模式下按关卡轮询背景图：第N局使用列表中的第N张（超出后循环）
-    if 可用背景文件名列表:
+    if bool(图片幻灯片模式开启) and 可用背景文件名列表:
         轮询背景 = str(
             可用背景文件名列表[
                 int((int(当前关卡) - 1) % len(可用背景文件名列表))
@@ -1246,6 +1261,26 @@ def _按关卡解析图片背景文件名(
             return 轮询背景
 
     选中背景 = str(关卡背景映射.get(关卡键, "") or "").strip()
+    if not bool(图片幻灯片模式开启):
+        选中背景 = str(背景文件名 or "").strip() or 选中背景
+        if (not 选中背景) and 可用背景文件名列表:
+            选中背景 = str(可用背景文件名列表[0] or "").strip()
+        if bool(自动补全) and 选中背景:
+            已更新 = str(关卡背景映射.get(关卡键, "") or "").strip() != 选中背景
+            if 已更新:
+                关卡背景映射[关卡键] = str(选中背景)
+                self.设置_背景文件名按关卡 = dict(关卡背景映射)
+                _同步关卡背景状态(self, 关卡背景映射)
+                try:
+                    _写入存储作用域(
+                        _选歌设置存储作用域,
+                        {
+                            "背景文件名_按关卡": dict(关卡背景映射),
+                            "背景文件名": str(选中背景),
+                        },
+                    )
+                except Exception:
+                    pass
     if (not 选中背景) and bool(自动补全):
         候选背景 = str(背景文件名 or "").strip()
         if 可用背景文件名列表 and 候选背景 not in 可用背景文件名列表:

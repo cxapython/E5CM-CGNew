@@ -3,20 +3,15 @@ from __future__ import annotations
 from typing import List, Tuple
 
 
-SELECT_SCROLL_SPEED_OPTIONS: Tuple[str, ...] = (
-    "1.0",
-    "1.5",
-    "2.0",
-    "2.5",
-    "3.0",
-    "3.5",
-    "4.0",
-    "4.5",
-    "5.0",
-    "5.5",
-    "6.0",
-    "6.5",
-    "7.0",
+def _format_speed_option(value: float) -> str:
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text = f"{text}.0"
+    return text
+
+
+SELECT_SCROLL_SPEED_OPTIONS: Tuple[str, ...] = tuple(
+    _format_speed_option(float(scaled) / 4.0) for scaled in range(4, 29)
 )
 DEFAULT_SELECT_SCROLL_SPEED_OPTION = "4.0"
 DEFAULT_SELECT_SCROLL_SPEED = float(DEFAULT_SELECT_SCROLL_SPEED_OPTION)

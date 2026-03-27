@@ -4595,6 +4595,14 @@ class 场景_谱面播放器(场景基类):
         self._暂停菜单开启 = False
         self._关闭ESC菜单视频预览播放器()
         self._游戏ESC菜单控制器.close()
+        if str(target) == "reload_song":
+            新载荷 = dict(self._载荷)
+            新载荷["操作反馈文本"] = "ESC菜单:歌曲重载成功"
+            return {
+                "切换到": "谱面播放器",
+                "载荷": 新载荷,
+                "禁用黑屏过渡": True,
+            }
         if str(target) == "match":
             状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else None
             return _执行共享返回选歌(状态, getattr(self, "_载荷", {}))
@@ -5874,15 +5882,6 @@ class 场景_谱面播放器(场景基类):
                 self._设置操作反馈("SPACE:谱面播放已继续")
             return None
 
-        if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_r:
-            新载荷 = dict(self._载荷)
-            新载荷["操作反馈文本"] = "R:歌曲重载成功"
-            return {
-                "切换到": "谱面播放器",
-                "载荷": 新载荷,
-                "禁用黑屏过渡": True,
-            }
-
         输入标识 = binding_from_event(事件)
         轨道 = self._按键到轨道.get(str(输入标识 or ""), None)
         if 轨道 is not None:
@@ -6677,7 +6676,6 @@ class 场景_谱面播放器(场景基类):
             f"{投币键显示} 投币",
             f"F2 自动播放 {'开' if bool(getattr(self, '_是否自动模式', False)) else '关'}",
             "SPACE 暂停/继续",
-            "R 重载歌曲",
             "ESC 设置菜单",
         ]
         if bool(getattr(self, "_是否双踏板模式", False)):

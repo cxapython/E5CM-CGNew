@@ -12,6 +12,7 @@ from core.game_esc_menu_settings import (
     GAME_ESC_SETTINGS_KEY_BINDINGS,
     GAME_ESC_SETTINGS_KEY_BPM_SCROLL_EFFECT,
     GAME_ESC_SETTINGS_KEY_CHART_VISUAL_OFFSET_MS,
+    GAME_ESC_SETTINGS_KEY_IMAGE_SLIDESHOW,
     PROFILE_DOUBLE,
     PROFILE_SINGLE,
     ArrowSkinOption,
@@ -89,6 +90,7 @@ class SelectSceneEscMenuHost:
         self._视频背景关闭 = True
         self._性能模式 = False
         self._是否自动模式 = False
+        self._图片幻灯片模式开启 = True
         self._是否双踏板模式 = False
         self._谱面视觉偏移毫秒 = 0
         self._BPM变速效果开启 = False
@@ -209,6 +211,9 @@ class SelectSceneEscMenuHost:
         self._动态背景模式 = str(params.get("动态背景", "唱片") or "唱片")
         self._性能模式 = bool(esc_data.get("性能模式", False))
         self._是否自动模式 = bool(esc_data.get(GAME_ESC_SETTINGS_KEY_AUTOPLAY, False))
+        self._图片幻灯片模式开启 = bool(
+            esc_data.get(GAME_ESC_SETTINGS_KEY_IMAGE_SLIDESHOW, True)
+        )
         self._谱面视觉偏移毫秒 = int(read_saved_chart_visual_offset_ms(esc_data))
         self._BPM变速效果开启 = bool(
             read_saved_bpm_scroll_effect(esc_data) or False
@@ -351,6 +356,19 @@ class SelectSceneEscMenuHost:
             if self._背景模式 == "动态背景" and self._动态背景模式 == "关闭":
                 self._动态背景模式 = str((self._菜单动态背景选项 or ["唱片"])[0])
             self._save_select_visual_settings()
+            return None
+
+        if key == "image_slideshow_mode":
+            self._图片幻灯片模式开启 = not bool(
+                getattr(self, "_图片幻灯片模式开启", True)
+            )
+            self._save_esc_scope_patch(
+                {
+                    GAME_ESC_SETTINGS_KEY_IMAGE_SLIDESHOW: bool(
+                        self._图片幻灯片模式开启
+                    )
+                }
+            )
             return None
 
         if key == "dynamic_background":

@@ -21,6 +21,21 @@ from core.工具 import 获取字体
 Color = Tuple[int, int, int]
 GridPoint = Tuple[int, int]
 
+_MENU_UP_KEYS = (pygame.K_w, pygame.K_UP)
+_MENU_DOWN_KEYS = (pygame.K_s, pygame.K_DOWN)
+_MENU_LEFT_KEYS = (pygame.K_a, pygame.K_LEFT)
+_MENU_RIGHT_KEYS = (pygame.K_d, pygame.K_RIGHT)
+_MENU_CONFIRM_KEYS = (
+    pygame.K_RETURN,
+    pygame.K_KP_ENTER,
+    pygame.K_SPACE,
+)
+_PEDAL_PREV_KEYS = (pygame.K_1, pygame.K_KP1)
+_PEDAL_NEXT_KEYS = (pygame.K_3, pygame.K_KP3)
+_PEDAL_CONFIRM_KEYS = (pygame.K_5, pygame.K_KP5)
+_PEDAL_TAB_PREV_KEYS = (pygame.K_7, pygame.K_KP7)
+_PEDAL_TAB_NEXT_KEYS = (pygame.K_9, pygame.K_KP9)
+
 
 @dataclass(frozen=True)
 class MenuTab:
@@ -59,6 +74,7 @@ class EscMenuController:
         self._hover_tab_id: Optional[str] = None
         self._hover_row_id: Optional[str] = None
         self._hover_binding_id: Optional[str] = None
+        self._last_mouse_pos: Optional[Tuple[int, int]] = None
         self._tab_rects: Dict[str, pygame.Rect] = {}
         self._row_hitboxes: Dict[str, Dict[str, pygame.Rect]] = {}
         self._binding_hitboxes: Dict[str, pygame.Rect] = {}
@@ -66,6 +82,13 @@ class EscMenuController:
         self._profile_next_rect = pygame.Rect(0, 0, 0, 0)
         self._profile_label_rect = pygame.Rect(0, 0, 0, 0)
         self._danger_button_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_row_id: Optional[str] = None
+        self._dropdown_tab_id = ""
+        self._dropdown_options: List[Dict[str, Any]] = []
+        self._dropdown_selected_index = 0
+        self._dropdown_anchor_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_panel_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_option_hitboxes: Dict[str, pygame.Rect] = {}
         self._font_cache: Dict[Tuple[int, bool, bool], pygame.font.Font] = {}
 
     def open(self):
@@ -73,6 +96,7 @@ class EscMenuController:
         self._hover_tab_id = None
         self._hover_row_id = None
         self._hover_binding_id = None
+        self._last_mouse_pos = None
         self._waiting_binding = None
         self._binding_profile_id = (
             PROFILE_DOUBLE
@@ -80,6 +104,7 @@ class EscMenuController:
             else PROFILE_SINGLE
         )
         self._binding_focus_id = "profile"
+        self._close_dropdown()
         tab_ids = [tab.tab_id for tab in self._tabs()]
         if self._current_tab_id not in tab_ids:
             self._current_tab_id = tab_ids[0] if tab_ids else "chart"
@@ -89,6 +114,7 @@ class EscMenuController:
         self._hover_tab_id = None
         self._hover_row_id = None
         self._hover_binding_id = None
+        self._last_mouse_pos = None
         self._waiting_binding = None
         self._tab_rects = {}
         self._row_hitboxes = {}
@@ -97,6 +123,7 @@ class EscMenuController:
         self._profile_next_rect = pygame.Rect(0, 0, 0, 0)
         self._profile_label_rect = pygame.Rect(0, 0, 0, 0)
         self._danger_button_rect = pygame.Rect(0, 0, 0, 0)
+        self._close_dropdown()
 
     def is_open(self) -> bool:
         return bool(self._open)
@@ -131,7 +158,7 @@ class EscMenuController:
         tabs = [
             MenuTab("chart", "谱面设置", "CHART", (0, 239, 251)),
             MenuTab("background", "背景设置", "BACKGROUND", (110, 197, 255)),
-            MenuTab("game", "游戏设置", "SYSTEM", (0, 239, 251)),
+            MenuTab("game", "游戏/分辨率设置", "GAME / DISPLAY", (0, 239, 251)),
             MenuTab("bindings", "键位设置", "BINDINGS", (104, 208, 255)),
         ]
         tabs.append(
@@ -235,7 +262,7 @@ class EscMenuController:
                 "brightness",
                 "背景亮度切换",
                 str(host._取背景亮度菜单文本()),
-                "调整背景亮度蒙版",
+                "图片/视频/动态背景均可调蒙版亮度",
                 preview_kind="current",
             ),
         ]
@@ -281,20 +308,64 @@ class EscMenuController:
 
     def _game_rows(self) -> List[MenuRow]:
         host = self._host
-        return [
-            MenuRow(
-                "performance_mode",
-                "极简性能模式",
-                "开启" if bool(getattr(host, "_性能模式", False)) else "关闭",
-                "关闭重型效果，优先保证帧率",
-            ),
-            MenuRow(
-                "autoplay",
-                "自动播放",
-                "开启" if bool(getattr(host, "_是否自动模式", False)) else "关闭",
-                "切换自动判定 / 演示模式",
-            ),
-        ]
+        rows: List[MenuRow] = []
+        支持显示设置 = False
+        支持检查 = getattr(host, "_esc_menu_supports_display_settings", None)
+        if callable(支持检查):
+            try:
+                支持显示设置 = bool(支持检查())
+            except Exception:
+                支持显示设置 = False
+        if 支持显示设置:
+            rows.extend(
+                [
+                    MenuRow(
+                        "display_mode",
+                        "显示模式",
+                        str(getattr(host, "_取显示模式菜单文本", lambda: "窗口")()),
+                        "切换窗口 / 无边框窗口显示",
+                    ),
+                    MenuRow(
+                        "display_resolution",
+                        "分辨率",
+                        str(getattr(host, "_取分辨率菜单文本", lambda: "未知")()),
+                        "展开列表后直接选择当前显示模式下的分辨率",
+                        adjustable=False,
+                        meta={"selector": "dropdown"},
+                    ),
+                    MenuRow(
+                        "render_backend",
+                        "渲染引擎",
+                        str(getattr(host, "_取渲染引擎菜单文本", lambda: "GPU-Auto")()),
+                        "切换 D3D11 / OpenGL / CPU，并在右侧查看优缺点",
+                        adjustable=False,
+                        meta={"selector": "dropdown"},
+                    ),
+                ]
+            )
+        rows.extend(
+            [
+                MenuRow(
+                    "status_hud",
+                    "状态HUD",
+                    str(getattr(host, "_取状态HUD菜单文本", lambda: "开启")()),
+                    "显示右下角 FPS / 渲染后端 / 分辨率",
+                ),
+                MenuRow(
+                    "performance_mode",
+                    "极简性能模式",
+                    "开启" if bool(getattr(host, "_性能模式", False)) else "关闭",
+                    "关闭重型效果，优先保证帧率",
+                ),
+                MenuRow(
+                    "autoplay",
+                    "自动播放",
+                    "开启" if bool(getattr(host, "_是否自动模式", False)) else "关闭",
+                    "切换自动判定 / 演示模式",
+                ),
+            ]
+        )
+        return rows
 
     def _resolve_background_label(self) -> str:
         current_file = str(getattr(self._host, "_载荷", {}).get("背景文件名", "") or "")
@@ -369,6 +440,9 @@ class EscMenuController:
         key = int(getattr(event, "key", 0))
         mod = int(getattr(event, "mod", 0))
 
+        if self._is_dropdown_open():
+            return self._handle_dropdown_keydown(event)
+
         if key == pygame.K_ESCAPE:
             return {"close_menu": True}
 
@@ -381,21 +455,36 @@ class EscMenuController:
         if key == pygame.K_e:
             self._change_tab(1)
             return None
+        if key in _PEDAL_TAB_PREV_KEYS:
+            self._change_tab(-1)
+            return None
+        if key in _PEDAL_TAB_NEXT_KEYS:
+            self._change_tab(1)
+            return None
 
         if self._current_tab_id in ("chart", "background", "game"):
-            if key in (pygame.K_w, pygame.K_UP):
+            if key in _PEDAL_PREV_KEYS:
                 self._move_list_selection(-1)
                 return None
-            if key in (pygame.K_s, pygame.K_DOWN):
+            if key in _PEDAL_NEXT_KEYS:
                 self._move_list_selection(1)
                 return None
-            if key in (pygame.K_a, pygame.K_LEFT):
-                self._apply_active_row(-1)
-                return None
-            if key in (pygame.K_d, pygame.K_RIGHT):
+            if key in _PEDAL_CONFIRM_KEYS:
                 self._apply_active_row(1)
                 return None
-            if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            if key in _MENU_UP_KEYS:
+                self._move_list_selection(-1)
+                return None
+            if key in _MENU_DOWN_KEYS:
+                self._move_list_selection(1)
+                return None
+            if key in _MENU_LEFT_KEYS:
+                self._apply_active_row(-1)
+                return None
+            if key in _MENU_RIGHT_KEYS:
+                self._apply_active_row(1)
+                return None
+            if key in _MENU_CONFIRM_KEYS:
                 self._apply_active_row(1)
                 return None
             return None
@@ -404,7 +493,7 @@ class EscMenuController:
             return self._handle_bindings_keydown(event)
 
         if self._current_tab_id in ("reload_song", "exit_match", "exit_desktop"):
-            if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            if key in _MENU_CONFIRM_KEYS or key in _PEDAL_CONFIRM_KEYS:
                 return self._confirm_danger_action()
             return None
 
@@ -412,34 +501,40 @@ class EscMenuController:
 
     def _handle_bindings_keydown(self, event: pygame.event.Event) -> Optional[dict]:
         key = int(getattr(event, "key", 0))
+        if key in _PEDAL_PREV_KEYS:
+            self._move_binding_focus_linear(-1)
+            return None
+        if key in _PEDAL_NEXT_KEYS:
+            self._move_binding_focus_linear(1)
+            return None
         if self._binding_focus_id == "profile":
-            if key in (pygame.K_a, pygame.K_LEFT):
+            if key in _MENU_LEFT_KEYS:
                 self._toggle_binding_profile(-1)
                 return None
-            if key in (pygame.K_d, pygame.K_RIGHT):
+            if key in _MENU_RIGHT_KEYS:
                 self._toggle_binding_profile(1)
                 return None
-            if key in (pygame.K_s, pygame.K_DOWN):
+            if key in _MENU_DOWN_KEYS:
                 self._binding_focus_id = self._binding_default_focus()
                 return None
-            if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            if key in _MENU_CONFIRM_KEYS or key in _PEDAL_CONFIRM_KEYS:
                 self._toggle_binding_profile(1)
                 return None
             return None
 
-        if key in (pygame.K_w, pygame.K_UP):
+        if key in _MENU_UP_KEYS:
             self._move_binding_focus(0, -1)
             return None
-        if key in (pygame.K_s, pygame.K_DOWN):
+        if key in _MENU_DOWN_KEYS:
             self._move_binding_focus(0, 1)
             return None
-        if key in (pygame.K_a, pygame.K_LEFT):
+        if key in _MENU_LEFT_KEYS:
             self._move_binding_focus(-1, 0)
             return None
-        if key in (pygame.K_d, pygame.K_RIGHT):
+        if key in _MENU_RIGHT_KEYS:
             self._move_binding_focus(1, 0)
             return None
-        if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+        if key in _MENU_CONFIRM_KEYS or key in _PEDAL_CONFIRM_KEYS:
             self._begin_binding_capture(self._binding_focus_id)
             return None
         return None
@@ -451,6 +546,10 @@ class EscMenuController:
         self._hover_binding_id = None
         if pos is None:
             return
+        try:
+            self._last_mouse_pos = (int(pos[0]), int(pos[1]))
+        except Exception:
+            self._last_mouse_pos = None
         for tab_id, rect in self._tab_rects.items():
             if rect.collidepoint(pos):
                 self._hover_tab_id = str(tab_id)
@@ -466,11 +565,35 @@ class EscMenuController:
             if rect.collidepoint(pos):
                 self._hover_binding_id = str(binding_id)
                 break
+        if self._is_dropdown_open():
+            for index, option in enumerate(self._dropdown_options):
+                option_id = str(option.get("id", "") or "")
+                rect = self._dropdown_option_hitboxes.get(option_id)
+                if rect is not None and rect.collidepoint(pos):
+                    self._dropdown_selected_index = int(index)
+                    break
 
     def _handle_left_click(self, event: pygame.event.Event) -> Optional[dict]:
         pos = getattr(event, "pos", None)
         if pos is None:
             return None
+        try:
+            self._last_mouse_pos = (int(pos[0]), int(pos[1]))
+        except Exception:
+            self._last_mouse_pos = None
+
+        if self._is_dropdown_open():
+            row_hitboxes = self._row_hitboxes.get(self._current_tab_id, {})
+            dropdown_body = row_hitboxes.get(f"{self._dropdown_row_id}:body")
+            dropdown_selector = row_hitboxes.get(f"{self._dropdown_row_id}:selector")
+            if (
+                (dropdown_selector is not None and dropdown_selector.collidepoint(pos))
+                or (dropdown_body is not None and dropdown_body.collidepoint(pos))
+            ):
+                self._close_dropdown()
+                return None
+            if self._handle_dropdown_click(pos):
+                return None
 
         for tab_id, rect in self._tab_rects.items():
             if rect.collidepoint(pos):
@@ -504,6 +627,12 @@ class EscMenuController:
             body_rect = row_hitboxes.get(f"{row.row_id}:body")
             if body_rect is not None and body_rect.collidepoint(pos):
                 self._set_active_row(str(row.row_id))
+                if self._row_uses_dropdown(row):
+                    if self._dropdown_row_id == str(row.row_id):
+                        self._close_dropdown()
+                    else:
+                        self._open_dropdown(str(row.row_id))
+                    return None
                 return None
             if row.adjustable:
                 left_rect = row_hitboxes.get(f"{row.row_id}:left")
@@ -536,6 +665,7 @@ class EscMenuController:
                 index = 0
             self._current_tab_id = str(tab_ids[(index + step) % len(tab_ids)])
         self._waiting_binding = None
+        self._close_dropdown()
         if self._current_tab_id == "bindings":
             self._binding_focus_id = "profile"
 
@@ -545,6 +675,7 @@ class EscMenuController:
             return
         current_index = int(self._selected_rows.get(self._current_tab_id, 0) or 0)
         self._selected_rows[self._current_tab_id] = (current_index + int(step)) % len(rows)
+        self._close_dropdown()
 
     def _active_row(self) -> Optional[MenuRow]:
         rows = self._rows_for_tab()
@@ -558,6 +689,8 @@ class EscMenuController:
         for index, row in enumerate(rows):
             if str(row.row_id) == str(row_id):
                 self._selected_rows[self._current_tab_id] = int(index)
+                if self._dropdown_row_id != str(row_id):
+                    self._close_dropdown()
                 return
 
     def _apply_active_row(self, step: int):
@@ -567,7 +700,15 @@ class EscMenuController:
 
     def _apply_row(self, row_id: str, step: int):
         row = next((item for item in self._rows_for_tab() if item.row_id == row_id), None)
-        if row is None or not bool(row.adjustable):
+        if row is None:
+            return
+        if self._row_uses_dropdown(row):
+            if self._dropdown_row_id == str(row_id):
+                self._apply_dropdown_selection()
+            else:
+                self._open_dropdown(str(row_id))
+            return
+        if not bool(row.adjustable):
             return
         target_row_id = str(
             (
@@ -721,6 +862,23 @@ class EscMenuController:
             candidates.sort(key=lambda item: (item[0], item[1], item[2]))
             self._binding_focus_id = str(candidates[0][2])
 
+    def _move_binding_focus_linear(self, step: int):
+        顺序 = ["profile"] + [slot_id for slot_id, _ in self._binding_slot_order()]
+        if not 顺序:
+            return
+        当前焦点 = (
+            str(self._binding_focus_id)
+            if str(self._binding_focus_id) in 顺序
+            else str(self._binding_default_focus())
+        )
+        try:
+            当前索引 = 顺序.index(当前焦点)
+        except Exception:
+            当前索引 = 0
+        self._binding_focus_id = str(
+            顺序[(int(当前索引) + int(step)) % len(顺序)]
+        )
+
     def _begin_binding_capture(self, slot_id: str):
         if not slot_id:
             return
@@ -771,9 +929,190 @@ class EscMenuController:
             except Exception:
                 pass
 
+    def _row_uses_dropdown(self, row: Optional[MenuRow]) -> bool:
+        if row is None:
+            return False
+        if isinstance(row.meta, dict) and str(row.meta.get("selector", "") or "").strip().lower() == "dropdown":
+            return True
+        checker = getattr(self._host, "_esc_menu_has_dropdown", None)
+        if callable(checker):
+            try:
+                return bool(checker(str(row.row_id)))
+            except Exception:
+                return False
+        return False
+
+    def _is_dropdown_open(self) -> bool:
+        return bool(self._dropdown_row_id and self._dropdown_options)
+
+    def _close_dropdown(self):
+        self._dropdown_row_id = None
+        self._dropdown_tab_id = ""
+        self._dropdown_options = []
+        self._dropdown_selected_index = 0
+        self._dropdown_anchor_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_panel_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_option_hitboxes = {}
+
+    def _open_dropdown(self, row_id: str):
+        getter = getattr(self._host, "_esc_menu_get_dropdown_options", None)
+        if not callable(getter):
+            return
+        try:
+            raw_options = getter(str(row_id))
+        except Exception:
+            raw_options = []
+        options: List[Dict[str, Any]] = []
+        selected_index = 0
+        for index, item in enumerate(list(raw_options or [])):
+            if not isinstance(item, dict):
+                continue
+            option_id = str(item.get("id", "") or "").strip()
+            label = str(item.get("label", option_id) or option_id).strip()
+            if not option_id or not label:
+                continue
+            option = {
+                "id": option_id,
+                "label": label,
+                "selected": bool(item.get("selected", False)),
+            }
+            if bool(option["selected"]):
+                selected_index = len(options)
+            options.append(option)
+        if not options:
+            return
+        self._dropdown_row_id = str(row_id)
+        self._dropdown_tab_id = str(self._current_tab_id)
+        self._dropdown_options = options
+        self._dropdown_selected_index = int(max(0, min(len(options) - 1, selected_index)))
+        self._dropdown_anchor_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_panel_rect = pygame.Rect(0, 0, 0, 0)
+        self._dropdown_option_hitboxes = {}
+
+    def _move_dropdown_selection(self, step: int):
+        if not self._is_dropdown_open():
+            return
+        option_count = len(self._dropdown_options)
+        if option_count <= 0:
+            return
+        self._dropdown_selected_index = int(
+            (int(self._dropdown_selected_index) + int(step)) % int(option_count)
+        )
+
+    def _handle_dropdown_keydown(self, event: pygame.event.Event) -> Optional[dict]:
+        key = int(getattr(event, "key", 0))
+        mod = int(getattr(event, "mod", 0))
+        if key == pygame.K_ESCAPE:
+            self._close_dropdown()
+            return None
+        if key == pygame.K_TAB:
+            self._close_dropdown()
+            self._change_tab(-1 if (mod & pygame.KMOD_SHIFT) else 1)
+            return None
+        if key == pygame.K_q:
+            self._close_dropdown()
+            self._change_tab(-1)
+            return None
+        if key == pygame.K_e:
+            self._close_dropdown()
+            self._change_tab(1)
+            return None
+        if key in _PEDAL_TAB_PREV_KEYS:
+            self._close_dropdown()
+            self._change_tab(-1)
+            return None
+        if key in _PEDAL_TAB_NEXT_KEYS:
+            self._close_dropdown()
+            self._change_tab(1)
+            return None
+        if key in _MENU_UP_KEYS or key in _PEDAL_PREV_KEYS or key in _MENU_LEFT_KEYS:
+            self._move_dropdown_selection(-1)
+            return None
+        if key in _MENU_DOWN_KEYS or key in _PEDAL_NEXT_KEYS or key in _MENU_RIGHT_KEYS:
+            self._move_dropdown_selection(1)
+            return None
+        if key in _MENU_CONFIRM_KEYS or key in _PEDAL_CONFIRM_KEYS:
+            self._apply_dropdown_selection()
+            return None
+        return None
+
+    def _handle_dropdown_click(self, pos: Tuple[int, int]) -> bool:
+        if not self._is_dropdown_open():
+            return False
+        if self._dropdown_panel_rect.collidepoint(pos):
+            for index, option in enumerate(self._dropdown_options):
+                option_id = str(option.get("id", "") or "")
+                rect = self._dropdown_option_hitboxes.get(option_id)
+                if rect is not None and rect.collidepoint(pos):
+                    self._dropdown_selected_index = int(index)
+                    self._apply_dropdown_selection()
+                    return True
+            return True
+        self._close_dropdown()
+        return False
+
+    def _apply_dropdown_selection(self):
+        if not self._is_dropdown_open():
+            return
+        row_id = str(self._dropdown_row_id or "")
+        index = int(max(0, min(len(self._dropdown_options) - 1, self._dropdown_selected_index)))
+        option = self._dropdown_options[index] if self._dropdown_options else {}
+        option_id = str(option.get("id", "") or "").strip()
+        if (not row_id) or (not option_id):
+            self._close_dropdown()
+            return
+        applier = getattr(self._host, "_esc_menu_apply_dropdown_option", None)
+        if callable(applier):
+            try:
+                applier(row_id, option_id)
+            except Exception:
+                pass
+        self._close_dropdown()
+
+    def _get_mouse_pos(self, screen: pygame.Surface) -> Tuple[int, int]:
+        事件坐标 = getattr(self, "_last_mouse_pos", None)
+        try:
+            pos = tuple(int(v) for v in pygame.mouse.get_pos())
+        except Exception:
+            pos = (0, 0)
+        try:
+            context = getattr(self._host, "_context", None)
+            if not isinstance(context, dict):
+                context = getattr(self._host, "上下文", None)
+            backend = context.get("显示后端", None) if isinstance(context, dict) else None
+            if bool(getattr(backend, "使用逻辑坐标映射", lambda: False)()):
+                if isinstance(事件坐标, tuple) and len(事件坐标) >= 2:
+                    return (int(事件坐标[0]), int(事件坐标[1]))
+                return pos
+            output_getter = getattr(backend, "取输出尺寸", None)
+            if callable(output_getter):
+                输出尺寸 = tuple(int(v) for v in output_getter())
+            else:
+                输出尺寸 = tuple(int(v) for v in screen.get_size())
+        except Exception:
+            输出尺寸 = tuple(int(v) for v in screen.get_size())
+        try:
+            渲染尺寸 = tuple(int(v) for v in screen.get_size())
+            if (
+                len(输出尺寸) >= 2
+                and len(渲染尺寸) >= 2
+                and int(输出尺寸[0]) > 0
+                and int(输出尺寸[1]) > 0
+                and tuple(输出尺寸[:2]) != tuple(渲染尺寸[:2])
+            ):
+                比例x = float(渲染尺寸[0]) / float(max(1, int(输出尺寸[0])))
+                比例y = float(渲染尺寸[1]) / float(max(1, int(输出尺寸[1])))
+                return (
+                    int(round(float(pos[0]) * 比例x)),
+                    int(round(float(pos[1]) * 比例y)),
+                )
+        except Exception:
+            pass
+        return pos
+
     def _draw_root(self, screen: pygame.Surface):
         width, height = screen.get_size()
-        mouse_pos = pygame.mouse.get_pos()
+        mouse_pos = self._get_mouse_pos(screen)
         margin = max(28, int(min(width, height) * 0.03))
         gap = max(18, int(width * 0.012))
         nav_width = max(270, min(360, int(width * 0.22)))
@@ -794,6 +1133,7 @@ class EscMenuController:
 
         self._draw_nav(screen, nav_rect, mouse_pos)
         self._draw_content(screen, content_rect, mouse_pos)
+        self._draw_dropdown(screen, mouse_pos)
 
     def _draw_nav(self, screen: pygame.Surface, rect: pygame.Rect, mouse_pos: Tuple[int, int]):
         self._draw_panel(screen, rect, (9, 15, 28), (54, 87, 138), 22, 2)
@@ -911,13 +1251,52 @@ class EscMenuController:
         list_rect = pygame.Rect(rect.x, rect.y, list_width, rect.h)
         info_rect = pygame.Rect(list_rect.right + gap, rect.y, rect.w - list_width - gap, rect.h)
         self._draw_settings_list(screen, list_rect, self._rows_for_tab("game"), mouse_pos)
-        status_lines = [
-            f"极简性能模式：{'开启' if bool(getattr(self._host, '_性能模式', False)) else '关闭'}",
-            f"自动播放：{'开启' if bool(getattr(self._host, '_是否自动模式', False)) else '关闭'}",
-            f"谱面偏移：{format_chart_visual_offset_ms(getattr(self._host, '_谱面视觉偏移毫秒', 0))}",
-            f"当前对局模式：{'双踏板' if bool(getattr(self._host, '_是否双踏板模式', False)) else '单踏板'}",
-            "所有修改都会立即落到运行逻辑，并持久化到 ESC 菜单配置存储。",
-        ]
+        active_row = self._active_row()
+        status_lines = []
+        支持显示设置 = False
+        支持检查 = getattr(self._host, "_esc_menu_supports_display_settings", None)
+        if callable(支持检查):
+            try:
+                支持显示设置 = bool(支持检查())
+            except Exception:
+                支持显示设置 = False
+        if 支持显示设置:
+            取显示模式 = getattr(self._host, "_取显示模式菜单文本", None)
+            取分辨率 = getattr(self._host, "_取分辨率菜单文本", None)
+            try:
+                if callable(取显示模式):
+                    status_lines.append(f"显示模式：{str(取显示模式())}")
+                if callable(取分辨率):
+                    status_lines.append(f"分辨率：{str(取分辨率())}")
+                取渲染引擎 = getattr(self._host, "_取渲染引擎菜单文本", None)
+                取实际引擎 = getattr(self._host, "_取实际渲染引擎菜单文本", None)
+                if callable(取渲染引擎):
+                    status_lines.append(f"渲染偏好：{str(取渲染引擎())}")
+                if callable(取实际引擎):
+                    status_lines.append(f"当前引擎：{str(取实际引擎())}")
+            except Exception:
+                pass
+        if active_row is not None and str(getattr(active_row, "row_id", "") or "") == "render_backend":
+            取渲染说明 = getattr(self._host, "_取渲染引擎说明文本", None)
+            try:
+                渲染说明文本 = str(取渲染说明() if callable(取渲染说明) else "" or "").strip()
+            except Exception:
+                渲染说明文本 = ""
+            if 渲染说明文本:
+                status_lines.append("")
+                status_lines.append(渲染说明文本)
+        elif active_row is not None and str(getattr(active_row, "description", "") or "").strip():
+            status_lines.append("")
+            status_lines.append(str(active_row.description or ""))
+        status_lines.extend(
+            [
+                f"极简性能模式：{'开启' if bool(getattr(self._host, '_性能模式', False)) else '关闭'}",
+                f"自动播放：{'开启' if bool(getattr(self._host, '_是否自动模式', False)) else '关闭'}",
+                f"谱面偏移：{format_chart_visual_offset_ms(getattr(self._host, '_谱面视觉偏移毫秒', 0))}",
+                f"当前对局模式：{'双踏板' if bool(getattr(self._host, '_是否双踏板模式', False)) else '单踏板'}",
+                "显示设置会写回全局设置，其余项会持久化到 ESC 菜单配置存储。",
+            ]
+        )
         self._draw_preview_shell(screen, info_rect, "系统状态", "\n".join(status_lines), "")
 
     def _draw_bindings_tab(self, screen: pygame.Surface, rect: pygame.Rect, mouse_pos: Tuple[int, int]):
@@ -995,6 +1374,7 @@ class EscMenuController:
             row_rect = pygame.Rect(inner.x, inner.y + index * (row_height + row_gap), inner.w, row_height)
             is_selected = index == selected_index
             is_hovered = row_rect.collidepoint(mouse_pos)
+            uses_dropdown = self._row_uses_dropdown(row)
             accent = tuple(int(v) for v in row.accent)
             fill_color = (17, 24, 37)
             border_color = (56, 84, 128)
@@ -1009,19 +1389,51 @@ class EscMenuController:
             title_font = self._font(19, False)
             body_font = self._font(16, False)
             value_font = self._font(18, False)
-            button_side = max(28, min(40, int(row_rect.h * 0.5))) if row.adjustable else 0
+            button_side = max(28, min(40, int(row_rect.h * 0.5))) if (row.adjustable and (not uses_dropdown)) else 0
             button_gap = 8 if row.adjustable else 0
             buttons_width = (button_side * 2 + button_gap + 16) if row.adjustable else 0
-            value_max_w = max(90, row_rect.w - buttons_width - 220)
-            value_text = self._truncate_text(str(row.value or ""), value_font, value_max_w)
-            value_surface = value_font.render(value_text, True, (136, 217, 255))
-            value_x = row_rect.right - 18 - buttons_width - value_surface.get_width()
             screen.blit(title_font.render(row.title, True, (242, 247, 255)), (row_rect.x + 16, row_rect.y + 12))
             screen.blit(body_font.render(row.description, True, (130, 150, 182)), (row_rect.x + 16, row_rect.y + 42))
-            screen.blit(value_surface, (value_x, row_rect.y + 16))
-
-            hitboxes[f"{row.row_id}:body"] = pygame.Rect(row_rect.x, row_rect.y, row_rect.w - buttons_width, row_rect.h)
-            if row.adjustable:
+            if uses_dropdown:
+                selector_width = max(230, min(360, int(row_rect.w * 0.42)))
+                selector_height = max(42, min(50, int(row_rect.h * 0.58)))
+                selector_rect = pygame.Rect(
+                    row_rect.right - 14 - selector_width,
+                    int(row_rect.centery - selector_height * 0.5),
+                    selector_width,
+                    selector_height,
+                )
+                selector_fill = (16, 27, 40)
+                selector_border = (74, 108, 150)
+                if self._dropdown_row_id == str(row.row_id):
+                    selector_fill = tuple(min(255, int(v * 0.16) + 16) for v in accent)
+                    selector_border = accent
+                elif selector_rect.collidepoint(mouse_pos):
+                    selector_fill = tuple(min(255, int(v * 0.1) + 20) for v in accent)
+                    selector_border = tuple(min(255, int(v * 0.56) + 56) for v in accent)
+                self._draw_panel(screen, selector_rect, selector_fill, selector_border, 12, 2)
+                value_text = self._truncate_text(str(row.value or ""), value_font, max(90, selector_rect.w - 54))
+                value_surface = value_font.render(value_text, True, (136, 217, 255))
+                value_y = int(selector_rect.centery - value_surface.get_height() * 0.5)
+                screen.blit(value_surface, (selector_rect.x + 14, value_y))
+                self._draw_dropdown_chevron(
+                    screen,
+                    pygame.Rect(selector_rect.right - 34, selector_rect.y + 6, 22, selector_rect.h - 12),
+                    accent,
+                    bool(self._dropdown_row_id == str(row.row_id)),
+                )
+                hitboxes[f"{row.row_id}:body"] = row_rect.copy()
+                hitboxes[f"{row.row_id}:selector"] = selector_rect.copy()
+                if self._dropdown_row_id == str(row.row_id):
+                    self._dropdown_anchor_rect = selector_rect.copy()
+            else:
+                value_max_w = max(90, row_rect.w - buttons_width - 220)
+                value_text = self._truncate_text(str(row.value or ""), value_font, value_max_w)
+                value_surface = value_font.render(value_text, True, (136, 217, 255))
+                value_x = row_rect.right - 18 - buttons_width - value_surface.get_width()
+                screen.blit(value_surface, (value_x, row_rect.y + 16))
+                hitboxes[f"{row.row_id}:body"] = pygame.Rect(row_rect.x, row_rect.y, row_rect.w - buttons_width, row_rect.h)
+            if row.adjustable and (not uses_dropdown):
                 buttons_right = row_rect.right - 10
                 top = int(row_rect.centery - button_side * 0.5)
                 right_rect = pygame.Rect(buttons_right - button_side, top, button_side, button_side)
@@ -1032,6 +1444,88 @@ class EscMenuController:
                 self._draw_arrow_button(screen, right_rect, 1, accent, right_rect.collidepoint(mouse_pos), is_selected)
 
         self._row_hitboxes[self._current_tab_id] = hitboxes
+
+    def _draw_dropdown(
+        self,
+        screen: pygame.Surface,
+        mouse_pos: Tuple[int, int],
+    ):
+        if not self._is_dropdown_open():
+            return
+        if str(self._dropdown_tab_id) != str(self._current_tab_id):
+            self._close_dropdown()
+            return
+        if not isinstance(self._dropdown_anchor_rect, pygame.Rect) or self._dropdown_anchor_rect.w <= 0:
+            row_hitboxes = self._row_hitboxes.get(self._current_tab_id, {})
+            anchor_rect = row_hitboxes.get(f"{self._dropdown_row_id}:selector")
+            if not isinstance(anchor_rect, pygame.Rect):
+                anchor_rect = row_hitboxes.get(f"{self._dropdown_row_id}:body")
+            if not isinstance(anchor_rect, pygame.Rect):
+                self._close_dropdown()
+                return
+            self._dropdown_anchor_rect = anchor_rect.copy()
+
+        option_count = len(self._dropdown_options)
+        if option_count <= 0:
+            self._close_dropdown()
+            return
+        width, height = screen.get_size()
+        option_height = 44
+        panel_width = max(self._dropdown_anchor_rect.w, 300)
+        panel_height = 18 + option_count * option_height + 6
+        panel_x = int(
+            max(
+                18,
+                min(width - panel_width - 18, self._dropdown_anchor_rect.right - panel_width),
+            )
+        )
+        panel_y = int(self._dropdown_anchor_rect.bottom + 10)
+        if panel_y + panel_height > height - 18:
+            panel_y = int(self._dropdown_anchor_rect.y - 10 - panel_height)
+        panel_y = int(max(18, min(height - panel_height - 18, panel_y)))
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        self._dropdown_panel_rect = panel_rect
+
+        shadow_rect = panel_rect.inflate(12, 12)
+        shadow = pygame.Surface((shadow_rect.w, shadow_rect.h), pygame.SRCALPHA)
+        pygame.draw.rect(shadow, (0, 0, 0, 120), shadow.get_rect(), border_radius=18)
+        screen.blit(shadow, shadow_rect.topleft)
+        self._draw_panel(screen, panel_rect, (8, 14, 25), (72, 111, 166), 16, 2)
+
+        self._dropdown_option_hitboxes = {}
+        inner = panel_rect.inflate(-10, -10)
+        for index, option in enumerate(self._dropdown_options):
+            option_id = str(option.get("id", "") or "")
+            option_rect = pygame.Rect(
+                inner.x,
+                inner.y + index * option_height,
+                inner.w,
+                option_height - 4,
+            )
+            self._dropdown_option_hitboxes[option_id] = option_rect.copy()
+            hovered = option_rect.collidepoint(mouse_pos)
+            selected = int(index) == int(self._dropdown_selected_index)
+            fill_color = (16, 25, 39)
+            border_color = (57, 88, 132)
+            if selected:
+                fill_color = (18, 56, 73)
+                border_color = (0, 239, 251)
+            elif hovered:
+                fill_color = (20, 35, 54)
+                border_color = (104, 208, 255)
+            self._draw_panel(screen, option_rect, fill_color, border_color, 12, 2)
+            label = self._truncate_text(str(option.get("label", "") or option_id), self._font(18, False), option_rect.w - 58)
+            label_surface = self._font(18, False).render(label, True, (238, 246, 255))
+            screen.blit(label_surface, (option_rect.x + 14, int(option_rect.centery - label_surface.get_height() * 0.5)))
+            if bool(option.get("selected", False)):
+                tag_surface = self._font(15, True).render("当前", True, (176, 255, 186))
+                screen.blit(
+                    tag_surface,
+                    (
+                        int(option_rect.right - 14 - tag_surface.get_width()),
+                        int(option_rect.centery - tag_surface.get_height() * 0.5),
+                    ),
+                )
 
     def _draw_binding_selector(self, screen: pygame.Surface, rect: pygame.Rect, mouse_pos: Tuple[int, int]):
         self._draw_panel(screen, rect, (10, 15, 26), (39, 66, 106), 20, 2)
@@ -1222,7 +1716,13 @@ class EscMenuController:
 
     def _apply_background_overlay(self, screen: pygame.Surface, rect: pygame.Rect):
         try:
-            alpha = int(max(0, min(255, int(getattr(self._host, "_背景暗层alpha", 0) or 0))))
+            getter = getattr(self._host, "_取当前背景遮罩alpha", None)
+            if callable(getter):
+                alpha = int(max(0, min(255, int(getter() or 0))))
+            else:
+                alpha = int(
+                    max(0, min(255, int(getattr(self._host, "_背景暗层alpha", 0) or 0)))
+                )
         except Exception:
             alpha = 0
         if alpha <= 0:
@@ -1274,6 +1774,25 @@ class EscMenuController:
         else:
             points = [(center_x - arrow_w // 2, center_y - arrow_h), (center_x + arrow_w // 2, center_y), (center_x - arrow_w // 2, center_y + arrow_h)]
         pygame.draw.polygon(screen, (238, 246, 255), points)
+
+    def _draw_dropdown_chevron(
+        self,
+        screen: pygame.Surface,
+        rect: pygame.Rect,
+        accent: Color,
+        active: bool,
+    ):
+        center_x = rect.centerx
+        center_y = rect.centery
+        half_w = max(6, int(rect.w * 0.28))
+        half_h = max(4, int(rect.h * 0.14))
+        color = (238, 246, 255) if not active else tuple(min(255, int(v * 0.75) + 60) for v in accent)
+        points = [
+            (center_x - half_w, center_y - half_h),
+            (center_x, center_y + half_h),
+            (center_x + half_w, center_y - half_h),
+        ]
+        pygame.draw.lines(screen, color, False, points, 3)
 
     def _draw_panel(
         self,

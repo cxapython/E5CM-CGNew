@@ -8,6 +8,7 @@ except Exception:
     _sdl2_video = None
 
 from core.常量与路径 import 取项目根目录 as _公共取项目根目录
+from core.工具 import cover缩放 as _cover缩放
 from core.对局状态 import 初始化对局流程, 消耗信用, 取每局所需信用
 from core.sqlite_store import (
     SCOPE_GLOBAL_SETTINGS as _全局设置存储作用域,
@@ -108,10 +109,21 @@ class 场景_投币:
     def __init__(self, 上下文: dict):
         self.上下文 = 上下文
         资源 = self.上下文["资源"]
+        self._禁用投币特效 = True
 
         self._背景视频 = self.上下文.get("背景视频")
         self._开始时间 = time.time()
         self._缓存尺寸 = (0, 0)
+        self._软件背景缓存面: pygame.Surface | None = None
+        self._软件背景缓存尺寸 = (0, 0)
+        self._软件背景下次取帧秒 = 0.0
+        self._软件背景取帧间隔秒 = 1.0 / 30.0
+        self._共享背景回退图 = self._安全加载图片(
+            str(self.上下文.get("共享背景回退图路径", "") or ""),
+            透明=False,
+        )
+        self._共享背景回退缓存面: pygame.Surface | None = None
+        self._共享背景回退缓存尺寸 = (0, 0)
 
         self._阶段 = self._阶段_投币
         self._是否显示logo = False
@@ -154,6 +166,8 @@ class 场景_投币:
         self._logo实时特效缓存尺寸 = (0, 0)
         self._logo实时特效缓存帧 = -1
         self._logo实时特效缓存帧率 = 24.0
+        self._logo实时特效缓存模式 = ""
+        self._logo实时特效软件帧率 = 12.0
         self._GPU背景视频纹理 = None
         self._GPU背景视频纹理渲染器id: int = 0
         self._GPU背景视频纹理尺寸 = (0, 0)
@@ -206,6 +220,9 @@ class 场景_投币:
     def 进入(self):
         self._开始时间 = time.time()
         self._缓存尺寸 = (0, 0)
+        self._软件背景缓存面 = None
+        self._软件背景缓存尺寸 = (0, 0)
+        self._软件背景下次取帧秒 = 0.0
         self._选择动画进行中 = False
         self._选择动画结束时间 = 0.0
         self._待切换结果 = None
@@ -215,7 +232,7 @@ class 场景_投币:
         self._logo实时叠加层.重置()
         self._确保缓存()
         self._按当前信用刷新阶段(允许播放满额音效=False)
-        if self._是否显示logo:
+        if self._是否显示logo and (not bool(self._禁用投币特效)):
             self._触发logo登场动画()
         if self._阶段 == self._阶段_投币:
             self._播放投币背景音乐()
@@ -244,10 +261,6 @@ class 场景_投币:
             return None
 
         self.按钮音效.播放()
-        if int(玩家数) == 1:
-            self._1p特效.触发()
-        else:
-            self._2p特效.触发()
 
         原状态快照 = {
             "投币数": int(状态.get("投币数", 0) or 0),
@@ -397,7 +410,11 @@ class 场景_投币:
         旧值 = bool(self._是否显示logo)
         self._是否显示logo = bool(是否显示)
         if self._是否显示logo:
-            if 强制重播 or (not 旧值):
+            if bool(self._禁用投币特效):
+                self._logo登场开始时间 = 0.0
+                self._失效logo登场缓存()
+                self._清空logo实时叠加层(重置=True)
+            elif 强制重播 or (not 旧值):
                 self._触发logo登场动画()
         else:
             self._logo登场开始时间 = 0.0
@@ -431,33 +448,103 @@ class 场景_投币:
         if self._阶段 != self._阶段_投币:
             self._切换到投币阶段()
 
+    def _读取软件背景覆盖帧(
+        self,
+        目标宽: int,
+        目标高: int,
+        当前时间: float,
+    ) -> pygame.Surface | None:
+        if self._背景视频 is None:
+            self._软件背景缓存面 = None
+            self._软件背景缓存尺寸 = (0, 0)
+            self._软件背景下次取帧秒 = 0.0
+            return self._取共享背景回退面(目标宽, 目标高)
+
+        有效宽 = max(1, int(目标宽))
+        有效高 = max(1, int(目标高))
+        目标尺寸 = (有效宽, 有效高)
+        if tuple(self._软件背景缓存尺寸) != tuple(目标尺寸):
+            self._软件背景缓存尺寸 = tuple(目标尺寸)
+            self._软件背景下次取帧秒 = 0.0
+
+        if (
+            float(当前时间) < float(self._软件背景下次取帧秒)
+            and isinstance(self._软件背景缓存面, pygame.Surface)
+        ):
+            return self._软件背景缓存面
+
+        try:
+            新帧 = self._背景视频.读取覆盖帧(有效宽, 有效高)
+        except Exception:
+            self._停用背景视频()
+            新帧 = None
+
+        if isinstance(新帧, pygame.Surface):
+            if tuple(新帧.get_size()) != tuple(目标尺寸):
+                try:
+                    新帧 = pygame.transform.smoothscale(新帧, 目标尺寸).convert()
+                except Exception:
+                    pass
+            self._软件背景缓存面 = 新帧
+        self._软件背景下次取帧秒 = float(当前时间) + max(
+            1.0 / 60.0,
+            float(self._软件背景取帧间隔秒 or (1.0 / 30.0)),
+        )
+        if isinstance(self._软件背景缓存面, pygame.Surface):
+            return self._软件背景缓存面
+        if isinstance(新帧, pygame.Surface):
+            return 新帧
+        return self._取共享背景回退面(有效宽, 有效高)
+
+    def _停用背景视频(self):
+        背景视频 = getattr(self, "_背景视频", None)
+        if 背景视频 is not None:
+            try:
+                if hasattr(背景视频, "关闭"):
+                    背景视频.关闭()
+            except Exception:
+                pass
+        self._背景视频 = None
+        try:
+            self.上下文["背景视频"] = None
+        except Exception:
+            pass
+
+    def _取共享背景回退面(self, 目标宽: int, 目标高: int) -> pygame.Surface | None:
+        原图 = getattr(self, "_共享背景回退图", None)
+        if not isinstance(原图, pygame.Surface):
+            return None
+        目标尺寸 = (max(1, int(目标宽)), max(1, int(目标高)))
+        if (
+            tuple(getattr(self, "_共享背景回退缓存尺寸", (0, 0))) == tuple(目标尺寸)
+            and isinstance(getattr(self, "_共享背景回退缓存面", None), pygame.Surface)
+        ):
+            return self._共享背景回退缓存面
+        try:
+            回退面 = _cover缩放(原图, int(目标尺寸[0]), int(目标尺寸[1])).convert()
+        except Exception:
+            return None
+        self._共享背景回退缓存面 = 回退面
+        self._共享背景回退缓存尺寸 = tuple(目标尺寸)
+        return 回退面
+
     def 退出(self):
-        pass
+        self._软件背景缓存面 = None
+        self._软件背景缓存尺寸 = (0, 0)
+        self._软件背景下次取帧秒 = 0.0
+        self._GPU背景视频纹理 = None
+        self._GPU背景视频纹理渲染器id = 0
+        self._GPU背景视频纹理尺寸 = (0, 0)
+        self._GPU背景视频纹理源键 = ()
+        self._GPU界面纹理缓存 = {}
+        self._GPU界面纹理渲染器id = 0
 
     def _绘制玩家选择按钮(self, 屏幕: pygame.Surface):
         if self._1p图:
-            if self._1p特效.是否动画中():
-                self._1p特效.绘制按钮(屏幕, self._1p图, self._1p_rect)
-            else:
-                if self._踏板选中玩家数 == 1:
-                    self._绘制_按中心缩放(屏幕, self._1p图, self._1p_rect, 1.12)
-                elif self._hover_1p and self._1p图_hover:
-                    临时框 = self._1p图_hover.get_rect(center=self._1p_rect.center)
-                    屏幕.blit(self._1p图_hover, 临时框.topleft)
-                else:
-                    屏幕.blit(self._1p图, self._1p_rect.topleft)
+            屏幕.blit(self._1p图, self._1p_rect.topleft)
 
         if self._2p图:
-            if self._2p特效.是否动画中():
-                self._2p特效.绘制按钮(屏幕, self._2p图, self._2p_rect)
-            else:
-                if self._踏板选中玩家数 == 2:
-                    self._绘制_按中心缩放(屏幕, self._2p图, self._2p_rect, 1.12)
-                elif self._hover_2p and self._2p图_hover:
-                    临时框 = self._2p图_hover.get_rect(center=self._2p_rect.center)
-                    屏幕.blit(self._2p图_hover, 临时框.topleft)
-                else:
-                    屏幕.blit(self._2p图, self._2p_rect.topleft)
+            屏幕.blit(self._2p图, self._2p_rect.topleft)
 
     def _安全加载图片(self, 路径: str, 透明: bool):
         try:
@@ -544,6 +631,39 @@ class 场景_投币:
         self._GPU背景视频纹理渲染器id = 当前渲染器id
         self._GPU背景视频纹理尺寸 = (0, 0)
         self._GPU背景视频纹理源键 = ()
+
+    def _取GPU输出与绘制尺寸(self, 显示后端) -> tuple[int, int, int, int]:
+        绘制宽, 绘制高 = 1, 1
+        输出宽, 输出高 = 1, 1
+        try:
+            屏幕 = self.上下文.get("屏幕", None)
+            if isinstance(屏幕, pygame.Surface):
+                绘制宽, 绘制高 = tuple(int(v) for v in 屏幕.get_size())
+                输出宽, 输出高 = int(绘制宽), int(绘制高)
+        except Exception:
+            绘制宽, 绘制高 = 1, 1
+            输出宽, 输出高 = 1, 1
+
+        try:
+            绘制屏幕 = 显示后端.取绘制屏幕()
+            if isinstance(绘制屏幕, pygame.Surface):
+                绘制宽, 绘制高 = tuple(int(v) for v in 绘制屏幕.get_size())
+        except Exception:
+            pass
+
+        try:
+            if bool(getattr(显示后端, "使用逻辑坐标映射", lambda: False)()):
+                输出宽, 输出高 = int(绘制宽), int(绘制高)
+            else:
+                输出宽, 输出高 = tuple(int(v) for v in 显示后端.取输出尺寸())
+        except Exception:
+            输出宽, 输出高 = int(绘制宽), int(绘制高)
+
+        绘制宽 = max(1, int(绘制宽))
+        绘制高 = max(1, int(绘制高))
+        输出宽 = max(1, int(输出宽))
+        输出高 = max(1, int(输出高))
+        return 绘制宽, 绘制高, 输出宽, 输出高
 
     def _取GPU背景视频纹理(self, 渲染器, 图: pygame.Surface | None):
         if _sdl2_video is None or 渲染器 is None or not isinstance(图, pygame.Surface):
@@ -668,12 +788,22 @@ class 场景_投币:
         图层: pygame.Surface | None,
         目标矩形: tuple[int, int, int, int] | None = None,
         alpha: int = 255,
+        比例x: float = 1.0,
+        比例y: float = 1.0,
     ):
         if 图层 is None:
             return
         纹理 = self._取GPU界面纹理(渲染器, 图层)
         if 纹理 is None:
             return
+        try:
+            比例x = max(0.001, float(比例x))
+        except Exception:
+            比例x = 1.0
+        try:
+            比例y = max(0.001, float(比例y))
+        except Exception:
+            比例y = 1.0
         try:
             纹理.alpha = int(max(0, min(255, alpha)))
         except Exception:
@@ -687,16 +817,28 @@ class 场景_投币:
         except Exception:
             pass
         if 目标矩形 is None:
-            目标矩形 = (0, 0, int(图层.get_width()), int(图层.get_height()))
-        try:
-            纹理.draw(
-                dstrect=(
-                    int(目标矩形[0]),
-                    int(目标矩形[1]),
-                    int(目标矩形[2]),
-                    int(目标矩形[3]),
-                )
+            目标矩形 = (
+                0,
+                0,
+                int(max(1, 图层.get_width())),
+                int(max(1, 图层.get_height())),
             )
+        try:
+            渲染目标矩形 = (
+                int(round(float(目标矩形[0]) * 比例x)),
+                int(round(float(目标矩形[1]) * 比例y)),
+                max(1, int(round(float(目标矩形[2]) * 比例x))),
+                max(1, int(round(float(目标矩形[3]) * 比例y))),
+            )
+        except Exception:
+            渲染目标矩形 = (
+                int(目标矩形[0]),
+                int(目标矩形[1]),
+                max(1, int(目标矩形[2])),
+                max(1, int(目标矩形[3])),
+            )
+        try:
+            纹理.draw(dstrect=渲染目标矩形)
         except Exception:
             pass
 
@@ -722,29 +864,20 @@ class 场景_投币:
         点击特效: 公用按钮点击特效 | None,
         是否悬停: bool,
         是否选中: bool,
+        比例x: float = 1.0,
+        比例y: float = 1.0,
     ):
         if 图片 is None:
             return
-        缩放倍率 = 1.0
-        alpha = 255
-        if 点击特效 is not None:
-            try:
-                if bool(点击特效.是否动画中()):
-                    缩放倍率, alpha, _ = 点击特效.计算参数(time.time())
-            except Exception:
-                缩放倍率 = 1.0
-                alpha = 255
-        if int(alpha) >= 255 and float(缩放倍率) == 1.0:
-            if bool(是否选中):
-                缩放倍率 = 1.12
-            elif bool(是否悬停):
-                缩放倍率 = 1.04
-        目标框 = self._按中心缩放矩形(基准框, 缩放倍率)
+        del 点击特效, 是否悬停, 是否选中
+        目标框 = pygame.Rect(基准框)
         self._绘制GPU图层(
             渲染器,
             图片,
             (目标框.x, 目标框.y, 目标框.w, 目标框.h),
-            alpha=int(alpha),
+            alpha=255,
+            比例x=float(比例x),
+            比例y=float(比例y),
         )
 
     def _着色副本(
@@ -846,6 +979,7 @@ class 场景_投币:
     def _失效logo实时特效缓存(self):
         self._logo实时特效缓存尺寸 = (0, 0)
         self._logo实时特效缓存帧 = -1
+        self._logo实时特效缓存模式 = ""
 
     def _清空logo实时叠加层(self, 重置: bool = False):
         叠加层 = getattr(self, "_logo实时叠加层", None)
@@ -1857,6 +1991,49 @@ class 场景_投币:
         画布.blit(模糊层, 局部区域.topleft, special_flags=pygame.BLEND_RGBA_ADD)
         画布.blit(局部图层, 局部区域.topleft, special_flags=pygame.BLEND_RGBA_ADD)
 
+    def _绘制logo实时闪点层_轻量(
+        self,
+        画布: pygame.Surface,
+        局部区域: pygame.Rect,
+        活跃秒: float,
+    ):
+        if not self._logo闪点条目 or not self._logo内部采样点:
+            return
+        总时长 = float(self._logo实时特效总时长)
+        常驻 = 1.0 if 活跃秒 > 总时长 else _区间进度(活跃秒, 3.20, 总时长)
+        基础 = max(
+            _区间进度(活跃秒, 3.10, 6.20),
+            常驻 * (0.28 + (math.sin(活跃秒 * 3.20) * 0.5 + 0.5) * 0.24),
+        )
+        if 基础 <= 0.0:
+            return
+
+        logo局部框 = self._取logo局部框(局部区域)
+        样本数 = len(self._logo内部采样点)
+        条目总数 = len(self._logo闪点条目)
+        if 条目总数 <= 0:
+            return
+
+        跳步 = max(1, 条目总数 // 6)
+        for i in range(0, 条目总数, 跳步):
+            条目 = self._logo闪点条目[i]
+            pulse = max(0.0, math.sin(活跃秒 * 条目["speed"] * 3.2 + 条目["phase"]))
+            alpha = pow(pulse, 7) * (0.08 + 基础 * 0.32)
+            if alpha < 0.03:
+                continue
+            索引 = int((条目["索引"] + 活跃秒 * (1.8 + i * 0.02)) % max(1, 样本数))
+            点x, 点y, _, _ = self._logo内部采样点[索引]
+            半径 = 2 + int(pulse * 3)
+            try:
+                pygame.draw.circle(
+                    画布,
+                    (120, 225, 255, int(alpha * 255)),
+                    (logo局部框.x + int(点x), logo局部框.y + int(点y)),
+                    max(1, 半径),
+                )
+            except Exception:
+                pass
+
     def _绘制logo实时叠加效果(self, 显示后端):
         if (not self._是否显示logo) or (self._logo图 is None):
             self._清空logo实时叠加层()
@@ -1877,16 +2054,24 @@ class 场景_投币:
             self._清空logo实时叠加层()
             return
 
+        使用GPU = bool(getattr(显示后端, "是否GPU", False))
+        缓存模式 = "gpu" if 使用GPU else "software-lite"
         屏幕尺寸 = 屏幕.get_size()
         活跃秒 = self._取logo活跃秒(time.time())
+        默认帧率 = (
+            float(getattr(self, "_logo实时特效缓存帧率", 24.0) or 24.0)
+            if 使用GPU
+            else float(getattr(self, "_logo实时特效软件帧率", 12.0) or 12.0)
+        )
         帧率 = max(
             1.0,
-            float(getattr(self, "_logo实时特效缓存帧率", 24.0) or 24.0),
+            默认帧率,
         )
         帧序号 = int(max(0.0, float(活跃秒)) * 帧率)
         if (
             tuple(getattr(self, "_logo实时特效缓存尺寸", (0, 0))) == tuple(屏幕尺寸)
             and int(getattr(self, "_logo实时特效缓存帧", -1)) == int(帧序号)
+            and str(getattr(self, "_logo实时特效缓存模式", "")) == str(缓存模式)
             and bool(getattr(叠加层, "有内容", lambda: False)())
         ):
             叠加层.绘制到显示后端(显示后端)
@@ -1900,13 +2085,20 @@ class 场景_投币:
         self._绘制logo实时色偏层(画布, 采样活跃秒)
         self._绘制logo实时切片层(画布, 采样活跃秒)
         self._绘制logo实时扫光层(画布, 局部区域, 采样活跃秒)
-        self._绘制logo实时电弧层(画布, 局部区域, 采样活跃秒)
-        self._绘制logo实时闪点层(画布, 局部区域, 采样活跃秒)
+        if 使用GPU:
+            self._绘制logo实时电弧层(画布, 局部区域, 采样活跃秒)
+            self._绘制logo实时闪点层(画布, 局部区域, 采样活跃秒)
+        else:
+            self._绘制logo实时闪点层_轻量(画布, 局部区域, 采样活跃秒)
         self._logo实时特效缓存尺寸 = tuple(屏幕尺寸)
         self._logo实时特效缓存帧 = int(帧序号)
+        self._logo实时特效缓存模式 = str(缓存模式)
         叠加层.绘制到显示后端(显示后端)
 
     def 绘制GPU叠加(self, 显示后端):
+        if bool(self._禁用投币特效):
+            self._清空logo实时叠加层()
+            return
         try:
             self._绘制logo实时叠加效果(显示后端)
         except Exception:
@@ -1923,21 +2115,24 @@ class 场景_投币:
         渲染器 = 取渲染器()
         if 渲染器 is None:
             return
-        try:
-            屏宽, 屏高 = tuple(int(v) for v in 显示后端.取绘制屏幕().get_size())
-        except Exception:
-            return
+        _绘制宽, _绘制高, 输出宽, 输出高 = self._取GPU输出与绘制尺寸(显示后端)
 
         self._同步GPU背景缓存(渲染器)
         背景视频 = getattr(self, "_背景视频", None)
-        if 背景视频 is None:
-            return
+        背景帧 = None
+        if 背景视频 is not None:
+            try:
+                背景帧 = 背景视频.读取帧() if hasattr(背景视频, "读取帧") else None
+            except Exception:
+                self._停用背景视频()
+                背景帧 = None
         try:
-            背景帧 = 背景视频.读取帧() if hasattr(背景视频, "读取帧") else None
+            if not isinstance(背景帧, pygame.Surface):
+                背景帧 = self._取共享背景回退面(int(输出宽), int(输出高))
         except Exception:
             背景帧 = None
         if isinstance(背景帧, pygame.Surface):
-            self._绘制GPU视频背景(渲染器, 背景帧, int(屏宽), int(屏高))
+            self._绘制GPU视频背景(渲染器, 背景帧, int(输出宽), int(输出高))
 
     def 绘制GPU中层(self, 显示后端):
         if not self._应使用GPU中层():
@@ -1952,16 +2147,20 @@ class 场景_投币:
             return
         self._确保缓存()
         self._同步GPU界面纹理缓存(渲染器)
+        绘制宽, 绘制高, 输出宽, 输出高 = self._取GPU输出与绘制尺寸(显示后端)
+        比例x = float(max(1, int(输出宽))) / float(max(1, int(绘制宽)))
+        比例y = float(max(1, int(输出高))) / float(max(1, int(绘制高)))
 
         if self._遮罩图 is not None:
-            self._绘制GPU图层(渲染器, self._遮罩图)
+            self._绘制GPU图层(
+                渲染器,
+                self._遮罩图,
+                比例x=比例x,
+                比例y=比例y,
+            )
 
         if self._是否显示logo and self._logo图 is not None:
-            当前时间 = time.time()
-            缓存面 = self._取logo登场缓存(当前时间, self.上下文["屏幕"].get_size())
-            if isinstance(缓存面, pygame.Surface):
-                self._绘制GPU图层(渲染器, 缓存面)
-            else:
+            if bool(self._禁用投币特效):
                 self._绘制GPU图层(
                     渲染器,
                     self._logo图,
@@ -1971,7 +2170,32 @@ class 场景_投币:
                         int(self._logo_rect.w),
                         int(self._logo_rect.h),
                     ),
+                    比例x=比例x,
+                    比例y=比例y,
                 )
+            else:
+                当前时间 = time.time()
+                缓存面 = self._取logo登场缓存(当前时间, self.上下文["屏幕"].get_size())
+                if isinstance(缓存面, pygame.Surface):
+                    self._绘制GPU图层(
+                        渲染器,
+                        缓存面,
+                        比例x=比例x,
+                        比例y=比例y,
+                    )
+                else:
+                    self._绘制GPU图层(
+                        渲染器,
+                        self._logo图,
+                        (
+                            int(self._logo_rect.x),
+                            int(self._logo_rect.y),
+                            int(self._logo_rect.w),
+                            int(self._logo_rect.h),
+                        ),
+                        比例x=比例x,
+                        比例y=比例y,
+                    )
 
         if self._阶段 == self._阶段_玩家选择:
             self._绘制GPU按钮(
@@ -1981,6 +2205,8 @@ class 场景_投币:
                 self._1p特效,
                 self._hover_1p,
                 self._踏板选中玩家数 == 1,
+                比例x=比例x,
+                比例y=比例y,
             )
             self._绘制GPU按钮(
                 渲染器,
@@ -1989,6 +2215,8 @@ class 场景_投币:
                 self._2p特效,
                 self._hover_2p,
                 self._踏板选中玩家数 == 2,
+                比例x=比例x,
+                比例y=比例y,
             )
 
     def 绘制(self):
@@ -2012,7 +2240,7 @@ class 场景_投币:
                 屏幕.fill((0, 0, 0))
         else:
             屏幕.fill((0, 0, 0))
-            背景面 = self._背景视频.读取覆盖帧(宽, 高) if self._背景视频 else None
+            背景面 = self._读取软件背景覆盖帧(宽, 高, 当前时间)
             if 背景面 is not None:
                 屏幕.blit(背景面, (0, 0))
 
@@ -2020,7 +2248,10 @@ class 场景_投币:
             屏幕.blit(self._遮罩图, (0, 0))
 
         if (not GPU中层启用) and self._是否显示logo and self._logo图:
-            self._绘制logo登场效果(屏幕, 当前时间)
+            if bool(self._禁用投币特效):
+                屏幕.blit(self._logo图, self._logo_rect.topleft)
+            else:
+                self._绘制logo登场效果(屏幕, 当前时间)
 
         if self._阶段 == self._阶段_投币:
             if int(当前时间 - self._开始时间) % 2 == 0:

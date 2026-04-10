@@ -1,11 +1,14 @@
 import json
+import math
 import os
 import sys
 import re
 import time
+import gc
 import queue
 import threading
 from dataclasses import dataclass, replace
+from functools import wraps
 from typing import Any, Dict, List, Optional, Tuple
 
 import pygame
@@ -58,6 +61,8 @@ from core.game_esc_menu_settings import (
     serialize_key_binding_profiles,
     write_game_esc_settings_scope_patch,
 )
+from core.音频 import 确保pygame基础模块已初始化 as _确保pygame基础模块已初始化
+from core.音频 import 确保混音器已初始化 as _确保混音器已初始化
 from core.select_speed_settings import (
     DEFAULT_SELECT_SCROLL_SPEED,
     DEFAULT_SELECT_SCROLL_SPEED_OPTION,
@@ -95,6 +100,69 @@ _项目根目录_缓存: str | None = None
 _默认HUD昵称 = "游客"
 _默认HUD头像相对路径 = "UI-img/个人中心-个人资料/默认头像.png"
 _默认HUD占位昵称 = "玩家昵称"
+_常见分辨率纵横比标签 = (
+    (16, 9),
+    (16, 10),
+    (21, 9),
+    (32, 9),
+    (4, 3),
+    (5, 4),
+)
+
+
+def _启用稳定谱面事件构建模式() -> bool:
+    环境值 = str(os.environ.get("E5CM_SAFE_SM_EVENTS", "") or "").strip().lower()
+    if 环境值 in ("1", "true", "yes", "on"):
+        return True
+    if 环境值 in ("0", "false", "no", "off"):
+        return False
+    return bool(getattr(sys, "frozen", False))
+
+
+def _进入稳定谱面事件GC区间() -> bool:
+    if (not bool(_启用稳定谱面事件构建模式())) or (not bool(gc.isenabled())):
+        return False
+    try:
+        gc.disable()
+        return True
+    except Exception:
+        return False
+
+
+def _离开稳定谱面事件GC区间(曾关闭GC: bool) -> None:
+    if (not bool(曾关闭GC)) or bool(gc.isenabled()):
+        return
+    try:
+        gc.enable()
+    except Exception:
+        pass
+
+
+def _稳定谱面事件构建(函数):
+    @wraps(函数)
+    def _包装(*args, **kwargs):
+        曾关闭GC = _进入稳定谱面事件GC区间()
+        try:
+            return 函数(*args, **kwargs)
+        finally:
+            _离开稳定谱面事件GC区间(曾关闭GC)
+
+    return _包装
+
+
+def _格式化分辨率纵横比(宽: int, 高: int) -> str:
+    宽 = int(max(1, int(宽 or 1)))
+    高 = int(max(1, int(高 or 1)))
+    比值 = float(宽) / float(max(1, 高))
+    for 候选宽, 候选高 in _常见分辨率纵横比标签:
+        if abs(float(候选宽) / float(候选高) - 比值) <= 0.02:
+            return f"{int(候选宽)}:{int(候选高)}"
+    公约数 = int(math.gcd(int(宽), int(高)) or 1)
+    return f"{int(宽 // 公约数)}:{int(高 // 公约数)}"
+
+
+def _格式化分辨率标签(宽: int, 高: int) -> str:
+    return f"{int(宽)} x {int(高)} ({_格式化分辨率纵横比(int(宽), int(高))})"
 
 
 def _取项目根目录() -> str:
@@ -292,7 +360,7 @@ def _找同目录音频_按优先级(谱面路径: str) -> Optional[str]:
     return 全部候选[0]
 
 
-_支持背景视频扩展名 = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v")
+_支持背景视频扩展名 = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ogv")
 
 
 def _归一化资源名(文本: str) -> str:
@@ -442,11 +510,21 @@ class _视频背景源(_对局背景源基类):
             视频帧 = None
         if isinstance(视频帧, pygame.Surface):
             return 视频帧
+        try:
+            if bool(场景._准备动画视频背景禁止图片回退()):
+                return None
+        except Exception:
+            pass
         return self._后备图片源.取CPU帧(场景, 现在秒)
 
     def 绘制GPU(self, 场景, 渲染器, 屏宽: int, 屏高: int) -> bool:
+        原始输出 = False
         try:
-            视频帧 = 场景._读取背景视频帧()
+            原始输出 = bool(场景._视频背景使用GPU原帧直出())
+        except Exception:
+            原始输出 = False
+        try:
+            视频帧 = 场景._读取背景视频帧(原始输出=原始输出)
         except Exception:
             视频帧 = None
         if isinstance(视频帧, pygame.Surface):
@@ -476,11 +554,7 @@ class _视频背景源(_对局背景源基类):
             目标路径 = ""
         当前路径 = str(getattr(场景, "_背景视频路径", "") or "").strip()
         if 目标路径 and 当前路径 != 目标路径:
-            try:
-                if hasattr(场景, "_应用背景视频状态"):
-                    场景._应用背景视频状态()
-            except Exception:
-                pass
+            return None
         视频帧 = getattr(场景, "_背景视频上一有效帧", None)
         if isinstance(视频帧, pygame.Surface):
             try:
@@ -498,6 +572,11 @@ class _视频背景源(_对局背景源基类):
             except Exception:
                 pass
             return 视频帧
+        try:
+            if bool(场景._准备动画视频背景禁止图片回退()):
+                return None
+        except Exception:
+            pass
         return self._后备图片源.取CPU帧(场景, None)
 
 
@@ -508,6 +587,41 @@ class _动态背景源(_对局背景源基类):
         self._后备图片源 = _图片GIF背景源()
 
     def 取CPU帧(self, 场景, 现在秒: Optional[float] = None) -> Optional[pygame.Surface]:
+        if 现在秒 is None:
+            try:
+                现在秒 = float(time.perf_counter())
+            except Exception:
+                现在秒 = 0.0
+        try:
+            目标尺寸 = tuple(int(v) for v in 场景.上下文["屏幕"].get_size())
+        except Exception:
+            目标尺寸 = tuple(int(v) for v in getattr(场景, "_屏幕尺寸", (1280, 720)))
+        try:
+            宽 = max(1, int(目标尺寸[0]))
+            高 = max(1, int(目标尺寸[1]))
+        except Exception:
+            宽, 高 = 1280, 720
+        缓存图 = getattr(场景, "_动态背景CPU帧缓存", None)
+        if (not isinstance(缓存图, pygame.Surface)) or 缓存图.get_size() != (宽, 高):
+            try:
+                缓存图 = pygame.Surface((宽, 高), pygame.SRCALPHA).convert_alpha()
+            except Exception:
+                try:
+                    缓存图 = pygame.Surface((宽, 高), pygame.SRCALPHA)
+                except Exception:
+                    缓存图 = None
+            setattr(场景, "_动态背景CPU帧缓存", 缓存图)
+            setattr(场景, "_动态背景CPU帧缓存尺寸", (宽, 高))
+        if isinstance(缓存图, pygame.Surface):
+            try:
+                缓存图.fill((0, 0, 0, 255))
+            except Exception:
+                pass
+            try:
+                if bool(场景._绘制动态背景预览画面(缓存图, 缓存图.get_rect(), float(现在秒))):
+                    return 缓存图
+            except Exception:
+                pass
         return self._后备图片源.取CPU帧(场景, 现在秒)
 
     def 绘制GPU(self, 场景, 渲染器, 屏宽: int, 屏高: int) -> bool:
@@ -823,6 +937,11 @@ def _取_stage背景矩形_屏幕坐标(
 from typing import Optional
 
 
+_舞推每组槽位数 = 10
+_舞推脚槽位到轨道 = {1: 0, 2: 1, 4: 2, 6: 3, 7: 4}
+_舞推手槽位默认方向 = {0: "ll", 3: "tt", 5: "bb", 8: "rr"}
+
+
 def _提取sm标签原始值(sm文本: str, 标签名: str) -> str:
     """
     保留原始换行的标签提取，适合 #NOTES / SSC 的 #NOTEDATA:#NOTES。
@@ -1094,6 +1213,7 @@ class 音符事件:
     开始beat: float
     结束beat: float
     类型: str  # "tap" / "hold"
+    玩家: int = 1
 
 
 @dataclass
@@ -1105,6 +1225,7 @@ class 手键装饰事件:
     结束beat: float
     类型: str  # "tap" / "hold"
     玩家: int = 1
+    颜色玩家: int = 0
     是否已触发自动特效: bool = False
 
 
@@ -1125,117 +1246,331 @@ def _提取ssc谱面块列表(sm文本: str) -> List[str]:
     return 结果
 
 
-def _解析_sm_notes_选谱面(
-    sm文本: str, 优先double: bool = False
-) -> Tuple[str, int, str, str, str]:
-    """
-    选中一个谱面块返回 (notedata, 列数, charttype, 局部BPMS文本, 局部OFFSET文本)
-    默认优先 pump-single；当 优先double=True 时优先 pump-double。
-    """
-    notes块列表 = []
-    for m in re.finditer(r"#NOTES\s*:(.*?);", sm文本, flags=re.IGNORECASE | re.DOTALL):
-        notes块列表.append(m.group(1))
+def _解析_sm_notes块字段(块文本: str) -> Optional[Dict[str, str]]:
+    文本 = str(块文本 or "")
+    if not 文本.strip():
+        return None
 
-    候选: List[Tuple[str, str, int, str, str]] = []
-    for blk in notes块列表:
-        parts = blk.split(":", 5)
-        if len(parts) < 6:
+    标准字段 = 文本.split(":", 5)
+    if len(标准字段) >= 6:
+        return {
+            "charttype": str(标准字段[0] or "").strip().lower(),
+            "description_text": str(标准字段[1] or "").strip(),
+            "difficulty_text": str(标准字段[2] or "").strip(),
+            "meter_text": str(标准字段[3] or "").strip(),
+            "notes_text": str(标准字段[5] or ""),
+            "format": "sm",
+        }
+
+    舞推字段 = 文本.split(":", 4)
+    if len(舞推字段) >= 5:
+        return {
+            "charttype": str(舞推字段[0] or "").strip().lower(),
+            "description_text": str(舞推字段[1] or "").strip(),
+            "difficulty_text": str(舞推字段[2] or "").strip(),
+            "meter_text": str(舞推字段[3] or "").strip(),
+            "notes_text": str(舞推字段[4] or ""),
+            "format": "wutui-sm",
+        }
+
+    return None
+
+
+def _解析谱面meter整数(文本: str) -> int:
+    数字们 = re.findall(r"-?\d+(?:\.\d+)?", str(文本 or ""))
+    if not 数字们:
+        return 0
+    try:
+        return int(round(float(数字们[0])))
+    except Exception:
+        return 0
+
+
+def _是否舞推专用sm候选(charttype: str, 列数: int) -> bool:
+    谱面类型 = str(charttype or "").strip().lower()
+    try:
+        总列数 = int(列数 or 0)
+    except Exception:
+        总列数 = 0
+    return 总列数 in (10, 20) and 谱面类型 in {
+        "single",
+        "hard",
+        "double",
+        "remix",
+        "lover1",
+        "lover2",
+    }
+
+
+def _计算谱面列数(谱面数据文本: str) -> int:
+    try:
+        纯文本 = str(谱面数据文本 or "").replace("\r\n", "\n").replace("\r", "\n")
+        for 小节 in 纯文本.split(","):
+            行们 = [
+                ln.strip()
+                for ln in 小节.split("\n")
+                if ln.strip() and (not ln.strip().startswith("//"))
+            ]
+            if 行们:
+                return max(1, len(行们[0]))
+    except Exception:
+        return 5
+    return 5
+
+
+def _谱面候选优先级(
+    charttype: str,
+    列数: int,
+    meter_text: str = "",
+    优先double: bool = False,
+) -> Tuple[int, int, int, int]:
+    谱面类型 = str(charttype or "").strip().lower()
+    try:
+        总列数 = int(列数 or 0)
+    except Exception:
+        总列数 = 0
+    meter = _解析谱面meter整数(meter_text)
+
+    if _是否舞推专用sm候选(谱面类型, 总列数):
+        if bool(优先double):
+            if 谱面类型 == "double":
+                基础优先级 = 95
+            elif 谱面类型 in {"lover1", "lover2"}:
+                基础优先级 = 90
+            elif 谱面类型 == "hard":
+                基础优先级 = 70
+            elif 谱面类型 == "single":
+                基础优先级 = 60
+            elif 谱面类型 == "remix":
+                基础优先级 = 50
+            else:
+                基础优先级 = 10
+        else:
+            if 谱面类型 == "hard":
+                基础优先级 = 90
+            elif 谱面类型 == "single":
+                基础优先级 = 80
+            elif 谱面类型 == "remix":
+                基础优先级 = 70
+            elif 谱面类型 == "double":
+                基础优先级 = 55
+            elif 谱面类型 in {"lover1", "lover2"}:
+                基础优先级 = 40
+            else:
+                基础优先级 = 10
+        恋爱优先 = 1 if 谱面类型 == "lover1" else 0
+        return (基础优先级, meter, 总列数, 恋爱优先)
+
+    if bool(优先double):
+        if "pump-double" in 谱面类型:
+            基础优先级 = 80
+        elif "pump-single" in 谱面类型:
+            基础优先级 = 70
+        elif "dance-single" in 谱面类型:
+            基础优先级 = 60
+        elif "single" in 谱面类型:
+            基础优先级 = 50
+        elif "double" in 谱面类型:
+            基础优先级 = 40
+        else:
+            基础优先级 = 10
+    else:
+        if "pump-single" in 谱面类型:
+            基础优先级 = 80
+        elif "dance-single" in 谱面类型:
+            基础优先级 = 70
+        elif "single" in 谱面类型:
+            基础优先级 = 60
+        elif "pump-double" in 谱面类型:
+            基础优先级 = 50
+        elif "double" in 谱面类型:
+            基础优先级 = 40
+        else:
+            基础优先级 = 10
+
+    return (基础优先级, meter, 总列数, 0)
+
+
+def _标准化谱面候选文本(文本: str) -> str:
+    结果 = str(文本 or "").strip().lower()
+    结果 = re.sub(r"[\s_\-]+", "", 结果)
+    return str(结果)
+
+
+def _提取谱面块上下文标识(sm文本: str, notes起始索引: int) -> str:
+    文本 = str(sm文本 or "").replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        起始索引 = int(notes起始索引)
+    except Exception:
+        起始索引 = 0
+    起始索引 = int(max(0, min(len(文本), 起始索引)))
+    前文 = str(文本[max(0, int(起始索引) - 420) : int(起始索引)] or "")
+    行列表 = [ln.strip() for ln in 前文.split("\n") if ln.strip()]
+    for 行 in reversed(行列表[-10:]):
+        标准文本 = _标准化谱面候选文本(行)
+        if not 标准文本:
             continue
-        charttype = (parts[0] or "").strip().lower()
-        notedata = parts[5] or ""
-        列数 = 5
-        try:
-            纯 = str(notedata or "").replace("\r", "")
-            for 小节 in 纯.split(","):
-                行们 = [
-                    ln.strip()
-                    for ln in 小节.split("\n")
-                    if ln.strip() and (not ln.strip().startswith("//"))
-                ]
-                if 行们:
-                    列数 = max(1, len(行们[0]))
-                    break
-        except Exception:
-            列数 = 5
-        候选.append((charttype, notedata, int(列数), "", ""))
+        if "lover2" in 标准文本:
+            return "lover2"
+        if "lover1" in 标准文本:
+            return "lover1"
+        if ("couple" in 标准文本) or ("情侣" in str(行)):
+            return "couple"
+    return ""
+
+
+def _是否情侣标识文本(文本: str) -> bool:
+    标准文本 = _标准化谱面候选文本(文本)
+    if not 标准文本:
+        return False
+    return any(
+        关键词 in 标准文本 for 关键词 in ("lover1", "lover2", "lover", "couple", "情侣")
+    )
+
+
+def _谱面候选命中标识(候选: Dict[str, str], 标识: str) -> bool:
+    目标 = _标准化谱面候选文本(标识)
+    if not 目标:
+        return False
+    charttype = _标准化谱面候选文本(str(候选.get("charttype", "") or ""))
+    description = _标准化谱面候选文本(str(候选.get("description_text", "") or ""))
+    difficulty = _标准化谱面候选文本(str(候选.get("difficulty_text", "") or ""))
+    context_tag = _标准化谱面候选文本(str(候选.get("context_tag_text", "") or ""))
+    目标文本 = str(目标)
+    if charttype == 目标文本 or 目标文本 in charttype:
+        return True
+    if 目标文本 in description or 目标文本 in difficulty:
+        return True
+    if 目标文本 in context_tag:
+        return True
+    return False
+
+
+def _收集sm谱面候选信息(sm文本: str) -> List[Dict[str, str]]:
+    候选列表: List[Dict[str, str]] = []
+
+    for m in re.finditer(r"#NOTES\s*:(.*?);", sm文本, flags=re.IGNORECASE | re.DOTALL):
+        字段 = _解析_sm_notes块字段(m.group(1))
+        if not isinstance(字段, dict):
+            continue
+        notedata = str(字段.get("notes_text", "") or "")
+        上下文标识 = _提取谱面块上下文标识(sm文本, int(m.start()))
+        候选列表.append(
+            {
+                "charttype": str(字段.get("charttype", "") or ""),
+                "description_text": str(字段.get("description_text", "") or ""),
+                "difficulty_text": str(字段.get("difficulty_text", "") or ""),
+                "notes_text": notedata,
+                "meter_text": str(字段.get("meter_text", "") or ""),
+                "bpms_text": "",
+                "offset_text": "",
+                "columns": str(_计算谱面列数(notedata)),
+                "context_tag_text": str(上下文标识 or ""),
+                "format": str(字段.get("format", "") or "sm"),
+            }
+        )
 
     for 块文本 in _提取ssc谱面块列表(sm文本):
         charttype = _提取sm标签值(块文本, "STEPSTYPE").lower()
         notedata = _提取sm标签原始值(块文本, "NOTES")
         if not notedata:
             continue
-
-        列数 = 5
-        try:
-            纯 = str(notedata or "").replace("\r", "")
-            for 小节 in 纯.split(","):
-                行们 = [
-                    ln.strip()
-                    for ln in 小节.split("\n")
-                    if ln.strip() and (not ln.strip().startswith("//"))
-                ]
-                if 行们:
-                    列数 = max(1, len(行们[0]))
-                    break
-        except Exception:
-            列数 = 5
-
-        候选.append(
-            (
-                charttype,
-                notedata,
-                int(列数),
-                _提取sm标签值(块文本, "BPMS"),
-                _提取sm标签值(块文本, "OFFSET"),
-            )
+        候选列表.append(
+            {
+                "charttype": str(charttype or ""),
+                "description_text": str(_提取sm标签值(块文本, "DESCRIPTION") or ""),
+                "difficulty_text": str(_提取sm标签值(块文本, "DIFFICULTY") or ""),
+                "notes_text": str(notedata or ""),
+                "meter_text": str(_提取sm标签值(块文本, "METER") or ""),
+                "bpms_text": str(_提取sm标签值(块文本, "BPMS") or ""),
+                "offset_text": str(_提取sm标签值(块文本, "OFFSET") or ""),
+                "columns": str(_计算谱面列数(notedata)),
+                "context_tag_text": "",
+                "format": "ssc",
+            }
         )
 
+    return 候选列表
+
+
+def _解析_sm_notes_选谱面(
+    sm文本: str,
+    优先double: bool = False,
+    目标charttype: str = "",
+    目标关键词: str = "",
+    严格匹配目标: bool = False,
+) -> Tuple[str, int, str, str, str, str]:
+    """
+    选中一个谱面块返回 (notedata, 列数, charttype, 局部BPMS文本, 局部OFFSET文本, 上下文标识)
+    默认优先 pump-single；当 优先double=True 时优先 pump-double。
+    """
+    候选 = _收集sm谱面候选信息(sm文本)
+
     if not 候选:
-        return "", 5, "", "", ""
+        return "", 5, "", "", "", ""
 
-    # 根据玩法偏好选谱面，最后兜底按列数最大的 chart。
-    选中chart: Tuple[str, str, int, str, str]
-    选中chart = 候选[0]
-    if bool(优先double):
-        for c in 候选:
-            if "pump-double" in c[0]:
-                选中chart = c
-                break
-        else:
-            for c in 候选:
-                if "pump-single" in c[0]:
-                    选中chart = c
-                    break
-    else:
-        for c in 候选:
-            if "pump-single" in c[0]:
-                选中chart = c
-                break
-        else:
-            for c in 候选:
-                if "pump-double" in c[0]:
-                    选中chart = c
-                    break
+    关键词 = str(目标关键词 or "").strip().lower()
+    if 关键词:
+        关键词候选 = [
+            项 for 项 in 候选 if _谱面候选命中标识(dict(项), str(关键词))
+        ]
+        if 关键词候选:
+            候选 = 关键词候选
+        elif bool(严格匹配目标):
+            return "", 5, "", "", "", ""
 
-    if not (str(选中chart[0] or "").strip()):
-        选中chart = max(候选, key=lambda it: int(it[2]))
+    指定类型 = str(目标charttype or "").strip().lower()
+    if 指定类型:
+        指定候选 = [
+            项
+            for 项 in 候选
+            if _谱面候选命中标识(dict(项), str(指定类型))
+        ]
+        if 指定候选:
+            候选 = 指定候选
+        elif bool(严格匹配目标):
+            return "", 5, "", "", "", ""
 
-    纯 = (选中chart[1] or "").replace("\r", "")
-    列数 = int(max(1, int(选中chart[2] or 5)))
+    选中chart = max(
+        候选,
+        key=lambda 项: _谱面候选优先级(
+            str(项.get("charttype", "") or ""),
+            int(项.get("columns", 0) or 0),
+            str(项.get("meter_text", "") or ""),
+            优先double=bool(优先double),
+        ),
+    )
+
+    纯 = str(选中chart.get("notes_text", "") or "").replace("\r", "")
+    列数 = int(max(1, int(选中chart.get("columns", 5) or 5)))
     return (
         纯,
         列数,
-        str(选中chart[0] or ""),
-        str(选中chart[3] or ""),
-        str(选中chart[4] or ""),
+        str(选中chart.get("charttype", "") or ""),
+        str(选中chart.get("bpms_text", "") or ""),
+        str(选中chart.get("offset_text", "") or ""),
+        str(选中chart.get("context_tag_text", "") or ""),
     )
 
 
+@_稳定谱面事件构建
 def _构建_sm事件列表(
-    sm路径: str, 优先double: bool = False
-) -> Tuple[List[音符事件], float, float, int, str, List[Tuple[float, float]]]:
+    sm路径: str,
+    优先double: bool = False,
+    目标charttype: str = "",
+    目标关键词: str = "",
+    严格匹配目标: bool = False,
+) -> Tuple[
+    List[音符事件],
+    List[手键装饰事件],
+    float,
+    float,
+    int,
+    str,
+    List[Tuple[float, float]],
+]:
     """
-    返回：(事件列表, offset, 总时长秒, 列数, charttype)
+    返回：(主事件列表, 手键装饰事件列表, offset, 总时长秒, 列数, charttype, bpms_beat)
 
     ✅ 关键修复：事件时间轴直接应用 SM OFFSET
     - SM 里通常是：note_song_time = beat_to_seconds(beat) - offset
@@ -1245,7 +1580,7 @@ def _构建_sm事件列表(
     """
     sm文本 = _安全读文本(sm路径)
     if not sm文本:
-        return [], 0.0, 0.0, 5, "", [(0.0, 120.0)]
+        return [], [], 0.0, 0.0, 5, "", [(0.0, 120.0)]
 
     offset = _解析_offset(sm文本)
     bpms = _解析_bpms(sm文本)
@@ -1255,11 +1590,16 @@ def _构建_sm事件列表(
         charttype,
         局部bpms文本,
         局部offset文本,
+        上下文标识文本,
     ) = _解析_sm_notes_选谱面(
-        sm文本, 优先double=bool(优先double)
+        sm文本,
+        优先double=bool(优先double),
+        目标charttype=str(目标charttype or ""),
+        目标关键词=str(目标关键词 or ""),
+        严格匹配目标=bool(严格匹配目标),
     )
     if not notedata:
-        return [], offset, 0.0, 5, "", list(bpms or [(0.0, 120.0)])
+        return [], [], offset, 0.0, 5, "", list(bpms or [(0.0, 120.0)])
 
     if 局部offset文本:
         try:
@@ -1278,6 +1618,208 @@ def _构建_sm事件列表(
 
     小节列表 = [m.strip() for m in notedata.split(",")]
     事件: List[音符事件] = []
+
+    按舞推专用解析 = bool(_是否舞推专用sm候选(charttype, 列数))
+    if (not bool(按舞推专用解析)) and int(max(0, int(列数 or 0))) in (10, 20):
+        谱面类型 = str(charttype or "").strip().lower()
+        if 谱面类型 in {
+            "pump-double",
+            "pump-couple",
+            "dance-couple",
+            "pump-routine",
+            "dance-routine",
+        } and (
+            bool(_是否情侣标识文本(上下文标识文本))
+            or bool(_是否情侣标识文本(目标关键词))
+            or bool(_是否情侣标识文本(目标charttype))
+        ):
+            按舞推专用解析 = True
+
+    if bool(按舞推专用解析):
+        手键方向映射 = dict(_读取手键aType映射配置() or _舞推手槽位默认方向)
+        每组宽 = int(_舞推每组槽位数)
+        总组数 = max(1, int(列数) // 每组宽)
+        活跃主轨组: List[int] = []
+        活跃任意组: List[int] = []
+        for 小节 in 小节列表:
+            行们 = [
+                ln.strip()
+                for ln in 小节.split("\n")
+                if ln.strip() and (not ln.strip().startswith("//"))
+            ]
+            for 行 in 行们:
+                if len(行) < 列数:
+                    continue
+                for 组序号 in range(总组数):
+                    起 = int(组序号) * 每组宽
+                    组文本 = 行[起 : 起 + 每组宽]
+                    if not str(组文本 or "").strip("0"):
+                        continue
+                    if int(组序号) not in 活跃任意组:
+                        活跃任意组.append(int(组序号))
+                    if any(
+                        (槽位 < len(组文本)) and (组文本[槽位] != "0")
+                        for 槽位 in _舞推脚槽位到轨道.keys()
+                    ) and int(组序号) not in 活跃主轨组:
+                        活跃主轨组.append(int(组序号))
+
+        if not 活跃主轨组:
+            活跃主轨组 = list(活跃任意组 or [0])
+
+        # 分组归一必须稳定：按列组索引固定映射，不能按“首次出现顺序”动态翻转。
+        # 否则像 lover2 这种先从右侧起手的谱，会被误判为左侧组，导致 1P/2P 串色。
+        活跃主轨组_稳定序 = sorted({int(v) for v in list(活跃主轨组 or [])})
+        if len(活跃主轨组_稳定序) >= 2:
+            归一分组列表 = list(活跃主轨组_稳定序[:2])
+        else:
+            归一分组列表 = list(活跃主轨组_稳定序[:1] or [0])
+        归一分组映射 = {int(组): 索引 for 索引, 组 in enumerate(归一分组列表)}
+
+        事件: List[音符事件] = []
+        手键事件: List[手键装饰事件] = []
+        未闭合主轨: Dict[Tuple[int, int], Tuple[float, float]] = {}
+        未闭合手键: Dict[Tuple[int, str], Tuple[float, float]] = {}
+        最大秒 = 0.0
+
+        for 小节序号, 小节 in enumerate(小节列表):
+            行们 = [
+                ln.strip()
+                for ln in 小节.split("\n")
+                if ln.strip() and (not ln.strip().startswith("//"))
+            ]
+            if not 行们:
+                continue
+
+            分割数 = len(行们)
+            for 行序号, 行 in enumerate(行们):
+                if len(行) < 列数:
+                    continue
+
+                beat = float(小节序号) * 4.0 + (float(行序号) / float(max(1, 分割数))) * 4.0
+                t = _beat转秒(beat, bpm段) - float(offset)
+
+                for 组序号 in range(总组数):
+                    起 = int(组序号) * 每组宽
+                    组文本 = 行[起 : 起 + 每组宽]
+                    if len(组文本) < 每组宽:
+                        continue
+
+                    归一玩家索引 = 归一分组映射.get(int(组序号))
+                    for 槽位, ch in enumerate(组文本):
+                        if ch == "0":
+                            continue
+
+                        if 槽位 in _舞推脚槽位到轨道:
+                            if 归一玩家索引 is None:
+                                continue
+                            轨道 = int(归一玩家索引) * 5 + int(_舞推脚槽位到轨道[槽位])
+                            键 = (int(归一玩家索引), int(轨道))
+                            if ch == "1":
+                                事件.append(
+                                    音符事件(
+                                        轨道序号=int(轨道),
+                                        开始秒=float(t),
+                                        结束秒=float(t),
+                                        开始beat=float(beat),
+                                        结束beat=float(beat),
+                                        类型="tap",
+                                    )
+                                )
+                                最大秒 = max(最大秒, float(t))
+                                continue
+                            if ch in ("2", "4"):
+                                未闭合主轨[键] = (float(t), float(beat))
+                                最大秒 = max(最大秒, float(t))
+                                continue
+                            if ch == "3":
+                                if 键 not in 未闭合主轨:
+                                    continue
+                                st秒, stbeat = 未闭合主轨.pop(键)
+                                ed秒 = float(t)
+                                edbeat = float(beat)
+                                if ed秒 < st秒:
+                                    st秒, ed秒 = ed秒, st秒
+                                    stbeat, edbeat = edbeat, stbeat
+                                事件.append(
+                                    音符事件(
+                                        轨道序号=int(轨道),
+                                        开始秒=float(st秒),
+                                        结束秒=float(ed秒),
+                                        开始beat=float(stbeat),
+                                        结束beat=float(edbeat),
+                                        类型="hold",
+                                    )
+                                )
+                                最大秒 = max(最大秒, float(ed秒))
+                            continue
+
+                        方向 = str(手键方向映射.get(int(槽位), "") or "")
+                        if not 方向:
+                            continue
+
+                        if 归一玩家索引 is None:
+                            if len(归一分组映射) == 1:
+                                归一玩家索引 = 0
+                            else:
+                                continue
+                        玩家序号 = int(归一玩家索引) + 1
+                        手键 = (int(归一玩家索引), str(方向))
+                        if ch == "1":
+                            手键事件.append(
+                                手键装饰事件(
+                                    方向=方向,
+                                    开始秒=float(t),
+                                    结束秒=float(t),
+                                    开始beat=float(beat),
+                                    结束beat=float(beat),
+                                    类型="tap",
+                                    玩家=int(玩家序号),
+                                    是否已触发自动特效=False,
+                                )
+                            )
+                            最大秒 = max(最大秒, float(t))
+                            continue
+                        if ch in ("2", "4"):
+                            未闭合手键[手键] = (float(t), float(beat))
+                            最大秒 = max(最大秒, float(t))
+                            continue
+                        if ch == "3":
+                            if 手键 not in 未闭合手键:
+                                continue
+                            st秒, stbeat = 未闭合手键.pop(手键)
+                            ed秒 = float(t)
+                            edbeat = float(beat)
+                            if ed秒 < st秒:
+                                st秒, ed秒 = ed秒, st秒
+                                stbeat, edbeat = edbeat, stbeat
+                            手键事件.append(
+                                手键装饰事件(
+                                    方向=方向,
+                                    开始秒=float(st秒),
+                                    结束秒=float(ed秒),
+                                    开始beat=float(stbeat),
+                                    结束beat=float(edbeat),
+                                    类型="hold",
+                                    玩家=int(玩家序号),
+                                    是否已触发自动特效=False,
+                                )
+                            )
+                            最大秒 = max(最大秒, float(ed秒))
+
+        事件.sort(key=lambda e: e.开始秒)
+        手键事件.sort(key=lambda e: e.开始秒)
+        结果列数 = 10 if len(归一分组映射) >= 2 else 5
+        结果chart类型 = "pump-double" if int(结果列数) >= 10 else "pump-single"
+        总时长 = max(0.0, 最大秒 + 2.0)
+        return (
+            事件,
+            手键事件,
+            float(offset),
+            float(总时长),
+            int(结果列数),
+            str(结果chart类型),
+            list(bpms or [(0.0, 120.0)]),
+        )
 
     未闭合: Dict[int, Tuple[float, float]] = {}  # 轨道 -> (开始秒, 开始beat)
     最大秒 = 0.0
@@ -1355,11 +1897,178 @@ def _构建_sm事件列表(
     总时长 = max(0.0, 最大秒 + 2.0)
     return (
         事件,
+        [],
         float(offset),
         float(总时长),
         int(列数),
         str(charttype or ""),
         list(bpms or [(0.0, 120.0)]),
+    )
+
+
+def _构建_sm情侣事件列表(
+    sm路径: str,
+) -> Tuple[
+    Optional[
+        Tuple[
+            List[音符事件],
+            List[手键装饰事件],
+            float,
+            float,
+            int,
+            str,
+            List[Tuple[float, float]],
+        ]
+    ],
+    str,
+]:
+    sm文本 = _安全读文本(sm路径)
+    if not sm文本:
+        return None, "情侣谱面读取失败，已回退单谱模式"
+
+    候选列表 = _收集sm谱面候选信息(sm文本)
+    命中lover1 = any(
+        _谱面候选命中标识(dict(项), "lover1")
+        for 项 in 候选列表
+        if isinstance(项, dict)
+    )
+    命中lover2 = any(
+        _谱面候选命中标识(dict(项), "lover2")
+        for 项 in 候选列表
+        if isinstance(项, dict)
+    )
+    if (not 命中lover1) or (not 命中lover2):
+        if (not 命中lover1) and (not 命中lover2):
+            return None, "情侣谱面缺少 lover1 / lover2，已回退单谱模式"
+        缺失标识 = "lover1" if (not 命中lover1) else "lover2"
+        return None, f"情侣谱面缺少 {缺失标识}，已回退单谱模式"
+
+    左结果 = _构建_sm事件列表(
+        sm路径,
+        优先double=False,
+        目标关键词="lover1",
+        严格匹配目标=True,
+    )
+    右结果 = _构建_sm事件列表(
+        sm路径,
+        优先double=False,
+        目标关键词="lover2",
+        严格匹配目标=True,
+    )
+
+    (
+        左事件列表,
+        左手键列表,
+        左偏移,
+        左总时长,
+        _左列数,
+        _左charttype,
+        左bpms,
+    ) = 左结果
+    (
+        右事件列表,
+        右手键列表,
+        右偏移,
+        右总时长,
+        _右列数,
+        _右charttype,
+        右bpms,
+    ) = 右结果
+
+    if (not 左事件列表 and not 左手键列表) or (not 右事件列表 and not 右手键列表):
+        return None, "情侣谱面解析不完整，已回退单谱模式"
+
+    合并事件: List[音符事件] = []
+    左按双踏轨道 = int(max(0, int(_左列数 or 0))) >= 10
+    右按双踏轨道 = int(max(0, int(_右列数 or 0))) >= 10
+
+    def _归一情侣轨道(原轨道: int, 按双踏轨道: bool, 单谱偏移: int) -> int:
+        if bool(按双踏轨道):
+            return int(原轨道 % 10)
+        return int((原轨道 % 5) + int(单谱偏移))
+
+    for 事件项 in list(左事件列表 or []):
+        try:
+            轨道 = int(getattr(事件项, "轨道序号", -1))
+        except Exception:
+            轨道 = -1
+        if 轨道 < 0:
+            continue
+        合并事件.append(
+            replace(
+                事件项,
+                轨道序号=int(_归一情侣轨道(轨道, 左按双踏轨道, 0)),
+                玩家=1,
+            )
+        )
+    for 事件项 in list(右事件列表 or []):
+        try:
+            轨道 = int(getattr(事件项, "轨道序号", -1))
+        except Exception:
+            轨道 = -1
+        if 轨道 < 0:
+            continue
+        合并事件.append(
+            replace(
+                事件项,
+                轨道序号=int(_归一情侣轨道(轨道, 右按双踏轨道, 5)),
+                玩家=2,
+            )
+        )
+    合并事件.sort(key=lambda 事件项: float(getattr(事件项, "开始秒", 0.0) or 0.0))
+
+    合并手键: List[手键装饰事件] = []
+    左保留分组侧玩家 = int(max(0, int(_左列数 or 0))) >= 10
+    右保留分组侧玩家 = int(max(0, int(_右列数 or 0))) >= 10
+    for 事件项 in list(左手键列表 or []):
+        try:
+            侧玩家 = int(getattr(事件项, "玩家", 1) or 1)
+            if not bool(左保留分组侧玩家):
+                侧玩家 = 1
+            侧玩家 = 2 if int(侧玩家) == 2 else 1
+            合并手键.append(
+                replace(
+                    事件项,
+                    玩家=int(侧玩家),
+                    颜色玩家=1,
+                )
+            )
+        except Exception:
+            continue
+    for 事件项 in list(右手键列表 or []):
+        try:
+            侧玩家 = int(getattr(事件项, "玩家", 1) or 1)
+            if not bool(右保留分组侧玩家):
+                侧玩家 = 2
+            侧玩家 = 2 if int(侧玩家) == 2 else 1
+            合并手键.append(
+                replace(
+                    事件项,
+                    玩家=int(侧玩家),
+                    颜色玩家=2,
+                )
+            )
+        except Exception:
+            continue
+    合并手键.sort(key=lambda 事件项: float(getattr(事件项, "开始秒", 0.0) or 0.0))
+
+    偏移 = float(左偏移)
+    if abs(float(偏移)) <= 1e-6:
+        偏移 = float(右偏移)
+    总时长 = float(max(float(左总时长), float(右总时长)))
+    bpms_beat = list(左bpms or 右bpms or [(0.0, 120.0)])
+
+    return (
+        (
+            合并事件,
+            合并手键,
+            float(偏移),
+            float(总时长),
+            10,
+            "lover-double",
+            bpms_beat,
+        ),
+        "",
     )
 
 
@@ -1769,6 +2478,7 @@ class 皮肤资源:
 class 场景_谱面播放器(场景基类):
     名称 = "谱面播放器"
     目标帧率 = 120
+    高精度帧率节流 = True
 
     @staticmethod
     def _规范目标帧率(值: object, 默认值: int = 120) -> int:
@@ -1795,7 +2505,96 @@ class 场景_谱面播放器(场景基类):
                 刷新率 = 0
         if 刷新率 <= 0:
             刷新率 = 120
+        刷新率 = max(120, int(刷新率))
         return self._规范目标帧率(刷新率, 120)
+
+    def _激活主窗口输入焦点(self):
+        try:
+            显示后端 = self.上下文.get("显示后端", None)
+        except Exception:
+            显示后端 = None
+        if 显示后端 is None:
+            return
+        try:
+            getattr(显示后端, "激活窗口", lambda: False)()
+        except Exception:
+            pass
+
+    def _重置输入焦点守卫(self, 持续秒: float = 3.0):
+        try:
+            当前秒 = float(time.perf_counter())
+        except Exception:
+            当前秒 = 0.0
+        try:
+            持续秒 = float(max(0.6, 持续秒))
+        except Exception:
+            持续秒 = 3.0
+        self._输入焦点守卫截止秒 = float(当前秒 + 持续秒)
+        self._输入焦点守卫下次尝试秒 = float(当前秒)
+
+    def _停止输入焦点守卫(self):
+        self._输入焦点守卫截止秒 = 0.0
+        self._输入焦点守卫下次尝试秒 = 0.0
+
+    def _暂停菜单切换冷却中(self, 当前秒: Optional[float] = None) -> bool:
+        if 当前秒 is None:
+            try:
+                当前秒 = float(time.perf_counter())
+            except Exception:
+                当前秒 = 0.0
+        try:
+            return float(当前秒) < float(
+                getattr(self, "_暂停菜单切换冷却至秒", 0.0) or 0.0
+            )
+        except Exception:
+            return False
+
+    def _刷新暂停菜单切换冷却(self, 持续秒: float = 0.22):
+        try:
+            当前秒 = float(time.perf_counter())
+        except Exception:
+            当前秒 = 0.0
+        try:
+            持续秒 = float(max(0.05, 持续秒))
+        except Exception:
+            持续秒 = 0.22
+        self._暂停菜单切换冷却至秒 = float(当前秒 + 持续秒)
+
+    def _窗口键盘焦点已就绪(self) -> bool:
+        try:
+            pygame.event.pump()
+        except Exception:
+            pass
+        try:
+            if hasattr(pygame.key, "get_focused"):
+                return bool(pygame.key.get_focused())
+        except Exception:
+            pass
+        try:
+            if hasattr(pygame.display, "get_active"):
+                return bool(pygame.display.get_active())
+        except Exception:
+            pass
+        return False
+
+    def _执行输入焦点守卫(self, 当前秒: float):
+        try:
+            if float(getattr(self, "_输入焦点守卫截止秒", 0.0) or 0.0) <= 0.0:
+                return
+            if float(当前秒) >= float(self._输入焦点守卫截止秒):
+                self._停止输入焦点守卫()
+                return
+            if bool(self._窗口键盘焦点已就绪()):
+                self._停止输入焦点守卫()
+                return
+            if float(当前秒) < float(getattr(self, "_输入焦点守卫下次尝试秒", 0.0) or 0.0):
+                return
+            self._激活主窗口输入焦点()
+            self._输入焦点守卫下次尝试秒 = float(
+                当前秒 + float(getattr(self, "_输入焦点守卫间隔秒", 0.25) or 0.25)
+            )
+        except Exception:
+            pass
 
     def __init__(self, 上下文: dict):
         super().__init__(上下文)
@@ -1818,6 +2617,8 @@ class 场景_谱面播放器(场景基类):
         self._手键装饰事件左渲染: List[手键装饰事件] = []
         self._手键装饰事件右渲染: List[手键装饰事件] = []
         self._手键装饰触发游标: int = 0
+        self._击中特效去重窗口毫秒: int = 10
+        self._最近轨道击中特效触发毫秒: List[int] = [-999999] * 10
 
         self._谱面总时长秒: float = 0.0
         self._offset: float = 0.0
@@ -1847,6 +2648,8 @@ class 场景_谱面播放器(场景基类):
         self._音频暂停中: bool = False
         self._音频已加载路径: Optional[str] = None
         self._音频开始系统秒: float = 0.0
+        self._音频文件有效: bool = False
+        self._音频文件状态路径: str = ""
 
         # 轨道/皮肤
         self._轨道方向名 = ["DownLeft", "UpLeft", "Center", "UpRight", "DownRight"]
@@ -1854,6 +2657,9 @@ class 场景_谱面播放器(场景基类):
         self._谱面列数: int = 5
         self._谱面chart类型: str = ""
         self._是否双踏板模式: bool = False
+        self._情侣模式请求: bool = False
+        self._情侣模式启用: bool = False
+        self._情侣模式强制皮肤: bool = False
 
         self._皮肤目录: str = ""
         self._皮肤: Optional[皮肤资源] = None
@@ -1883,24 +2689,45 @@ class 场景_谱面播放器(场景基类):
         self._GPU背景视频纹理源键: Tuple[Any, ...] = ()
         self._GPU背景转场旧纹理 = None
         self._GPU背景转场旧纹理键: Tuple[Any, ...] = ()
+        self._GPU击中特效覆盖层缓存: Optional[pygame.Surface] = None
+        self._GPU击中特效覆盖层尺寸: Tuple[int, int] = (0, 0)
+        self._GPU击中特效输入左 = None
+        self._GPU击中特效输入右 = None
         self._图片GIF背景源 = _图片GIF背景源()
         self._视频背景源 = _视频背景源()
         self._动态背景源 = _动态背景源()
         self._GPU顶部HUD已接管: bool = False
+        self._GPU底部HUD已接管: bool = False
         self._GPU上传切换待全量上传: bool = False
+        self._GPU游戏区静态上传签名: Optional[Tuple[Any, ...]] = None
 
         # 字体
         self._字体: Optional[pygame.font.Font] = None
         self._小字体: Optional[pygame.font.Font] = None
+        self._主字体字号: int = 20
+        self._小字体字号: int = 16
 
         # 布局
         self._屏幕尺寸: Tuple[int, int] = (0, 0)
+        self._布局输出尺寸: Tuple[int, int] = (0, 0)
+        self._游戏区布局缩放: float = 1.0
+        self._UI布局缩放: float = 1.0
+        self._文字布局缩放: float = 1.0
         self._血条高度: int = 64
         self._血条区域: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._按键提示脏矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._操作反馈脏矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._自动播放提示脏矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._底部币值脏矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._GPU按键提示缓存签名: Tuple[Any, ...] = ()
+        self._GPU按键提示缓存图层: Optional[pygame.Surface] = None
+        self._GPU按键提示缓存矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._GPU操作反馈缓存签名: Tuple[Any, ...] = ()
+        self._GPU操作反馈缓存图层: Optional[pygame.Surface] = None
+        self._GPU操作反馈缓存矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._GPU自动播放提示缓存签名: Tuple[Any, ...] = ()
+        self._GPU自动播放提示缓存图层: Optional[pygame.Surface] = None
+        self._GPU自动播放提示缓存矩形: pygame.Rect = pygame.Rect(0, 0, 0, 0)
 
         self._信息高度: int = 22
         self._信息y: int = 0
@@ -1996,6 +2823,9 @@ class 场景_谱面播放器(场景基类):
         self._布局调试设置_mtime: float = -2.0
         self._布局调试设置检查间隔秒: float = 0.25
         self._布局调试设置下次检查秒: float = 0.0
+        # 正式对局只认持久化设置，不再从布局调试文件覆写运行时参数。
+        self._启用布局调试设置: bool = False
+        self._播放期禁用布局调试热检查: bool = True
         self._调试背景蒙板不透明度: float = 224.0 / 255.0
         self._调试血条颜色: Tuple[int, int, int] = (181, 23, 203)
         self._调试血条亮度: float = 1.0
@@ -2053,12 +2883,22 @@ class 场景_谱面播放器(场景基类):
         self._背景视频缩放尺寸: Tuple[int, int] = (0, 0)
         self._背景视频缩放带alpha: bool = False
         self._背景视频上一有效帧: Optional[pygame.Surface] = None
+        self._背景视频上一有效原始帧: Optional[pygame.Surface] = None
         self._背景视频下次取帧秒: float = 0.0
         self._背景视频基础刷新间隔秒: float = 1.0 / 30.0
+        self._背景视频播放中禁止重建: bool = True
+        self._背景视频待重建: bool = False
+        self._视频背景GPU原帧直出: bool = True
+        self._视频背景GPU原帧直出跳过遮罩: bool = False
         self._视频背景关闭: bool = False
         self._暂停菜单开启: bool = False
         self._暂停菜单打开前播放中: bool = False
+        self._暂停菜单切换冷却至秒: float = 0.0
+        self._主线程卡顿保护阈值秒: float = 0.60
+        self._上次主线程卡顿提示秒: float = 0.0
         self._动态背景管理器 = DynamicBackgroundManager()
+        self._动态背景CPU帧缓存: Optional[pygame.Surface] = None
+        self._动态背景CPU帧缓存尺寸: Tuple[int, int] = (0, 0)
         self._动态背景预览开启: bool = False
         self._动态背景预览索引: int = 0
         self._动态背景预览原模式: str = "关闭"
@@ -2097,6 +2937,9 @@ class 场景_谱面播放器(场景基类):
         self._最近绘制性能统计: Dict[str, float] = {}
         self._平滑性能统计: Dict[str, float] = {}
         self._性能统计平滑系数: float = 0.18
+        self._输入焦点守卫截止秒: float = 0.0
+        self._输入焦点守卫下次尝试秒: float = 0.0
+        self._输入焦点守卫间隔秒: float = 0.25
 
         self._按键到轨道: Dict[str, int] = {}
         self._轨道到按键列表: Dict[int, List[str]] = {}
@@ -2166,12 +3009,90 @@ class 场景_谱面播放器(场景基类):
             return
         try:
             self._GPU谱面渲染器.绘制(显示后端)
+            self._绘制GPU叠加_普通击中特效(显示后端)
             self._GPU谱面诊断文本 = self._GPU谱面渲染器.取最近绘制统计()
         except Exception:
             try:
                 self._GPU谱面渲染器.清空()
             except Exception:
                 pass
+
+    def _取GPU击中特效覆盖层(
+        self, 尺寸: Tuple[int, int]
+    ) -> Optional[pygame.Surface]:
+        try:
+            宽 = int(max(1, int(尺寸[0])))
+            高 = int(max(1, int(尺寸[1])))
+        except Exception:
+            return None
+        图层 = getattr(self, "_GPU击中特效覆盖层缓存", None)
+        if (not isinstance(图层, pygame.Surface)) or 图层.get_size() != (宽, 高):
+            try:
+                图层 = pygame.Surface((宽, 高), pygame.SRCALPHA, 32).convert_alpha()
+            except Exception:
+                try:
+                    图层 = pygame.Surface((宽, 高), pygame.SRCALPHA)
+                except Exception:
+                    图层 = None
+            self._GPU击中特效覆盖层缓存 = 图层
+            self._GPU击中特效覆盖层尺寸 = (宽, 高)
+        if not isinstance(图层, pygame.Surface):
+            return None
+        try:
+            图层.fill((0, 0, 0, 0))
+        except Exception:
+            pass
+        return 图层
+
+    def _绘制GPU叠加_普通击中特效(self, 显示后端) -> bool:
+        if _sdl2_video is None or 显示后端 is None:
+            return False
+        取渲染器 = getattr(显示后端, "取GPU渲染器", None)
+        if not callable(取渲染器):
+            return False
+        渲染器 = 取渲染器()
+        if 渲染器 is None:
+            return False
+        try:
+            尺寸 = tuple(int(v) for v in 显示后端.取绘制屏幕().get_size())
+        except Exception:
+            return False
+        图层 = self._取GPU击中特效覆盖层(尺寸)
+        if not isinstance(图层, pygame.Surface):
+            return False
+        左输入 = getattr(self, "_GPU击中特效输入左", None)
+        右输入 = getattr(self, "_GPU击中特效输入右", None)
+        已绘制 = False
+        try:
+            左渲染器 = getattr(self, "_谱面渲染器", None)
+            if 左渲染器 is not None and 左输入 is not None:
+                左渲染器._绘制击中特效(图层, 左输入, 使用加色混合=False)
+                已绘制 = True
+        except Exception:
+            pass
+        try:
+            右渲染器 = getattr(self, "_谱面渲染器_右", None)
+            if 右渲染器 is not None and 右输入 is not None:
+                右渲染器._绘制击中特效(图层, 右输入, 使用加色混合=False)
+                已绘制 = True
+        except Exception:
+            pass
+        if not bool(已绘制):
+            return False
+        try:
+            纹理 = _sdl2_video.Texture.from_surface(渲染器, 图层)
+        except Exception:
+            return False
+        try:
+            # 不走任何 GPU 特效混合，直接普通 alpha 覆盖。
+            纹理.blend_mode = 1
+        except Exception:
+            pass
+        try:
+            纹理.draw(dstrect=(0, 0, int(尺寸[0]), int(尺寸[1])))
+        except Exception:
+            return False
+        return bool(已绘制)
 
     def _应使用GPU背景层(self) -> bool:
         if _sdl2_video is None:
@@ -2184,6 +3105,31 @@ class 场景_谱面播放器(场景基类):
         ):
             return False
         return True
+
+    def _视频背景使用GPU原帧直出(self) -> bool:
+        if not bool(getattr(self, "_视频背景GPU原帧直出", False)):
+            return False
+        if not bool(self._应使用GPU背景层()):
+            return False
+        return str(self._取背景渲染模式() or "图片") == "视频"
+
+    def _视频背景GPU直出跳过遮罩(self) -> bool:
+        return bool(getattr(self, "_视频背景GPU原帧直出跳过遮罩", False)) and bool(
+            self._视频背景使用GPU原帧直出()
+        )
+
+    def _取当前背景遮罩alpha(self) -> int:
+        if bool(self._视频背景GPU直出跳过遮罩()):
+            return 0
+        try:
+            return int(
+                max(0, min(255, int(getattr(self, "_背景暗层alpha", 0) or 0)))
+            )
+        except Exception:
+            return 0
+
+    def _背景亮度可调(self) -> bool:
+        return not bool(self._视频背景GPU直出跳过遮罩())
 
     def _同步GPU背景纹理缓存(self, 渲染器):
         当前渲染器id = int(id(渲染器))
@@ -2433,6 +3379,16 @@ class 场景_谱面播放器(场景基类):
             return
 
     def _更新动态背景模块(self, 时间差: float, 现在系统秒: float):
+        if bool(getattr(self, "_背景视频待重建", False)) and (
+            not bool(getattr(self, "_播放中", False))
+        ):
+            try:
+                视频来源 = str(getattr(self, "_背景视频路径", "") or "").strip()
+                if 视频来源:
+                    self._背景视频待重建 = False
+                    self._加载背景视频(视频来源)
+            except Exception:
+                pass
         管理器 = getattr(self, "_动态背景管理器", None)
         if 管理器 is None:
             return
@@ -2524,14 +3480,14 @@ class 场景_谱面播放器(场景基类):
         elif 背景模式 != "图片":
             self._停止背景转场()
 
-        遮罩纹理 = self._取GPU背景遮罩纹理(
-            渲染器, int(getattr(self, "_背景暗层alpha", 0) or 0)
-        )
-        if 遮罩纹理 is not None:
-            try:
-                遮罩纹理.draw(dstrect=(0, 0, int(屏宽), int(屏高)))
-            except Exception:
-                pass
+        遮罩alpha = int(self._取当前背景遮罩alpha())
+        if 遮罩alpha > 0:
+            遮罩纹理 = self._取GPU背景遮罩纹理(渲染器, 遮罩alpha)
+            if 遮罩纹理 is not None:
+                try:
+                    遮罩纹理.draw(dstrect=(0, 0, int(屏宽), int(屏高)))
+                except Exception:
+                    pass
 
         if 背景模式 == "动态背景" and (
             当前背景源 is None or (not bool(已绘制背景))
@@ -2723,6 +3679,8 @@ class 场景_谱面播放器(场景基类):
     def _取GPU底部脏矩形列表(self, 屏幕: pygame.Surface) -> List[pygame.Rect]:
         if not isinstance(屏幕, pygame.Surface):
             return []
+        if bool(getattr(self, "_GPU底部HUD已接管", False)):
+            return []
         屏幕矩形 = 屏幕.get_rect()
         候选: List[pygame.Rect] = []
         for 属性名 in (
@@ -2747,6 +3705,80 @@ class 场景_谱面播放器(场景基类):
             )
         return self._合并GPU上传矩形列表(屏幕矩形, 候选)
 
+    def _取GPU游戏区活动矩形(
+        self,
+        屏幕: pygame.Surface,
+        左轨道中心列表: List[int],
+        右轨道中心列表: Optional[List[int]],
+        箭头目标宽: int,
+    ) -> Optional[pygame.Rect]:
+        if not isinstance(屏幕, pygame.Surface):
+            return None
+        w, h = 屏幕.get_size()
+        全轨道中心列表 = [int(v) for v in list(左轨道中心列表 or []) if isinstance(v, int)]
+        全轨道中心列表.extend(
+            [int(v) for v in list(右轨道中心列表 or []) if isinstance(v, int)]
+        )
+        if not 全轨道中心列表:
+            return None
+
+        横向留白 = int(max(96, int(箭头目标宽) * 2))
+        左边界 = int(max(0, min(全轨道中心列表) - 横向留白))
+        右边界 = int(min(w, max(全轨道中心列表) + 横向留白))
+        上边界 = int(max(0, int(getattr(self, "_顶部y", 0)) - 48))
+        下边界 = int(
+            min(
+                h,
+                max(
+                    int(getattr(self, "_底部y", h) or h) + 48,
+                    int(getattr(self, "_判定线y", 0))
+                    + max(170, int(max(24, 箭头目标宽) * 4)),
+                ),
+            )
+        )
+        if 右边界 <= 左边界 or 下边界 <= 上边界:
+            return None
+        return pygame.Rect(
+            int(左边界),
+            int(上边界),
+            int(右边界 - 左边界),
+            int(下边界 - 上边界),
+        )
+
+    def _取GPU游戏区静态上传签名(
+        self,
+        屏幕: pygame.Surface,
+        左轨道中心列表: List[int],
+        右轨道中心列表: Optional[List[int]],
+        箭头目标宽: int,
+    ) -> Tuple[Any, ...]:
+        渲染器签名列表: List[Any] = []
+        for 渲染器 in (
+            getattr(self, "_谱面渲染器", None),
+            getattr(self, "_谱面渲染器_右", None),
+        ):
+            if 渲染器 is None:
+                渲染器签名列表.append(None)
+                continue
+            静态签名 = getattr(渲染器, "_notes静态层签名", None)
+            if isinstance(静态签名, tuple):
+                渲染器签名列表.append(tuple(静态签名))
+            else:
+                渲染器签名列表.append(静态签名)
+
+        return (
+            tuple(int(v) for v in 屏幕.get_size()),
+            tuple(int(v) for v in list(左轨道中心列表 or [])[:5]),
+            tuple(int(v) for v in list(右轨道中心列表 or [])[:5]),
+            bool(getattr(self, "_是否双踏板模式", False)),
+            int(getattr(self, "_顶部y", 0) or 0),
+            int(getattr(self, "_判定线y", 0) or 0),
+            int(getattr(self, "_底部y", 0) or 0),
+            int(max(0, int(箭头目标宽 or 0))),
+            bool(int(getattr(self, "_总血量HP", 9999) or 9999) < 201),
+            tuple(渲染器签名列表),
+        )
+
     def _刷新GPU上传策略(
         self,
         屏幕: pygame.Surface,
@@ -2756,10 +3788,12 @@ class 场景_谱面播放器(场景基类):
         GPU管线已启用: bool,
     ):
         if (not bool(GPU管线已启用)) or (not isinstance(屏幕, pygame.Surface)):
-            self._写入GPU上传提示(None, False)
+            self._GPU游戏区静态上传签名 = None
+            self._写入GPU上传提示(None, True)
             return
         if bool(getattr(self, "_GPU上传切换待全量上传", False)):
             self._GPU上传切换待全量上传 = False
+            self._GPU游戏区静态上传签名 = None
             self._写入GPU上传提示(None, True)
             return
 
@@ -2767,6 +3801,7 @@ class 场景_谱面播放器(场景基类):
         if 当前背景源 is not None and hasattr(当前背景源, "需要强制全量上传"):
             try:
                 if bool(当前背景源.需要强制全量上传(self)):
+                    self._GPU游戏区静态上传签名 = None
                     self._写入GPU上传提示(None, True)
                     return
             except Exception:
@@ -2775,53 +3810,43 @@ class 场景_谱面播放器(场景基类):
         if bool(getattr(self, "_暂停菜单开启", False)) or bool(
             getattr(self, "_退场黑屏开启", False)
         ):
+            self._GPU游戏区静态上传签名 = None
             self._写入GPU上传提示(None, True)
             return
         if bool(self.上下文.get("开发调试菜单开启", False)):
+            self._GPU游戏区静态上传签名 = None
             self._写入GPU上传提示(None, True)
             return
 
         if bool(getattr(self, "_显示准备动画", False)) and (
             not bool(getattr(self, "_准备动画已完成", True))
         ):
+            self._GPU游戏区静态上传签名 = None
             self._写入GPU上传提示(None, True)
             return
         if bool(getattr(self._结算前成就动画, "是否激活", lambda: False)()):
+            self._GPU游戏区静态上传签名 = None
             self._写入GPU上传提示(None, True)
             return
 
-        w, h = 屏幕.get_size()
         脏矩形列表: List[pygame.Rect] = self._取GPU顶部HUD脏矩形列表(屏幕)
         脏矩形列表.extend(self._取GPU底部脏矩形列表(屏幕))
-
-        全轨道中心列表 = [int(v) for v in list(左轨道中心列表 or []) if isinstance(v, int)]
-        全轨道中心列表.extend(
-            [int(v) for v in list(右轨道中心列表 or []) if isinstance(v, int)]
+        当前游戏区签名 = self._取GPU游戏区静态上传签名(
+            屏幕,
+            左轨道中心列表=list(左轨道中心列表),
+            右轨道中心列表=list(右轨道中心列表 or []),
+            箭头目标宽=int(箭头目标宽),
         )
-        if 全轨道中心列表:
-            横向留白 = int(max(96, int(箭头目标宽) * 2))
-            左边界 = int(max(0, min(全轨道中心列表) - 横向留白))
-            右边界 = int(min(w, max(全轨道中心列表) + 横向留白))
-            上边界 = int(max(0, int(getattr(self, "_顶部y", 0)) - 48))
-            下边界 = int(
-                min(
-                    h,
-                    max(
-                        int(getattr(self, "_底部y", h) or h) + 48,
-                        int(getattr(self, "_判定线y", 0))
-                        + max(170, int(max(24, 箭头目标宽) * 4)),
-                    ),
-                )
+        if 当前游戏区签名 != getattr(self, "_GPU游戏区静态上传签名", None):
+            游戏区矩形 = self._取GPU游戏区活动矩形(
+                屏幕,
+                左轨道中心列表=list(左轨道中心列表),
+                右轨道中心列表=list(右轨道中心列表 or []),
+                箭头目标宽=int(箭头目标宽),
             )
-            if 右边界 > 左边界 and 下边界 > 上边界:
-                脏矩形列表.append(
-                    pygame.Rect(
-                        int(左边界),
-                        int(上边界),
-                        int(右边界 - 左边界),
-                        int(下边界 - 上边界),
-                    )
-                )
+            if isinstance(游戏区矩形, pygame.Rect) and 游戏区矩形.w > 0 and 游戏区矩形.h > 0:
+                脏矩形列表.append(游戏区矩形)
+            self._GPU游戏区静态上传签名 = 当前游戏区签名
 
         self._写入GPU上传提示(脏矩形列表, False)
 
@@ -2884,6 +3909,7 @@ class 场景_谱面播放器(场景基类):
                         开始beat=float(getattr(e, "开始beat", 0.0) or 0.0),
                         结束beat=float(getattr(e, "结束beat", 0.0) or 0.0),
                         类型=str(getattr(e, "类型", "tap") or "tap"),
+                        玩家=int(getattr(e, "玩家", 2) or 2),
                     )
                 )
 
@@ -2940,7 +3966,12 @@ class 场景_谱面播放器(场景基类):
             pass
 
     def _触发轨道击中特效(
-        self, 轨道: int, 判定: str, 发生谱面秒: Optional[float] = None
+        self,
+        轨道: int,
+        判定: str,
+        发生谱面秒: Optional[float] = None,
+        仅登记命中: bool = False,
+        回报: Any = None,
     ):
         判定 = str(判定 or "").lower()
         if not 判定 or 判定 == "miss":
@@ -2954,18 +3985,96 @@ class 场景_谱面播放器(场景基类):
             轨道 = int(轨道)
         except Exception:
             return
-        if not bool(getattr(self, "_是否双踏板模式", False)):
+        try:
+            发生毫秒 = int(round(float(发生谱面秒) * 1000.0))
+        except Exception:
+            发生毫秒 = -999999
+        try:
+            去重表 = list(getattr(self, "_最近轨道击中特效触发毫秒", []) or [])
+            if 轨道 < 0:
+                return
+            if 轨道 >= len(去重表):
+                去重表.extend([-999999] * int(轨道 + 1 - len(去重表)))
+            上次触发毫秒 = int(去重表[int(轨道)])
+            去重窗口毫秒 = int(
+                max(1, int(getattr(self, "_击中特效去重窗口毫秒", 10) or 10))
+            )
+            if abs(int(发生毫秒) - int(上次触发毫秒)) <= int(去重窗口毫秒):
+                self._最近轨道击中特效触发毫秒 = 去重表
+                return
+            去重表[int(轨道)] = int(发生毫秒)
+            self._最近轨道击中特效触发毫秒 = 去重表
+        except Exception:
+            pass
+
+        def _构建局部回报(原回报: Any, 局部轨道: int) -> Any:
+            if 原回报 is None:
+                return None
             try:
-                if self._谱面渲染器 is not None:
-                    self._谱面渲染器.触发击中特效(int(轨道), 判定, float(发生谱面秒))
+                return replace(原回报, 轨道序号=int(局部轨道))
             except Exception:
                 pass
+            try:
+                数据 = dict(getattr(原回报, "__dict__", {}) or {})
+            except Exception:
+                数据 = {}
+            数据["轨道序号"] = int(局部轨道)
+
+            class _局部回报代理:
+                pass
+
+            代理 = _局部回报代理()
+            for 键, 值 in 数据.items():
+                try:
+                    setattr(代理, str(键), 值)
+                except Exception:
+                    continue
+            return 代理
+
+        def _提交到渲染器(目标渲染器: Any, 局部轨道: int, 局部回报: Any):
+            if 目标渲染器 is None:
+                return
+            登记判定命中回报 = getattr(目标渲染器, "登记判定命中回报", None)
+            if 局部回报 is not None and callable(登记判定命中回报):
+                try:
+                    登记判定命中回报(
+                        局部回报,
+                        当前谱面秒=float(发生谱面秒),
+                        仅登记命中=bool(仅登记命中),
+                    )
+                    return
+                except Exception:
+                    pass
+            try:
+                目标渲染器.触发击中特效(
+                    int(局部轨道),
+                    判定,
+                    float(发生谱面秒),
+                    仅登记命中=bool(仅登记命中),
+                )
+            except Exception:
+                pass
+
+        if not bool(getattr(self, "_是否双踏板模式", False)):
+            _提交到渲染器(
+                self._谱面渲染器,
+                int(轨道),
+                _构建局部回报(回报, int(轨道)),
+            )
             return
         try:
-            if 0 <= 轨道 < 5 and self._谱面渲染器 is not None:
-                self._谱面渲染器.触发击中特效(int(轨道), 判定, float(发生谱面秒))
-            elif 5 <= 轨道 < 10 and self._谱面渲染器_右 is not None:
-                self._谱面渲染器_右.触发击中特效(int(轨道 - 5), 判定, float(发生谱面秒))
+            if 0 <= 轨道 < 5:
+                _提交到渲染器(
+                    self._谱面渲染器,
+                    int(轨道),
+                    _构建局部回报(回报, int(轨道)),
+                )
+            elif 5 <= 轨道 < 10:
+                _提交到渲染器(
+                    self._谱面渲染器_右,
+                    int(轨道 - 5),
+                    _构建局部回报(回报, int(轨道 - 5)),
+                )
         except Exception:
             pass
 
@@ -3126,15 +4235,22 @@ class 场景_谱面播放器(场景基类):
         屏幕宽 = int(max(1, self._屏幕尺寸[0] if self._屏幕尺寸 else 0))
         if 屏幕宽 <= 0:
             return ([], [])
+        try:
+            self._刷新布局调试设置()
+        except Exception:
+            pass
 
-        实际缩放 = float(self._箭头默认缩放) * float(self._尺寸倍率)
-        箭头宽 = int(self._取箭头目标宽(实际缩放))
-        间距 = int(max(22, int(箭头宽 * 0.88)))
-        槽宽 = int(max(箭头宽 + 10, int(箭头宽 * 1.08)))
+        间距 = int(max(22, int(getattr(self, "_轨道中心间距", 0) or 0)))
+        槽宽 = int(max(30, int(getattr(self, "_轨道槽宽", 0) or 0)))
         组宽 = int(槽宽 + 4 * 间距)
 
-        边距 = int(max(20, 屏幕宽 * 0.02))
-        中缝 = int(max(22, 屏幕宽 * 0.02))
+        UI缩放 = float(max(0.44, min(1.06, float(getattr(self, "_UI布局缩放", 1.0) or 1.0))))
+        边距 = int(max(20, round(36.0 * UI缩放)))
+        # 双踏板/情侣都走这里：给中间留足“分区感”，避免两侧判定区挤在一起。
+        基础中缝 = int(max(24, round(42.0 * UI缩放), int(间距 * 1.10)))
+        推荐中缝 = int(max(round(78.0 * UI缩放), int(间距 * 1.55), int(槽宽 * 0.72)))
+        中缝上限 = int(max(56, round(float(屏幕宽) * 0.24)))
+        中缝 = int(max(基础中缝, min(推荐中缝, 中缝上限)))
         最大组宽 = int(max(200, (屏幕宽 - 边距 * 2 - 中缝) // 2))
         if 组宽 > 最大组宽:
             缩放 = float(max(0.5, 最大组宽 / float(max(1, 组宽))))
@@ -3156,8 +4272,20 @@ class 场景_谱面播放器(场景基类):
         return (左中心, 右中心)
 
     def _刷新布局调试设置(self, 强制: bool = False):
-        # 历史遗留布局调试器已停用，避免运行时反复读取调试配置文件。
-        return
+        if not bool(getattr(self, "_启用布局调试设置", False)):
+            return
+        if (
+            (not bool(强制))
+            and bool(getattr(self, "_播放期禁用布局调试热检查", False))
+            and (
+                bool(getattr(self, "_播放中", False))
+                or (
+                    bool(getattr(self, "_显示准备动画", False))
+                    and (not bool(getattr(self, "_准备动画已完成", True)))
+                )
+            )
+        ):
+            return
         路径 = str(getattr(self, "_布局调试设置路径", "") or "").strip()
         try:
             当前系统秒 = float(time.perf_counter())
@@ -3464,18 +4592,110 @@ class 场景_谱面播放器(场景基类):
     def _绑定圆环频谱音频(self):
         对象 = getattr(self, "_圆环频谱舞台装饰", None)
         if 对象 is None:
-            return
-        self._初始化音频设备()
-        if not bool(getattr(self, "_音频可用", False)):
-            return
+            return False
         音频路径 = str(getattr(self, "_音频路径", "") or "").strip()
         if (not 音频路径) or (not os.path.isfile(音频路径)):
-            return
-        对象.绑定音频(str(音频路径))
+            return False
+        self._初始化音频设备()
+        if not bool(getattr(self, "_音频可用", False)):
+            return False
+        try:
+            对象.绑定音频(str(音频路径))
+            try:
+                self._圆环频谱音频绑定失败原因 = ""
+            except Exception:
+                pass
+            return True
+        except Exception as 异常:
+            # 圆环频谱只是装饰层；部分母包 mp3 可被 music.load 播放，
+            # 但无法被 pygame.mixer.Sound 整首解码取样，此时静默降级为假频谱。
+            try:
+                对象._已载入样本 = False
+                对象._上次幅度 = None
+            except Exception:
+                pass
+            try:
+                self._圆环频谱音频绑定失败原因 = (
+                    f"{type(异常).__name__} {异常}"
+                )
+            except Exception:
+                pass
+            return False
 
     def _背景亮度档位alpha(self) -> List[int]:
         # 按“20%一档”，并满足你要求的 0% 后回到 70%
         return [179, 128, 77, 26, 0]
+
+    def _取准备动画背景蒙版透明度(
+        self, 基准透明度: Optional[float] = None
+    ) -> float:
+        try:
+            背景暗层alpha = float(getattr(self, "_背景暗层alpha", 0) or 0)
+        except Exception:
+            背景暗层alpha = 0.0
+        背景暗层alpha = float(max(0.0, min(255.0, 背景暗层alpha)))
+
+        if 基准透明度 is not None:
+            try:
+                配置透明度 = float(基准透明度 or 0.0)
+            except Exception:
+                配置透明度 = 背景暗层alpha
+            配置透明度 = float(max(0.0, min(255.0, 配置透明度)))
+            背景暗层alpha = float(min(背景暗层alpha, 配置透明度))
+
+        return float(min(136.0, 背景暗层alpha * 0.72))
+
+    def _取箭头渲染谱面秒(self, 当前系统秒: Optional[float] = None) -> float:
+        try:
+            逻辑谱面秒 = float(getattr(self, "_当前谱面秒", 0.0) or 0.0)
+        except Exception:
+            逻辑谱面秒 = 0.0
+        逻辑谱面秒 = float(max(0.0, 逻辑谱面秒))
+
+        if not bool(getattr(self, "_播放中", False)):
+            return float(逻辑谱面秒)
+        if bool(getattr(self, "_音频暂停中", False)) or bool(
+            getattr(self, "_暂停菜单开启", False)
+        ):
+            return float(逻辑谱面秒)
+        if bool(getattr(self, "_显示准备动画", False)) and (
+            not bool(getattr(self, "_准备动画已完成", True))
+        ):
+            return float(逻辑谱面秒)
+
+        try:
+            起始系统秒 = float(getattr(self, "_起始系统秒", 0.0) or 0.0)
+        except Exception:
+            起始系统秒 = 0.0
+        if 起始系统秒 <= 0.0:
+            return float(逻辑谱面秒)
+
+        if 当前系统秒 is None:
+            try:
+                当前系统秒 = float(time.perf_counter())
+            except Exception:
+                return float(逻辑谱面秒)
+
+        try:
+            目标帧率 = float(
+                max(60, min(240, int(getattr(self, "目标帧率", 120) or 120)))
+            )
+        except Exception:
+            目标帧率 = 120.0
+        最大超前秒 = float(min(1.0 / 45.0, max(1.0 / 240.0, 1.5 / 目标帧率)))
+        渲染谱面秒 = float(当前系统秒 - 起始系统秒)
+        if 渲染谱面秒 < 逻辑谱面秒:
+            return float(逻辑谱面秒)
+        if 渲染谱面秒 > 逻辑谱面秒 + 最大超前秒:
+            渲染谱面秒 = float(逻辑谱面秒 + 最大超前秒)
+
+        try:
+            总时长秒 = float(getattr(self, "_谱面总时长秒", 0.0) or 0.0)
+        except Exception:
+            总时长秒 = 0.0
+        if 总时长秒 > 0.0:
+            渲染谱面秒 = float(min(渲染谱面秒, 总时长秒))
+        return float(max(0.0, 渲染谱面秒))
 
     def _保存背景遮罩alpha到设置(self):
         值 = int(max(0, min(255, int(getattr(self, "_背景暗层alpha", 0) or 0))))
@@ -3917,9 +5137,6 @@ class 场景_谱面播放器(场景基类):
     def _取动态背景菜单文本(self) -> str:
         已开启 = self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭")) != "关闭"
         模式 = "开启" if 已开启 else "关闭"
-        显示后端 = self.上下文.get("显示后端", None)
-        if not bool(getattr(显示后端, "是否GPU", False)):
-            return f"动态背景（{模式} / 仅GPU）"
         return f"动态背景（{模式}）"
 
     def _动态背景已启用(self) -> bool:
@@ -3928,8 +5145,6 @@ class 场景_谱面播放器(场景基类):
         return self._规范动态背景模式(getattr(self, "_动态背景模式", "关闭")) != "关闭"
 
     def _取背景渲染模式(self) -> str:
-        if self._曲包背景视频自动生效中():
-            return "视频"
         背景模式 = str(getattr(self, "_背景模式", "图片") or "图片")
         if 背景模式 == "动态背景" and self._规范动态背景模式(
             getattr(self, "_动态背景模式", "关闭")
@@ -3946,6 +5161,24 @@ class 场景_谱面播放器(场景基类):
         if 背景模式 == "动态背景":
             return getattr(self, "_动态背景源", None)
         return getattr(self, "_图片GIF背景源", None)
+
+    def _准备动画视频背景禁止图片回退(self) -> bool:
+        if str(self._取背景渲染模式() or "图片") != "视频":
+            return False
+        if not bool(getattr(self, "_显示准备动画", False)):
+            return False
+        return not bool(getattr(self, "_准备动画已完成", True))
+
+    def _准备动画CPU背景回退启用(self, 背景模式: Optional[str] = None) -> bool:
+        当前模式 = str(背景模式 or self._取背景渲染模式() or "图片")
+        if 当前模式 not in ("视频", "动态背景"):
+            return False
+        显示后端 = self.上下文.get("显示后端", None)
+        if bool(getattr(显示后端, "是否GPU", False)):
+            return False
+        if not bool(getattr(self, "_显示准备动画", False)):
+            return False
+        return not bool(getattr(self, "_准备动画已完成", True))
 
     def _刷新准备动画背景快照(
         self,
@@ -3965,12 +5198,16 @@ class 场景_谱面播放器(场景基类):
                 现在系统秒 = 0.0
 
         当前背景模式 = str(self._取背景渲染模式() or "图片")
+        背景快照模式 = str(当前背景模式 or "图片")
         try:
             self._准备动画最近视频快照命中 = False
         except Exception:
             pass
         当前背景源 = self._取当前背景源()
         背景图 = None
+        if bool(self._准备动画CPU背景回退启用(当前背景模式)):
+            当前背景源 = None
+            背景快照模式 = "图片"
         if 当前背景源 is not None and hasattr(当前背景源, "取准备动画快照"):
             try:
                 背景图 = 当前背景源.取准备动画快照(
@@ -3978,6 +5215,10 @@ class 场景_谱面播放器(场景基类):
                 )
             except Exception:
                 背景图 = None
+        if (not isinstance(背景图, pygame.Surface)) and 当前背景模式 == "视频":
+            return getattr(self, "_准备动画背景无蒙版", None)
+        if (not isinstance(背景图, pygame.Surface)) and 当前背景模式 == "动态背景":
+            return getattr(self, "_准备动画背景无蒙版", None)
         if not isinstance(背景图, pygame.Surface):
             try:
                 背景图 = self._取背景图片帧(float(现在系统秒))
@@ -3989,7 +5230,7 @@ class 场景_谱面播放器(场景基类):
         背景快照 = getattr(self, "_准备动画背景无蒙版", None)
         旧快照类型 = str(getattr(self, "_准备动画背景快照类型", "") or "")
         if (
-            当前背景模式 == "视频"
+            背景快照模式 == "视频"
             and (not bool(getattr(self, "_准备动画最近视频快照命中", False)))
             and isinstance(背景快照, pygame.Surface)
             and 背景快照.get_size() == (宽, 高)
@@ -4012,13 +5253,13 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             return getattr(self, "_准备动画背景无蒙版", None)
         self._准备动画背景无蒙版 = 背景快照
-        if 当前背景模式 == "视频":
+        if 背景快照模式 == "视频":
             self._准备动画背景快照类型 = (
                 "视频"
                 if bool(getattr(self, "_准备动画最近视频快照命中", False))
                 else "图片"
             )
-        elif 当前背景模式 == "动态背景":
+        elif 背景快照模式 == "动态背景":
             self._准备动画背景快照类型 = "动态背景"
         else:
             self._准备动画背景快照类型 = "图片"
@@ -4103,6 +5344,8 @@ class 场景_谱面播放器(场景基类):
         尺寸: Tuple[int, int],
         现在系统秒: Optional[float] = None,
     ) -> Optional[pygame.Surface]:
+        if bool(self._准备动画CPU背景回退启用("动态背景")):
+            return self._刷新准备动画背景快照(尺寸, 现在系统秒)
         if not bool(self._动态背景已启用()):
             return None
         try:
@@ -4230,6 +5473,12 @@ class 场景_谱面播放器(场景基类):
         self._保存游戏视觉设置到选歌json()
 
     def _切换背景亮度档位(self):
+        if not bool(self._背景亮度可调()):
+            try:
+                self._设置操作反馈("视频背景：原素材直出")
+            except Exception:
+                pass
+            return
         档位 = list(self._背景亮度档位alpha())
         if not 档位:
             return
@@ -4284,6 +5533,127 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             self._圆环频谱舞台装饰 = None
 
+    def _原生箭头皮肤目录可用(self, 皮肤目录: str) -> bool:
+        根目录 = os.path.abspath(str(皮肤目录 or "").strip()) if str(皮肤目录 or "").strip() else ""
+        if (not 根目录) or (not os.path.isdir(根目录)):
+            return False
+        arrow_json = os.path.join(根目录, "arrow", "skin.json")
+        arrow_png = os.path.join(根目录, "arrow", "skin.png")
+        key_json = os.path.join(根目录, "key", "skin.json")
+        key_png = os.path.join(根目录, "key", "skin.png")
+        key_1p_json = os.path.join(根目录, "key", "1p", "skin.json")
+        key_1p_png = os.path.join(根目录, "key", "1p", "skin.png")
+        key_2p_json = os.path.join(根目录, "key", "2p", "skin.json")
+        key_2p_png = os.path.join(根目录, "key", "2p", "skin.png")
+        return bool(
+            os.path.isfile(arrow_json)
+            and os.path.isfile(arrow_png)
+            and (
+                (os.path.isfile(key_json) and os.path.isfile(key_png))
+                or (
+                    os.path.isfile(key_1p_json)
+                    and os.path.isfile(key_1p_png)
+                    and os.path.isfile(key_2p_json)
+                    and os.path.isfile(key_2p_png)
+                )
+            )
+        )
+
+    def _箭头皮肤目录可用(self, 皮肤目录: str) -> bool:
+        根目录 = os.path.abspath(str(皮肤目录 or "").strip()) if str(皮肤目录 or "").strip() else ""
+        if (not 根目录) or (not os.path.isdir(根目录)):
+            return False
+        if bool(_is_stepmania_arrow_skin_dir(根目录)):
+            return True
+        return bool(self._原生箭头皮肤目录可用(根目录))
+
+    def _取情侣模式皮肤目录(self) -> str:
+        项目根 = _取项目根目录()
+        候选目录列表: List[str] = [
+            os.path.join(项目根, "UI-img", "游戏界面", "情侣箭头"),
+            os.path.join(项目根, "UI-img", "游戏界面", "箭头", "情侣箭头"),
+        ]
+        for 选项 in list(getattr(self, "_菜单箭头选项", []) or []):
+            try:
+                皮肤目录 = os.path.abspath(str(getattr(选项, "skin_dir", "") or "").strip())
+            except Exception:
+                皮肤目录 = ""
+            if (not 皮肤目录) or (not os.path.isdir(皮肤目录)):
+                continue
+            try:
+                关键词源 = " ".join(
+                    [
+                        str(getattr(选项, "skin_id", "") or ""),
+                        str(getattr(选项, "label", "") or ""),
+                        str(getattr(选项, "file_name", "") or ""),
+                    ]
+                ).lower()
+            except Exception:
+                关键词源 = ""
+            if any(关键词 in 关键词源 for 关键词 in ("情侣", "lover", "couple")):
+                候选目录列表.append(皮肤目录)
+
+        已检查: set[str] = set()
+        for 候选目录 in 候选目录列表:
+            目录 = os.path.abspath(str(候选目录 or "").strip()) if str(候选目录 or "").strip() else ""
+            if (not 目录) or (目录 in 已检查):
+                continue
+            已检查.add(目录)
+            if bool(self._箭头皮肤目录可用(目录)):
+                return 目录
+        return ""
+
+    def _应用情侣模式强制皮肤(self) -> bool:
+        情侣皮肤目录 = str(self._取情侣模式皮肤目录() or "").strip()
+        if (not 情侣皮肤目录) or (not bool(self._箭头皮肤目录可用(情侣皮肤目录))):
+            self._情侣模式强制皮肤 = False
+            self._错误提示 = (
+                self._错误提示 + " | " if self._错误提示 else ""
+            ) + (
+                "情侣模式皮肤不可用（缺少 arrow/key 的 skin.json 或 skin.png）"
+                if not 情侣皮肤目录
+                else f"情侣模式皮肤不可用：{情侣皮肤目录}"
+            )
+            return False
+
+        旧皮肤目录 = str(getattr(self, "_皮肤目录", "") or "").strip()
+
+        self._皮肤目录 = str(情侣皮肤目录)
+        self._情侣模式强制皮肤 = True
+        self._当前箭头选项 = None
+        try:
+            self._载荷["箭头文件名"] = "情侣箭头.png"
+        except Exception:
+            pass
+
+        try:
+            if self._谱面渲染器 is not None:
+                self._谱面渲染器.设置皮肤(self._皮肤目录)
+                主皮肤包 = getattr(self._谱面渲染器, "_皮肤包", None)
+                if getattr(主皮肤包, "arrow", None) is None:
+                    raise RuntimeError("情侣模式皮肤缺少 arrow 图集")
+            if getattr(self, "_谱面渲染器_右", None) is not None:
+                self._谱面渲染器_右.设置皮肤(self._皮肤目录)
+                右皮肤包 = getattr(self._谱面渲染器_右, "_皮肤包", None)
+                if getattr(右皮肤包, "arrow", None) is None:
+                    raise RuntimeError("情侣模式右渲染器皮肤缺少 arrow 图集")
+        except Exception as 异常:
+            self._情侣模式强制皮肤 = False
+            if 旧皮肤目录 and bool(self._箭头皮肤目录可用(旧皮肤目录)):
+                self._皮肤目录 = str(旧皮肤目录)
+                try:
+                    if self._谱面渲染器 is not None:
+                        self._谱面渲染器.设置皮肤(self._皮肤目录)
+                    if getattr(self, "_谱面渲染器_右", None) is not None:
+                        self._谱面渲染器_右.设置皮肤(self._皮肤目录)
+                except Exception:
+                    pass
+            self._错误提示 = (
+                self._错误提示 + " | " if self._错误提示 else ""
+            ) + f"情侣皮肤加载失败：{type(异常).__name__} {异常}"
+            return False
+        return True
+
     def _应用ESC菜单背景文件(self, 背景文件名: str, save: bool = True) -> bool:
         选项 = resolve_background_option(self._菜单背景选项, 背景文件名)
         if 选项 is None:
@@ -4300,6 +5670,9 @@ class 场景_谱面播放器(场景基类):
         return True
 
     def _应用ESC菜单箭头皮肤(self, 箭头文件名: str, save: bool = True) -> bool:
+        if bool(getattr(self, "_情侣模式启用", False)):
+            self._设置操作反馈("情侣模式已锁定情侣箭头")
+            return False
         选项 = resolve_arrow_skin_option(self._菜单箭头选项, 箭头文件名)
         if 选项 is None:
             return False
@@ -4343,6 +5716,40 @@ class 场景_谱面播放器(场景基类):
         step = 1 if int(step or 0) >= 0 else -1
         键名 = str(row_key or "").strip()
         if not 键名:
+            return None
+
+        if 键名 == "display_mode":
+            切换方法 = self.上下文.get("切换全屏", None) if isinstance(self.上下文, dict) else None
+            if callable(切换方法):
+                try:
+                    切换方法()
+                except Exception:
+                    pass
+                self._设置操作反馈(f"显示模式：{self._取显示模式菜单文本()}")
+            return None
+
+        if 键名 == "display_resolution":
+            切换方法 = None
+            if isinstance(self.上下文, dict):
+                切换方法 = self.上下文.get("循环显示分辨率", None)
+                if not callable(切换方法):
+                    切换方法 = self.上下文.get("循环窗口分辨率", None)
+            if callable(切换方法):
+                try:
+                    切换方法(int(step))
+                except Exception:
+                    pass
+                self._设置操作反馈(f"分辨率：{self._取分辨率菜单文本()}")
+            return None
+
+        if 键名 == "status_hud":
+            切换方法 = self.上下文.get("切换状态HUD", None) if isinstance(self.上下文, dict) else None
+            if callable(切换方法):
+                try:
+                    切换方法()
+                except Exception:
+                    pass
+                self._设置操作反馈(f"状态HUD：{self._取状态HUD菜单文本()}")
             return None
 
         if 键名 == "scroll_speed":
@@ -4541,6 +5948,9 @@ class 场景_谱面播放器(场景基类):
             return None
 
         if 键名 == "arrow_skin":
+            if bool(getattr(self, "_情侣模式启用", False)):
+                self._设置操作反馈("情侣模式已锁定情侣箭头")
+                return None
             候选 = list(getattr(self, "_菜单箭头选项", []) or [])
             if not 候选:
                 return None
@@ -4559,6 +5969,9 @@ class 场景_谱面播放器(场景基类):
             return None
 
         if 键名 == "brightness":
+            if not bool(self._背景亮度可调()):
+                self._设置操作反馈(f"背景亮度：{self._取背景亮度菜单文本()}")
+                return None
             档位 = list(self._背景亮度档位alpha())
             if not 档位:
                 return None
@@ -4775,6 +6188,10 @@ class 场景_谱面播放器(场景基类):
             图集 = None
         if 图集 is None:
             return False
+        try:
+            玩家序号 = int(self._载荷.get("玩家序号", 1) or 1)
+        except Exception:
+            玩家序号 = 1
         内框 = rect.inflate(-18, -18)
         if 内框.w <= 0 or 内框.h <= 0:
             return False
@@ -4783,8 +6200,25 @@ class 场景_谱面播放器(场景基类):
             lane_width = max(12, int((内框.w - lane_gap * 4) / 5))
             for 轨道 in range(5):
                 方位 = 渲染器._轨道到arrow方位码(轨道)
-                名称 = f"arrow_body_{方位}.png"
-                原图 = 图集.取(名称)
+                名称候选 = [f"arrow_body_{方位}.png"]
+                取候选名列表 = getattr(渲染器, "_取箭头资源候选名列表", None)
+                if callable(取候选名列表):
+                    try:
+                        候选 = list(
+                            取候选名列表("arrow_body", str(方位), int(玩家序号)) or []
+                        )
+                        if 候选:
+                            名称候选 = 候选
+                    except Exception:
+                        pass
+                原图 = None
+                for 名称 in 名称候选:
+                    try:
+                        原图 = 图集.取(str(名称))
+                    except Exception:
+                        原图 = None
+                    if isinstance(原图, pygame.Surface):
+                        break
                 lane_x = 内框.x + 轨道 * (lane_width + lane_gap)
                 lane_rect = pygame.Rect(lane_x, 内框.y, lane_width, 内框.h)
                 pygame.draw.rect(屏幕, (16, 24, 38), lane_rect, border_radius=10)
@@ -4827,6 +6261,11 @@ class 场景_谱面播放器(场景基类):
             self._双踏板强制判定线y = int(getattr(self, "_判定线y", 0) or 0)
 
     def _取当前判定线y(self, 侧: str = "左") -> int:
+        if bool(getattr(self, "_是否双踏板模式", False)):
+            try:
+                self._刷新布局调试设置()
+            except Exception:
+                pass
         try:
             基准y = int(getattr(self, "_判定线y", 0) or 0)
         except Exception:
@@ -4906,6 +6345,8 @@ class 场景_谱面播放器(场景基类):
         except Exception:
             pass
         self.目标帧率 = self._取推荐目标帧率()
+        self._激活主窗口输入焦点()
+        self._重置输入焦点守卫(6.0)
         self._错误提示 = ""
         默认背景遮罩alpha = int(round(255.0 * 0.70))
         try:
@@ -4995,8 +6436,14 @@ class 场景_谱面播放器(场景基类):
         self._准备动画开始秒 = 0.0
         self._准备动画设置 = 读取准备动画设置(self._准备动画设置路径)
         try:
+            原始准备动画蒙版透明度 = float(
+                (self._准备动画设置 or {}).get("背景蒙版透明度", 0.0)
+            )
+        except Exception:
+            原始准备动画蒙版透明度 = 0.0
+        try:
             self._准备动画设置["背景蒙版透明度"] = float(
-                max(0, min(255, int(self._背景暗层alpha or 0)))
+                self._取准备动画背景蒙版透明度(原始准备动画蒙版透明度)
             )
         except Exception:
             pass
@@ -5339,14 +6786,19 @@ class 场景_谱面播放器(场景基类):
         if not _is_stepmania_arrow_skin_dir(self._皮肤目录):
             关键1 = os.path.join(self._皮肤目录, "arrow", "skin.json")
             关键2 = os.path.join(self._皮肤目录, "key", "skin.json")
+            关键2_1p = os.path.join(self._皮肤目录, "key", "1p", "skin.json")
+            关键2_2p = os.path.join(self._皮肤目录, "key", "2p", "skin.json")
             if not os.path.isfile(关键1):
                 self._错误提示 = (
                     self._错误提示 + " | " if self._错误提示 else ""
                 ) + f"缺少：{关键1}"
-            if not os.path.isfile(关键2):
+            if not (
+                os.path.isfile(关键2)
+                or (os.path.isfile(关键2_1p) and os.path.isfile(关键2_2p))
+            ):
                 self._错误提示 = (
                     self._错误提示 + " | " if self._错误提示 else ""
-                ) + f"缺少：{关键2}"
+                ) + f"缺少：{关键2}（或 key/1p + key/2p）"
 
         if self._谱面渲染器 is not None:
             try:
@@ -5361,7 +6813,23 @@ class 场景_谱面播放器(场景基类):
             or ""
         )
         模式文本小写 = 模式文本.lower()
-        优先双踏板 = bool(("双踏" in 模式文本) or ("double" in 模式文本小写))
+        选中谱面类型 = str(self._载荷.get("谱面charttype", "") or "").strip().lower()
+        选中模式标记 = str(self._载荷.get("谱面模式标记", "") or "").strip()
+        情侣模式请求 = bool(
+            ("情侣" in 模式文本)
+            or ("lover" in 模式文本小写)
+            or ("情侣" in 选中模式标记)
+            or (选中谱面类型 in {"lover1", "lover2"})
+        )
+        self._情侣模式请求 = bool(情侣模式请求)
+        self._情侣模式启用 = False
+        self._情侣模式强制皮肤 = False
+        优先双踏板 = bool(
+            ("双踏" in 模式文本)
+            or ("double" in 模式文本小写)
+            or (选中模式标记 == "双踏板")
+            or (选中谱面类型 == "double")
+        )
 
         self._sm路径 = str(self._载荷.get("sm路径", "") or "").strip()
         扩展名 = os.path.splitext(self._sm路径)[1].lower()
@@ -5389,6 +6857,8 @@ class 场景_谱面播放器(场景基类):
         self._offset = 0.0
         self._音频路径 = None
         self._音频已加载路径 = None
+        self._音频文件有效 = False
+        self._音频文件状态路径 = ""
         self._谱面格式 = "sm"
         self._sm_bpms = []
         self._json_bpms_line = []
@@ -5396,6 +6866,7 @@ class 场景_谱面播放器(场景基类):
         self._谱面时间轴段 = [(0.0, 0.0, 120.0)]
         self._BPM变速基准BPM = 120.0
         self._谱面含明显BPM变速 = False
+        情侣回退提示文本 = ""
 
         if (not self._sm路径) or (not os.path.isfile(self._sm路径)):
             self._错误提示 = (
@@ -5461,15 +6932,44 @@ class 场景_谱面播放器(场景基类):
                 self._谱面格式 = "ssc" if 扩展名 == ".ssc" else "sm"
                 self._sm文本 = _安全读文本(self._sm路径)
                 try:
-                    事件, 偏移, 总时长, 列数, charttype, bpms_beat = _构建_sm事件列表(
-                        self._sm路径, 优先double=bool(优先双踏板)
-                    )
-                    self._手键装饰事件列表 = []
+                    情侣解析结果 = None
+                    if bool(情侣模式请求):
+                        情侣解析结果, 情侣回退提示文本 = _构建_sm情侣事件列表(
+                            self._sm路径
+                        )
+                    if 情侣解析结果 is not None:
+                        (
+                            事件,
+                            手键装饰事件,
+                            偏移,
+                            总时长,
+                            列数,
+                            charttype,
+                            bpms_beat,
+                        ) = 情侣解析结果
+                        self._情侣模式启用 = True
+                    else:
+                        (
+                            事件,
+                            手键装饰事件,
+                            偏移,
+                            总时长,
+                            列数,
+                            charttype,
+                            bpms_beat,
+                        ) = _构建_sm事件列表(
+                            self._sm路径,
+                            优先double=bool(优先双踏板),
+                            目标charttype=str(选中谱面类型 or ""),
+                        )
+                        self._情侣模式启用 = False
+                    self._手键装饰事件列表 = list(手键装饰事件 or [])
                     self._sm_bpms = list(bpms_beat or [])
                     self._谱面列数 = int(max(1, int(列数 or 5)))
                     self._谱面chart类型 = str(charttype or "")
                     self._是否双踏板模式 = bool(
-                        优先双踏板
+                        bool(self._情侣模式启用)
+                        or 优先双踏板
                         or self._谱面列数 >= 10
                         or ("pump-double" in str(self._谱面chart类型).lower())
                     )
@@ -5498,6 +6998,7 @@ class 场景_谱面播放器(场景基类):
                     self._刷新按键映射()
                     self._同步双踏板渲染器()
                     self._sm_bpms = []
+                    self._情侣模式启用 = False
                     self._offset = 0.0
                     self._谱面总时长秒 = 0.0
                     self._错误提示 = (
@@ -5522,6 +7023,16 @@ class 场景_谱面播放器(场景基类):
                 except Exception:
                     self._星级 = 0
 
+        if bool(self._情侣模式启用):
+            if not bool(self._应用情侣模式强制皮肤()):
+                self._情侣模式启用 = False
+                self._情侣模式强制皮肤 = False
+        else:
+            self._情侣模式强制皮肤 = False
+
+        if str(情侣回退提示文本 or "").strip() and (not bool(self._情侣模式启用)):
+            self._设置操作反馈(str(情侣回退提示文本))
+
         self._事件.sort(key=lambda 事件项: float(事件项.开始秒))
         self._刷新谱面时间轴()
         self._拆分双踏板渲染事件()
@@ -5534,6 +7045,7 @@ class 场景_谱面播放器(场景基类):
         self._音频已开始 = False
         self._音频暂停中 = False
         self._音频开始系统秒 = 0.0
+        self._刷新音频文件缓存()
         self._预加载音频()
 
         try:
@@ -5551,7 +7063,6 @@ class 场景_谱面播放器(场景基类):
 
                 self._圆环频谱舞台装饰 = 圆环频谱舞台装饰()
                 self._应用圆环频谱调试设置()
-                self._绑定圆环频谱音频()
             except Exception as 异常:
                 self._圆环频谱舞台装饰 = None
                 self._错误提示 = (
@@ -5566,7 +7077,12 @@ class 场景_谱面播放器(场景基类):
             pass
 
         self._上次系统秒 = time.perf_counter()
+        try:
+            self._刷新布局调试设置(强制=True)
+        except Exception:
+            pass
         self._重算布局(强制=True)
+        self._应用播放期运行时优化()
         try:
             self._启动双踏板入场Y校正(float(time.perf_counter()))
         except Exception:
@@ -5636,7 +7152,7 @@ class 场景_谱面播放器(场景基类):
             self._准备动画开始秒 = time.perf_counter()
             self._准备动画背景快照类型 = ""
             self._准备动画最近视频快照命中 = False
-            if str(self._取背景渲染模式() or "图片") == "视频":
+            if str(self._取背景渲染模式() or "图片") in ("视频", "动态背景"):
                 try:
                     屏幕 = self.上下文.get("屏幕", None)
                     if isinstance(屏幕, pygame.Surface):
@@ -5650,12 +7166,22 @@ class 场景_谱面播放器(场景基类):
 
     def 更新(self):
         现在系统秒 = time.perf_counter()
-        时间差 = float(现在系统秒 - float(self._上次系统秒))
+        原始时间差 = float(现在系统秒 - float(self._上次系统秒))
+        时间差 = float(原始时间差)
         if 时间差 < 0:
             时间差 = 0.0
+        if (
+            bool(getattr(self, "_播放中", False))
+            and 时间差 >= float(getattr(self, "_主线程卡顿保护阈值秒", 0.60) or 0.60)
+            and (not bool(getattr(self, "_暂停菜单开启", False)))
+        ):
+            self._上次系统秒 = 现在系统秒
+            self._触发主线程卡顿保护(float(时间差))
+            return None
         if 时间差 > 0.20:
             时间差 = 0.20
         self._上次系统秒 = 现在系统秒
+        self._执行输入焦点守卫(float(现在系统秒))
 
         # 渲染器更新（按键回弹 / key_effect 动画 / 计数动画组）
         try:
@@ -5784,7 +7310,7 @@ class 场景_谱面播放器(场景基类):
             self._记录判定统计(回报列表)
 
             if 回报列表:
-                # 1) tap/hold_head：击中特效
+                极简性能模式开启 = bool(getattr(self, "_性能模式", False))
                 try:
                     for 回报 in 回报列表:
                         判定 = str(getattr(回报, "判定", "") or "").lower()
@@ -5792,34 +7318,42 @@ class 场景_谱面播放器(场景基类):
                         轨道 = int(getattr(回报, "轨道序号", -1))
                         if 判定 != "miss" and 类型 in ("tap", "hold_head"):
                             self._触发轨道击中特效(
-                                int(轨道), 判定, 发生谱面秒=float(self._当前谱面秒)
+                                int(轨道),
+                                判定,
+                                发生谱面秒=float(
+                                    getattr(回报, "开始秒", self._当前谱面秒)
+                                    or self._当前谱面秒
+                                ),
+                                仅登记命中=bool(极简性能模式开启),
+                                回报=回报,
                             )
                 except Exception:
                     pass
 
-                try:
-                    if bool(getattr(self, "_是否双踏板模式", False)):
-                        左回报 = []
-                        右回报 = []
-                        for 回报 in 回报列表:
-                            try:
-                                轨道 = int(getattr(回报, "轨道序号", -1))
-                            except Exception:
-                                continue
-                            if 0 <= 轨道 < 5:
-                                左回报.append(回报)
-                            elif 5 <= 轨道 < 10:
-                                右回报.append(回报)
-                        self._按回报播放计数动画_到渲染器(
-                            左回报, 结算前连击, self._谱面渲染器
-                        )
-                        self._按回报播放计数动画_到渲染器(
-                            右回报, 结算前连击, getattr(self, "_谱面渲染器_右", None)
-                        )
-                    else:
-                        self._按回报播放计数动画(回报列表, 结算前连击)
-                except Exception:
-                    pass
+                if not bool(极简性能模式开启):
+                    try:
+                        if bool(getattr(self, "_是否双踏板模式", False)):
+                            左回报 = []
+                            右回报 = []
+                            for 回报 in 回报列表:
+                                try:
+                                    轨道 = int(getattr(回报, "轨道序号", -1))
+                                except Exception:
+                                    continue
+                                if 0 <= 轨道 < 5:
+                                    左回报.append(回报)
+                                elif 5 <= 轨道 < 10:
+                                    右回报.append(回报)
+                            self._按回报播放计数动画_到渲染器(
+                                左回报, 结算前连击, self._谱面渲染器
+                            )
+                            self._按回报播放计数动画_到渲染器(
+                                右回报, 结算前连击, getattr(self, "_谱面渲染器_右", None)
+                            )
+                        else:
+                            self._按回报播放计数动画(回报列表, 结算前连击)
+                    except Exception:
+                        pass
                 if self._应用血量回报(回报列表):
                     return self._立即失败结束()
 
@@ -5829,7 +7363,7 @@ class 场景_谱面播放器(场景基类):
             self._操作反馈剩余秒 = max(0.0, self._操作反馈剩余秒 - 时间差)
 
         # 结束逻辑（保持）
-        if self._音频可用 and self._音频路径 and os.path.isfile(self._音频路径):
+        if self._音频可用 and self._音频路径 and bool(self._音频文件有效):
             if self._音频已开始 and (not self._音频暂停中):
                 try:
                     if not pygame.mixer.music.get_busy():
@@ -5846,6 +7380,15 @@ class 场景_谱面播放器(场景基类):
         return None
 
     def 处理事件(self, 事件):
+        if 事件 is not None and int(getattr(事件, "type", -1)) == int(pygame.KEYDOWN):
+            self._停止输入焦点守卫()
+        if (
+            事件 is not None
+            and int(getattr(事件, "type", -1)) == int(pygame.KEYDOWN)
+            and int(getattr(事件, "key", 0)) == int(pygame.K_ESCAPE)
+            and bool(self._暂停菜单切换冷却中())
+        ):
+            return None
         if bool(self._暂停菜单开启):
             结果 = self._游戏ESC菜单控制器.handle_event(事件)
             if isinstance(结果, dict) and bool(结果.get("close_menu", False)):
@@ -5897,7 +7440,14 @@ class 场景_谱面播放器(场景基类):
                         轨道2 = int(getattr(回报, "轨道序号", -1))
                         if 判定 != "miss" and 类型 in ("tap", "hold_head"):
                             self._触发轨道击中特效(
-                                int(轨道2), 判定, 发生谱面秒=float(self._当前谱面秒)
+                                int(轨道2),
+                                判定,
+                                发生谱面秒=float(
+                                    getattr(回报, "开始秒", self._当前谱面秒)
+                                    or self._当前谱面秒
+                                ),
+                                仅登记命中=bool(getattr(self, "_性能模式", False)),
+                                回报=回报,
                             )
                 except Exception:
                     pass
@@ -6085,11 +7635,18 @@ class 场景_谱面播放器(场景基类):
                     or bool(getattr(self, "_准备动画已完成", True))
                 )
             )
+            性能极简模式 = bool(getattr(self, "_性能模式", False))
+            有效轨迹模式 = (
+                "正常"
+                if bool(性能极简模式)
+                else str(getattr(self, "_轨迹模式", "正常") or "正常")
+            )
             GPU接管音符绘制 = bool(GPU管线已启用)
             GPU接管判定区绘制 = bool(GPU管线已启用)
-            GPU接管击中特效绘制 = bool(GPU管线已启用)
+            GPU接管击中特效绘制 = False
             GPU接管计数动画绘制 = bool(GPU管线已启用)
             GPU顶部HUD接管启用 = bool(GPU管线已启用)
+            GPU底部HUD接管启用 = bool(GPU管线已启用)
             强制GPU顶部HUD = str(os.environ.get("E5CM_FORCE_GPU_HUD", "") or "").strip().lower()
             禁用GPU顶部HUD = str(os.environ.get("E5CM_DISABLE_GPU_HUD", "") or "").strip().lower()
             if 禁用GPU顶部HUD in ("1", "true", "yes", "on"):
@@ -6100,6 +7657,10 @@ class 场景_谱面播放器(场景基类):
             if 新GPU顶部HUD已接管 != bool(getattr(self, "_GPU顶部HUD已接管", False)):
                 self._GPU上传切换待全量上传 = True
             self._GPU顶部HUD已接管 = bool(新GPU顶部HUD已接管)
+            新GPU底部HUD已接管 = bool(GPU底部HUD接管启用)
+            if 新GPU底部HUD已接管 != bool(getattr(self, "_GPU底部HUD已接管", False)):
+                self._GPU上传切换待全量上传 = True
+            self._GPU底部HUD已接管 = bool(新GPU底部HUD已接管)
             结算动画隐藏顶部HUD = bool(
                 getattr(self._结算前成就动画, "需要隐藏顶部HUD", lambda: False)()
             )
@@ -6148,8 +7709,9 @@ class 场景_谱面播放器(场景基类):
                 if isinstance(原手键列表_左, list)
                 else list(原手键列表_左)
             )
+            渲染谱面秒 = float(getattr(self, "_当前谱面秒", 0.0) or 0.0)
             输入 = 渲染输入(
-                当前谱面秒=float(self._当前谱面秒),
+                当前谱面秒=float(渲染谱面秒),
                 总时长秒=float(self._谱面总时长秒),
                 谱面视觉偏移秒=float(self._谱面视觉偏移秒),
                 BPM变速效果开启=bool(getattr(self, "_BPM变速效果开启", False)),
@@ -6183,7 +7745,7 @@ class 场景_谱面播放器(场景基类):
                 血条待机演示=False,
                 显示手装饰=bool(getattr(self, "_显示手装饰", False)),
                 错误提示=str(self._错误提示 or ""),
-                轨迹模式=str(getattr(self, "_轨迹模式", "正常") or "正常"),
+                轨迹模式=str(有效轨迹模式),
                 隐藏模式=str(getattr(self, "_隐藏模式", "关闭") or "关闭"),
                 大小倍率=float(getattr(self, "_尺寸倍率", 1.0) or 1.0),
                 GPU接管音符绘制=bool(GPU接管音符绘制),
@@ -6197,6 +7759,7 @@ class 场景_谱面播放器(场景基类):
                 圆环频谱对象=圆环频谱对象,
             )
             self._准备动画渲染输入 = 输入
+            self._GPU击中特效输入左 = 输入
             try:
                 self._结算前成就动画捕获输入 = replace(
                     输入,
@@ -6237,10 +7800,47 @@ class 场景_谱面播放器(场景基类):
                 渲染输入对象.性能模式 = bool(self._性能模式)
 
             _注入调试参数(输入)
-            self._谱面渲染器.渲染(屏幕, 输入, self._字体, self._小字体)
-            _累加软件分项统计(
-                软件分项统计, self._谱面渲染器.取最近软件分项统计()
-            )
+            try:
+                setattr(self._谱面渲染器, "_最近渲染谱面秒", float(渲染谱面秒))
+            except Exception:
+                pass
+            if bool(GPU管线已启用) and (
+                (not bool(GPU接管判定区绘制))
+                or (not bool(GPU接管计数动画绘制))
+                or (not bool(GPU顶部HUD接管启用))
+            ):
+                try:
+                    if not bool(GPU接管判定区绘制):
+                        self._谱面渲染器._绘制判定区(屏幕, 输入)
+                except Exception:
+                    pass
+                try:
+                    if not bool(GPU接管计数动画绘制):
+                        self._谱面渲染器._绘制计数动画组(屏幕, 输入)
+                except Exception:
+                    pass
+                try:
+                    if not bool(GPU顶部HUD接管启用):
+                        _累加软件分项统计(
+                            软件分项统计,
+                            self._谱面渲染器._绘制血条(
+                                屏幕, 输入, self._字体, self._小字体
+                            ),
+                        )
+                except Exception:
+                    pass
+            if bool(GPU管线已启用):
+                try:
+                    导出快照 = getattr(self._谱面渲染器, "导出GPU音符布局快照", None)
+                    if callable(导出快照):
+                        输入.GPU音符布局快照 = 导出快照(屏幕, 输入)
+                except Exception:
+                    输入.GPU音符布局快照 = None
+            else:
+                self._谱面渲染器.渲染(屏幕, 输入, self._字体, self._小字体)
+                _累加软件分项统计(
+                    软件分项统计, self._谱面渲染器.取最近软件分项统计()
+                )
 
             输入右 = None
             if (
@@ -6250,7 +7850,7 @@ class 场景_谱面播放器(场景基类):
             ):
                 try:
                     setattr(
-                        self._谱面渲染器_右, "_最近渲染谱面秒", float(self._当前谱面秒)
+                        self._谱面渲染器_右, "_最近渲染谱面秒", float(渲染谱面秒)
                     )
                 except Exception:
                     pass
@@ -6267,7 +7867,7 @@ class 场景_谱面播放器(场景基类):
                     else list(原手键列表_右)
                 )
                 输入右 = 渲染输入(
-                    当前谱面秒=float(self._当前谱面秒),
+                    当前谱面秒=float(渲染谱面秒),
                     总时长秒=float(self._谱面总时长秒),
                     谱面视觉偏移秒=float(self._谱面视觉偏移秒),
                     BPM变速效果开启=bool(getattr(self, "_BPM变速效果开启", False)),
@@ -6303,7 +7903,7 @@ class 场景_谱面播放器(场景基类):
                     血条待机演示=False,
                     显示手装饰=False,
                     错误提示="",
-                    轨迹模式=str(getattr(self, "_轨迹模式", "正常") or "正常"),
+                    轨迹模式=str(有效轨迹模式),
                     隐藏模式=str(getattr(self, "_隐藏模式", "关闭") or "关闭"),
                     大小倍率=float(getattr(self, "_尺寸倍率", 1.0) or 1.0),
                     GPU接管音符绘制=bool(GPU接管音符绘制),
@@ -6324,40 +7924,56 @@ class 场景_谱面播放器(场景基类):
                 except Exception:
                     self._结算前成就动画捕获输入右 = 输入右
                 _注入调试参数(输入右)
+                self._GPU击中特效输入右 = 输入右
                 右软件分项统计 = _新建软件分项统计()
-                if bool(Note层灰度):
-                    _累加软件分项统计(
-                        右软件分项统计,
-                        self._谱面渲染器_右._绘制notes层(
-                            屏幕,
-                            输入右,
-                            绘制音符=not bool(GPU接管音符绘制),
-                            绘制击中特效=False,
-                        ),
-                    )
-                    右灰化开始秒 = time.perf_counter()
+                if bool(GPU管线已启用) and (not bool(GPU接管判定区绘制)):
                     try:
-                        self._谱面渲染器_右._应用濒死灰化效果(屏幕, 输入右)
+                        self._谱面渲染器_右._绘制判定区(屏幕, 输入右)
                     except Exception:
                         pass
-                    右软件分项统计["other_ui_ms"] += (
-                        time.perf_counter() - 右灰化开始秒
-                    ) * 1000.0
-                    右特效开始秒 = time.perf_counter()
-                    self._谱面渲染器_右._绘制击中特效(屏幕, 输入右)
-                    右软件分项统计["other_ui_ms"] += (
-                        time.perf_counter() - 右特效开始秒
-                    ) * 1000.0
-                else:
-                    _累加软件分项统计(
-                        右软件分项统计,
-                        self._谱面渲染器_右._绘制notes层(
-                            屏幕,
-                            输入右,
-                            绘制音符=not bool(GPU接管音符绘制),
-                        ),
-                    )
+                if not bool(GPU管线已启用):
+                    if bool(Note层灰度):
+                        _累加软件分项统计(
+                            右软件分项统计,
+                            self._谱面渲染器_右._绘制notes层(
+                                屏幕,
+                                输入右,
+                                绘制音符=not bool(GPU接管音符绘制),
+                                绘制击中特效=False,
+                            ),
+                        )
+                        右灰化开始秒 = time.perf_counter()
+                        try:
+                            self._谱面渲染器_右._应用濒死灰化效果(屏幕, 输入右)
+                        except Exception:
+                            pass
+                        右软件分项统计["other_ui_ms"] += (
+                            time.perf_counter() - 右灰化开始秒
+                        ) * 1000.0
+                        右特效开始秒 = time.perf_counter()
+                        self._谱面渲染器_右._绘制击中特效(屏幕, 输入右)
+                        右软件分项统计["other_ui_ms"] += (
+                            time.perf_counter() - 右特效开始秒
+                        ) * 1000.0
+                    else:
+                        _累加软件分项统计(
+                            右软件分项统计,
+                            self._谱面渲染器_右._绘制notes层(
+                                屏幕,
+                                输入右,
+                                绘制音符=not bool(GPU接管音符绘制),
+                            ),
+                        )
+                if bool(GPU管线已启用):
+                    try:
+                        导出快照 = getattr(self._谱面渲染器_右, "导出GPU音符布局快照", None)
+                        if callable(导出快照):
+                            输入右.GPU音符布局快照 = 导出快照(屏幕, 输入右)
+                    except Exception:
+                        输入右.GPU音符布局快照 = None
                 _累加软件分项统计(软件分项统计, 右软件分项统计)
+            else:
+                self._GPU击中特效输入右 = None
 
             软件渲染阶段耗时毫秒 = (time.perf_counter() - 软件阶段开始秒) * 1000.0
             已统计软件渲染毫秒 = float(
@@ -6370,6 +7986,27 @@ class 场景_谱面播放器(场景基类):
                 软件分项统计["other_ui_ms"] += (
                     软件渲染阶段耗时毫秒 - 已统计软件渲染毫秒
                 )
+
+            if bool(GPU管线已启用):
+                try:
+                    输入.GPU附加HUD图层 = self._构建GPU附加HUD图层(屏幕)
+                except Exception:
+                    输入.GPU附加HUD图层 = []
+                if 输入右 is not None:
+                    try:
+                        输入右.GPU附加HUD图层 = []
+                    except Exception:
+                        pass
+            else:
+                try:
+                    输入.GPU附加HUD图层 = []
+                except Exception:
+                    pass
+                if 输入右 is not None:
+                    try:
+                        输入右.GPU附加HUD图层 = []
+                    except Exception:
+                        pass
 
             GPU准备耗时毫秒 = 0.0
             if bool(GPU管线已启用) and self._GPU谱面渲染器 is not None:
@@ -6387,10 +8024,13 @@ class 场景_谱面播放器(场景基类):
                 self._GPU谱面渲染器.清空()
 
             其它UI开始秒 = time.perf_counter()
-            if bool(getattr(self, "_显示按键提示", False)):
-                self._绘制按键提示(屏幕)
-            self._绘制操作反馈(屏幕)
-            self._绘制底部币值(屏幕)
+            if bool(GPU管线已启用):
+                self._重置底部提示脏矩形()
+            else:
+                if bool(getattr(self, "_显示按键提示", False)):
+                    self._绘制按键提示(屏幕)
+                self._绘制操作反馈(屏幕)
+                self._绘制底部币值(屏幕)
             self._绘制准备动画(屏幕)
             self._绘制结算前成就动画(屏幕, 当前系统秒)
             self._绘制暂停菜单(屏幕)
@@ -6488,11 +8128,66 @@ class 场景_谱面播放器(场景基类):
             max(0.5, getattr(self, "_操作反馈总秒", 1.35) or 1.35)
         )
 
+    def _刷新音频文件缓存(self):
+        路径文本 = str(getattr(self, "_音频路径", "") or "").strip()
+        try:
+            绝对路径 = os.path.abspath(路径文本) if 路径文本 else ""
+        except Exception:
+            绝对路径 = 路径文本
+        self._音频文件状态路径 = str(绝对路径 or "")
+        self._音频文件有效 = bool(绝对路径 and os.path.isfile(绝对路径))
+        if not bool(self._音频文件有效):
+            self._音频已加载路径 = None
+
+    def _应用播放期运行时优化(self):
+        for 渲染器 in (
+            getattr(self, "_谱面渲染器", None),
+            getattr(self, "_谱面渲染器_右", None),
+        ):
+            if 渲染器 is None:
+                continue
+            try:
+                设置性能模式 = getattr(渲染器, "设置运行时性能模式", None)
+                if callable(设置性能模式):
+                    设置性能模式(True)
+                    continue
+            except Exception:
+                pass
+            try:
+                布局 = getattr(渲染器, "_确保布局管理器", lambda: None)()
+            except Exception:
+                布局 = None
+            if 布局 is not None:
+                try:
+                    布局._禁用热重载 = True
+                except Exception:
+                    pass
+                try:
+                    布局._禁用资源热检查 = True
+                except Exception:
+                    pass
+
+    def _触发主线程卡顿保护(self, 卡顿秒: float):
+        if not bool(getattr(self, "_播放中", False)):
+            return
+        self._暂停时刻谱面秒 = float(getattr(self, "_当前谱面秒", 0.0) or 0.0)
+        self._播放中 = False
+        if self._音频可用 and bool(getattr(self, "_音频已开始", False)):
+            try:
+                pygame.mixer.music.pause()
+                self._音频暂停中 = True
+            except Exception:
+                pass
+        self._设置操作反馈(f"检测到主线程卡顿 {float(卡顿秒):.2f} 秒，已自动暂停")
+        self._上次主线程卡顿提示秒 = float(time.perf_counter())
+
     def _打开暂停菜单(self):
         if bool(self._暂停菜单开启):
             return
         self._暂停菜单开启 = True
         self._暂停菜单打开前播放中 = bool(self._播放中)
+        self._刷新暂停菜单切换冷却()
+        self._停止输入焦点守卫()
         self._游戏ESC菜单控制器.open()
         if bool(self._播放中):
             self.暂停()
@@ -6504,6 +8199,7 @@ class 场景_谱面播放器(场景基类):
         应恢复 = bool(恢复播放 and self._暂停菜单打开前播放中)
         self._暂停菜单开启 = False
         self._暂停菜单打开前播放中 = False
+        self._刷新暂停菜单切换冷却()
         self._关闭ESC菜单视频预览播放器()
         self._游戏ESC菜单控制器.close()
         if bool(getattr(self, "_动态背景预览开启", False)):
@@ -6511,6 +8207,7 @@ class 场景_谱面播放器(场景基类):
         if 应恢复 and (not bool(self._播放中)):
             self.播放()
             self._设置操作反馈("ESC:继续游戏")
+        self._停止输入焦点守卫()
 
     def _取可见血量HP(self) -> int:
         return int(
@@ -6619,6 +8316,8 @@ class 场景_谱面播放器(场景基类):
         return None
 
     def _取背景亮度菜单文本(self) -> str:
+        if not bool(self._背景亮度可调()):
+            return "原素材直出"
         档位 = list(self._背景亮度档位alpha())
         if not 档位:
             return "默认"
@@ -6631,6 +8330,184 @@ class 场景_谱面播放器(场景基类):
         if 0 <= int(索引) < len(标签):
             return str(标签[int(索引)])
         return "默认"
+
+    def _取显示设置数据(self) -> dict:
+        getter = self.上下文.get("取显示设置", None) if isinstance(self.上下文, dict) else None
+        if callable(getter):
+            try:
+                数据 = getter()
+                if isinstance(数据, dict):
+                    return dict(数据)
+            except Exception:
+                return {}
+        return {}
+
+    def _esc_menu_supports_display_settings(self) -> bool:
+        if not isinstance(self.上下文, dict):
+            return False
+        return (
+            callable(self.上下文.get("取显示设置", None))
+            and callable(self.上下文.get("切换全屏", None))
+            and (
+                callable(self.上下文.get("应用显示分辨率", None))
+                or callable(self.上下文.get("应用全屏分辨率", None))
+                or callable(self.上下文.get("应用窗口分辨率", None))
+                or callable(self.上下文.get("循环显示分辨率", None))
+                or callable(self.上下文.get("循环窗口分辨率", None))
+            )
+        )
+
+    def _取当前显示尺寸(self) -> Tuple[int, int]:
+        数据 = self._取显示设置数据()
+        尺寸 = 数据.get("active_size", None)
+        if not isinstance(尺寸, (tuple, list)):
+            尺寸 = 数据.get(
+                "fullscreen_size" if bool(数据.get("fullscreen", False)) else "window_size",
+                (0, 0),
+            )
+        try:
+            return int(tuple(尺寸)[0]), int(tuple(尺寸)[1])
+        except Exception:
+            return 0, 0
+
+    def _取显示模式菜单文本(self) -> str:
+        数据 = self._取显示设置数据()
+        文本 = str(数据.get("display_mode_text", "") or "").strip()
+        if 文本:
+            return 文本
+        return "无边框窗口" if bool(数据.get("fullscreen", False)) else "窗口"
+
+    def _取分辨率菜单文本(self) -> str:
+        宽, 高 = self._取当前显示尺寸()
+        if 宽 <= 0 or 高 <= 0:
+            return "未知"
+        return _格式化分辨率标签(int(宽), int(高))
+
+    def _取状态HUD菜单文本(self) -> str:
+        if not isinstance(self.上下文, dict):
+            return "开启"
+        return "开启" if bool(self.上下文.get("显示状态HUD", True)) else "关闭"
+
+    def _取渲染引擎菜单文本(self) -> str:
+        数据 = self._取显示设置数据()
+        文本 = str(数据.get("render_backend_text", "") or "").strip()
+        return 文本 or "GPU-Auto"
+
+    def _取实际渲染引擎菜单文本(self) -> str:
+        数据 = self._取显示设置数据()
+        文本 = str(数据.get("render_backend_actual_text", "") or "").strip()
+        return 文本 or self._取渲染引擎菜单文本()
+
+    def _取渲染引擎说明文本(self) -> str:
+        数据 = self._取显示设置数据()
+        return str(
+            数据.get(
+                "render_backend_description",
+                "切换实际渲染引擎；D3D11 通常最适合 Windows 11。",
+            )
+            or "切换实际渲染引擎；D3D11 通常最适合 Windows 11。"
+        )
+
+    def _esc_menu_has_dropdown(self, row_id: str) -> bool:
+        return str(row_id or "").strip() in ("display_resolution", "render_backend")
+
+    def _esc_menu_get_dropdown_options(self, row_id: str) -> List[Dict[str, object]]:
+        行标识 = str(row_id or "").strip()
+        if 行标识 == "render_backend":
+            数据 = self._取显示设置数据()
+            结果: List[Dict[str, object]] = []
+            for 项 in list(数据.get("render_backend_options", []) or []):
+                if not isinstance(项, dict):
+                    continue
+                标识 = str(项.get("id", "") or "").strip()
+                标签 = str(项.get("label", 标识) or 标识).strip()
+                if not 标识 or not 标签:
+                    continue
+                结果.append(
+                    {
+                        "id": 标识,
+                        "label": 标签,
+                        "selected": bool(项.get("selected", False)),
+                    }
+                )
+            return 结果
+        if 行标识 != "display_resolution":
+            return []
+        数据 = self._取显示设置数据()
+        当前尺寸 = tuple(int(v) for v in self._取当前显示尺寸())
+        结果: List[Dict[str, object]] = []
+        for 项 in list(数据.get("resolution_options", []) or []):
+            try:
+                宽, 高 = tuple(项)
+                宽 = int(宽)
+                高 = int(高)
+            except Exception:
+                continue
+            if 宽 <= 0 or 高 <= 0:
+                continue
+            结果.append(
+                {
+                    "id": f"{int(宽)}x{int(高)}",
+                    "label": _格式化分辨率标签(int(宽), int(高)),
+                    "selected": tuple((int(宽), int(高))) == tuple(当前尺寸),
+                }
+            )
+        return 结果
+
+    def _应用精确显示分辨率(self, 宽: int, 高: int) -> bool:
+        if not isinstance(self.上下文, dict):
+            return False
+        应用方法 = self.上下文.get("应用显示分辨率", None)
+        if callable(应用方法):
+            try:
+                应用方法(int(宽), int(高))
+                return True
+            except Exception:
+                return False
+        数据 = self._取显示设置数据()
+        if bool(数据.get("fullscreen", False)):
+            应用方法 = self.上下文.get("应用全屏分辨率", None)
+        else:
+            应用方法 = self.上下文.get("应用窗口分辨率", None)
+        if callable(应用方法):
+            try:
+                应用方法(int(宽), int(高))
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _esc_menu_apply_dropdown_option(self, row_id: str, option_id: str):
+        行标识 = str(row_id or "").strip()
+        if 行标识 == "render_backend":
+            if not isinstance(self.上下文, dict):
+                return None
+            应用方法 = self.上下文.get("应用渲染引擎偏好", None)
+            if callable(应用方法):
+                try:
+                    应用方法(str(option_id or ""))
+                    self._设置操作反馈(f"渲染引擎：{self._取渲染引擎菜单文本()}")
+                except Exception:
+                    pass
+            return None
+        if 行标识 != "display_resolution":
+            return None
+        文本 = str(option_id or "").strip().lower().replace(" ", "")
+        if "x" not in 文本:
+            return None
+        try:
+            宽文本, 高文本 = 文本.split("x", 1)
+            宽 = int(宽文本)
+            高 = int(高文本)
+        except Exception:
+            return None
+        if self._应用精确显示分辨率(int(宽), int(高)):
+            self._设置操作反馈(f"分辨率：{self._取分辨率菜单文本()}")
+            try:
+                self._重算布局(强制=True)
+            except Exception:
+                pass
+        return None
 
     def _记录判定统计(self, 回报列表):
         if not 回报列表:
@@ -6650,16 +8527,39 @@ class 场景_谱面播放器(场景基类):
             回报列表, 起始连击, getattr(self, "_谱面渲染器", None)
         )
 
-    def _绘制按键提示(self, 屏幕: pygame.Surface):
-        self._按键提示脏矩形 = pygame.Rect(0, 0, 0, 0)
-        if self._小字体 is None:
-            return
+    @staticmethod
+    def _构建GPU图层项(
+        图层: Optional[pygame.Surface],
+        rect: Optional[pygame.Rect],
+        z: int,
+        *,
+        缓存纹理: bool = False,
+        alpha: int = 255,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(图层, pygame.Surface) or not isinstance(rect, pygame.Rect):
+            return None
+        if rect.w <= 0 or rect.h <= 0:
+            return None
+        return {
+            "类型": "图层",
+            "图层": 图层,
+            "rect": rect.copy(),
+            "z": int(z),
+            "缓存纹理": bool(缓存纹理),
+            "alpha": int(max(0, min(255, int(alpha)))),
+        }
 
+    def _重置底部提示脏矩形(self):
+        self._按键提示脏矩形 = pygame.Rect(0, 0, 0, 0)
+        self._操作反馈脏矩形 = pygame.Rect(0, 0, 0, 0)
+        self._自动播放提示脏矩形 = pygame.Rect(0, 0, 0, 0)
+        self._底部币值脏矩形 = pygame.Rect(0, 0, 0, 0)
+
+    def _取按键提示文本行列表(self) -> List[str]:
         状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
         if not isinstance(状态, dict):
             状态 = {}
         投币键显示 = str(状态.get("投币快捷键显示", "F1") or "F1").upper()
-
         单踏板摘要 = " / ".join(
             keycode_to_display_name(self._菜单单踏板键位.get(键名))
             for 键名 in ("左下", "左上", "中间", "右上", "右下")
@@ -6683,6 +8583,257 @@ class 场景_谱面播放器(场景基类):
             行列表.append(f"双踏板 右侧: {双踏板右摘要}")
         else:
             行列表.append(f"单踏板: {单踏板摘要}")
+        return 行列表
+
+    def _取GPU按键提示图层(self, 屏幕: pygame.Surface) -> Tuple[Optional[pygame.Surface], Optional[pygame.Rect]]:
+        if not bool(getattr(self, "_显示按键提示", False)):
+            return None, None
+        if not isinstance(屏幕, pygame.Surface) or self._小字体 is None:
+            return None, None
+        行列表 = self._取按键提示文本行列表()
+        签名 = (
+            int(id(self._小字体)),
+            tuple(int(v) for v in 屏幕.get_size()),
+            tuple(str(v) for v in 行列表),
+        )
+        缓存图层 = getattr(self, "_GPU按键提示缓存图层", None)
+        缓存矩形 = getattr(self, "_GPU按键提示缓存矩形", None)
+        if (
+            签名 == getattr(self, "_GPU按键提示缓存签名", ())
+            and isinstance(缓存图层, pygame.Surface)
+            and isinstance(缓存矩形, pygame.Rect)
+            and 缓存矩形.w > 0
+            and 缓存矩形.h > 0
+        ):
+            return 缓存图层, 缓存矩形.copy()
+
+        文图列表 = []
+        最大宽 = 0
+        总高 = 0
+        for 文本 in 行列表:
+            try:
+                图 = self._小字体.render(
+                    str(文本), True, (225, 235, 255)
+                ).convert_alpha()
+            except Exception:
+                continue
+            文图列表.append(图)
+            最大宽 = max(最大宽, int(图.get_width()))
+            总高 += int(图.get_height()) + 4
+        if not 文图列表:
+            return None, None
+
+        内边距 = 10
+        盒宽 = int(最大宽 + 内边距 * 2)
+        盒高 = int(max(24, 总高 + 内边距 * 2 - 4))
+        rect = pygame.Rect(
+            18,
+            int(屏幕.get_height() - 18 - 盒高),
+            盒宽,
+            盒高,
+        )
+        图层 = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        图层.fill((0, 0, 0, 150))
+        try:
+            pygame.draw.rect(
+                图层,
+                (90, 120, 150),
+                pygame.Rect(0, 0, rect.w, rect.h),
+                width=1,
+                border_radius=8,
+            )
+        except Exception:
+            pass
+        y = int(内边距)
+        for 图 in 文图列表:
+            图层.blit(图, (int(内边距), y))
+            y += int(图.get_height()) + 4
+        self._GPU按键提示缓存签名 = 签名
+        self._GPU按键提示缓存图层 = 图层
+        self._GPU按键提示缓存矩形 = rect.copy()
+        return 图层, rect
+
+    def _取GPU操作反馈图层(
+        self, 屏幕: pygame.Surface
+    ) -> Tuple[Optional[pygame.Surface], Optional[pygame.Rect], int]:
+        if self._小字体 is None:
+            return None, None, 255
+        文本 = str(getattr(self, "_操作反馈文本", "") or "")
+        if self._操作反馈剩余秒 <= 0.0 or (not 文本):
+            return None, None, 255
+        if not isinstance(屏幕, pygame.Surface):
+            return None, None, 255
+
+        比率 = float(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    self._操作反馈剩余秒 / max(0.001, self._操作反馈总秒),
+                ),
+            )
+        )
+        签名 = (
+            int(id(self._小字体)),
+            tuple(int(v) for v in 屏幕.get_size()),
+            文本,
+        )
+        缓存图层 = getattr(self, "_GPU操作反馈缓存图层", None)
+        缓存矩形 = getattr(self, "_GPU操作反馈缓存矩形", None)
+        if (
+            签名 == getattr(self, "_GPU操作反馈缓存签名", ())
+            and isinstance(缓存图层, pygame.Surface)
+            and isinstance(缓存矩形, pygame.Rect)
+            and 缓存矩形.w > 0
+            and 缓存矩形.h > 0
+        ):
+            return 缓存图层, 缓存矩形.copy(), int(255 * (0.35 + 0.65 * 比率))
+
+        try:
+            文图 = self._小字体.render(文本, True, (255, 255, 255)).convert_alpha()
+        except Exception:
+            return None, None, 255
+
+        内边距x = 12
+        内边距y = 8
+        rect = pygame.Rect(
+            int(屏幕.get_width() - 文图.get_width() - 内边距x * 2 - 18),
+            92,
+            int(文图.get_width() + 内边距x * 2),
+            int(文图.get_height() + 内边距y * 2),
+        )
+        图层 = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        图层.fill((0, 30, 36, 150))
+        try:
+            pygame.draw.rect(
+                图层,
+                (0, 239, 251),
+                pygame.Rect(0, 0, rect.w, rect.h),
+                width=1,
+                border_radius=8,
+            )
+        except Exception:
+            pass
+        图层.blit(
+            文图,
+            (
+                int((rect.w - 文图.get_width()) // 2),
+                int((rect.h - 文图.get_height()) // 2),
+            ),
+        )
+        self._GPU操作反馈缓存签名 = 签名
+        self._GPU操作反馈缓存图层 = 图层
+        self._GPU操作反馈缓存矩形 = rect.copy()
+        return 图层, rect, int(255 * (0.35 + 0.65 * 比率))
+
+    def _取GPU自动播放提示图层(self, 屏幕: pygame.Surface) -> Tuple[Optional[pygame.Surface], Optional[pygame.Rect]]:
+        if not bool(getattr(self, "_是否自动模式", False)):
+            return None, None
+        if not isinstance(屏幕, pygame.Surface) or self._小字体 is None:
+            return None, None
+        签名 = (
+            int(id(self._小字体)),
+            tuple(int(v) for v in 屏幕.get_size()),
+            "自动播放已开启",
+        )
+        缓存图层 = getattr(self, "_GPU自动播放提示缓存图层", None)
+        缓存矩形 = getattr(self, "_GPU自动播放提示缓存矩形", None)
+        if (
+            签名 == getattr(self, "_GPU自动播放提示缓存签名", ())
+            and isinstance(缓存图层, pygame.Surface)
+            and isinstance(缓存矩形, pygame.Rect)
+            and 缓存矩形.w > 0
+            and 缓存矩形.h > 0
+        ):
+            return 缓存图层, 缓存矩形.copy()
+
+        try:
+            常亮文图 = self._小字体.render(
+                "自动播放已开启", True, (255, 252, 210)
+            ).convert_alpha()
+        except Exception:
+            return None, None
+
+        内边距x = 14
+        内边距y = 8
+        提示框 = pygame.Rect(
+            int(屏幕.get_width() - 常亮文图.get_width() - 内边距x * 2 - 18),
+            42,
+            int(常亮文图.get_width() + 内边距x * 2),
+            int(常亮文图.get_height() + 内边距y * 2),
+        )
+        图层 = pygame.Surface((提示框.w, 提示框.h), pygame.SRCALPHA)
+        图层.fill((42, 96, 24, 185))
+        try:
+            pygame.draw.rect(
+                图层,
+                (180, 255, 120),
+                pygame.Rect(0, 0, 提示框.w, 提示框.h),
+                width=2,
+                border_radius=8,
+            )
+        except Exception:
+            pass
+        图层.blit(
+            常亮文图,
+            (
+                int((提示框.w - 常亮文图.get_width()) // 2),
+                int((提示框.h - 常亮文图.get_height()) // 2),
+            ),
+        )
+        self._GPU自动播放提示缓存签名 = 签名
+        self._GPU自动播放提示缓存图层 = 图层
+        self._GPU自动播放提示缓存矩形 = 提示框.copy()
+        return 图层, 提示框
+
+    def _构建GPU附加HUD图层(self, 屏幕: pygame.Surface) -> List[Dict[str, Any]]:
+        self._重置底部提示脏矩形()
+        if not isinstance(屏幕, pygame.Surface):
+            return []
+        if self._小字体 is None:
+            return []
+
+        图层列表: List[Dict[str, Any]] = []
+
+        按键提示图层, 按键提示矩形 = self._取GPU按键提示图层(屏幕)
+        项 = self._构建GPU图层项(
+            按键提示图层,
+            按键提示矩形,
+            860,
+            缓存纹理=True,
+        )
+        if isinstance(项, dict):
+            图层列表.append(项)
+
+        操作反馈图层, 操作反馈矩形, 操作反馈alpha = self._取GPU操作反馈图层(屏幕)
+        项 = self._构建GPU图层项(
+            操作反馈图层,
+            操作反馈矩形,
+            910,
+            缓存纹理=True,
+            alpha=操作反馈alpha,
+        )
+        if isinstance(项, dict):
+            图层列表.append(项)
+
+        自动播放图层, 自动播放矩形 = self._取GPU自动播放提示图层(屏幕)
+        项 = self._构建GPU图层项(
+            自动播放图层,
+            自动播放矩形,
+            900,
+            缓存纹理=True,
+        )
+        if isinstance(项, dict):
+            图层列表.append(项)
+
+        return 图层列表
+
+    def _绘制按键提示(self, 屏幕: pygame.Surface):
+        self._按键提示脏矩形 = pygame.Rect(0, 0, 0, 0)
+        if self._小字体 is None:
+            return
+
+        行列表 = self._取按键提示文本行列表()
 
         文图列表 = []
         最大宽 = 0
@@ -6811,36 +8962,7 @@ class 场景_谱面播放器(场景基类):
 
     def _绘制底部币值(self, 屏幕: pygame.Surface):
         self._底部币值脏矩形 = pygame.Rect(0, 0, 0, 0)
-        try:
-            字体_credit = (
-                (self.上下文.get("字体", {}) or {}).get("投币_credit字")
-                if isinstance(self.上下文, dict)
-                else None
-            )
-        except Exception:
-            字体_credit = None
-        if not isinstance(字体_credit, pygame.font.Font):
-            return
-        try:
-            状态 = self.上下文.get("状态", {}) if isinstance(self.上下文, dict) else {}
-            投币数 = int((状态 or {}).get("投币数", 0) or 0)
-            所需信用 = int((状态 or {}).get("每局所需信用", 3) or 3)
-        except Exception:
-            投币数 = 0
-            所需信用 = 3
-        try:
-            文本区域 = 绘制底部联网与信用(
-                屏幕=屏幕,
-                联网原图=getattr(self, "_联网原图", None),
-                字体_credit=字体_credit,
-                credit数值=f"{max(0, 投币数)}/{int(max(1, 所需信用))}",
-                总信用需求=int(max(1, 所需信用)),
-                文本=f"CREDIT：{max(0, 投币数)}/{int(max(1, 所需信用))}",
-            )
-            if isinstance(文本区域, pygame.Rect):
-                self._底部币值脏矩形 = 文本区域.inflate(168, 28)
-        except Exception:
-            pass
+        return
 
     def _绘制暂停菜单(self, 屏幕: pygame.Surface):
         if not bool(self._暂停菜单开启):
@@ -6912,19 +9034,20 @@ class 场景_谱面播放器(场景基类):
 
     # ---------------- 音频控制 ----------------
     def _初始化音频设备(self):
-        self._音频可用 = False
-        try:
-            if pygame.mixer.get_init() is None:
-                pygame.mixer.init()
-            self._音频可用 = True
-        except Exception:
-            self._音频可用 = False
+        _确保pygame基础模块已初始化()
+        self._音频可用 = bool(_确保混音器已初始化())
 
     def _确保音频已加载(self, 强制重载: bool = False) -> bool:
+        if str(getattr(self, "_音频文件状态路径", "") or "") != str(
+            os.path.abspath(str(getattr(self, "_音频路径", "") or ""))
+            if str(getattr(self, "_音频路径", "") or "").strip()
+            else ""
+        ):
+            self._刷新音频文件缓存()
         if (
             (not self._音频可用)
             or (not self._音频路径)
-            or (not os.path.isfile(self._音频路径))
+            or (not bool(self._音频文件有效))
         ):
             self._音频已加载路径 = None
             return False
@@ -6971,13 +9094,14 @@ class 场景_谱面播放器(场景基类):
     def 播放(self):
         if self._播放中:
             return
+        self._应用播放期运行时优化()
         self._播放中 = True
         self._起始系统秒 = time.perf_counter() - float(self._暂停时刻谱面秒)
 
         if (
             (not self._音频可用)
             or (not self._音频路径)
-            or (not os.path.isfile(self._音频路径))
+            or (not bool(self._音频文件有效))
         ):
             return
 
@@ -7111,23 +9235,145 @@ class 场景_谱面播放器(场景基类):
             )
 
     # ---------------- 字体/背景/皮肤/布局 ----------------
+    @staticmethod
+    def _限制布局值(值: float, 最小值: float, 最大值: float) -> float:
+        return float(max(float(最小值), min(float(最大值), float(值))))
+
+    def _取布局输出尺寸(self, 默认尺寸: Tuple[int, int]) -> Tuple[int, int]:
+        try:
+            默认宽 = int(默认尺寸[0])
+            默认高 = int(默认尺寸[1])
+            默认尺寸 = (int(max(1, 默认宽)), int(max(1, 默认高)))
+        except Exception:
+            默认尺寸 = (1920, 1080)
+        显示设置尺寸: Optional[Tuple[int, int]] = None
+        try:
+            显示设置 = self._取显示设置数据()
+            尺寸 = tuple(int(v) for v in 显示设置.get("desktop_size", 默认尺寸))
+            if len(尺寸) >= 2 and int(尺寸[0]) > 0 and int(尺寸[1]) > 0:
+                显示设置尺寸 = (int(尺寸[0]), int(尺寸[1]))
+        except Exception:
+            显示设置尺寸 = None
+        if isinstance(显示设置尺寸, tuple) and tuple(显示设置尺寸) == tuple(默认尺寸):
+            return tuple(显示设置尺寸)
+        try:
+            显示后端 = self.上下文.get("显示后端", None)
+        except Exception:
+            显示后端 = None
+        getter = getattr(显示后端, "取输出尺寸", None)
+        if callable(getter):
+            try:
+                尺寸 = tuple(int(v) for v in getter())
+                if len(尺寸) >= 2 and int(尺寸[0]) > 0 and int(尺寸[1]) > 0:
+                    return int(尺寸[0]), int(尺寸[1])
+            except Exception:
+                pass
+        if isinstance(显示设置尺寸, tuple):
+            return tuple(显示设置尺寸)
+        try:
+            return int(默认尺寸[0]), int(默认尺寸[1])
+        except Exception:
+            return 1920, 1080
+
+    def _计算谱面布局指标(
+        self,
+        渲染尺寸: Tuple[int, int],
+        输出尺寸: Tuple[int, int],
+    ) -> Dict[str, float]:
+        设计宽 = 1920.0
+        设计高 = 1080.0
+        渲染宽 = int(max(1, int(渲染尺寸[0] if len(渲染尺寸) > 0 else 1920)))
+        渲染高 = int(max(1, int(渲染尺寸[1] if len(渲染尺寸) > 1 else 1080)))
+        输出宽 = int(max(1, int(输出尺寸[0] if len(输出尺寸) > 0 else 渲染宽)))
+        输出高 = int(max(1, int(输出尺寸[1] if len(输出尺寸) > 1 else 渲染高)))
+
+        显示缩放基准 = float(min(float(输出宽) / 设计宽, float(输出高) / 设计高))
+        输出到渲染缩放 = float(
+            max(0.01, min(float(输出宽) / float(渲染宽), float(输出高) / float(渲染高)))
+        )
+        游戏区显示缩放 = self._限制布局值(显示缩放基准, 0.72, 1.12)
+        UI显示缩放 = self._限制布局值(显示缩放基准, 0.80, 1.06)
+        文字显示缩放 = self._限制布局值(显示缩放基准, 0.86, 1.10)
+
+        游戏区缩放 = self._限制布局值(游戏区显示缩放 / 输出到渲染缩放, 0.40, 1.12)
+        UI缩放 = self._限制布局值(UI显示缩放 / 输出到渲染缩放, 0.44, 1.06)
+        文字缩放 = self._限制布局值(文字显示缩放 / 输出到渲染缩放, 0.52, 1.10)
+
+        实际缩放 = float(self._箭头默认缩放) * float(self._尺寸倍率)
+        放大量级 = self._限制布局值((float(实际缩放) - 0.8) / 0.2, 0.0, 1.0)
+        箭头基准宽 = int(
+            round(self._限制布局值(118.0 * float(游戏区缩放), 48.0, 126.0))
+        )
+        箭头目标宽 = int(
+            round(
+                self._限制布局值(
+                    float(箭头基准宽) * float(实际缩放),
+                    42.0,
+                    156.0,
+                )
+            )
+        )
+        轨道中心间距 = int(
+            round(
+                self._限制布局值(
+                    float(箭头目标宽) * float(0.93 + 0.07 * 放大量级),
+                    26.0,
+                    176.0,
+                )
+            )
+        )
+        轨道槽宽 = int(
+            round(
+                self._限制布局值(
+                    max(
+                        float(箭头目标宽) + max(8.0, 10.0 * float(游戏区缩放)),
+                        float(箭头目标宽) * float(1.08 + 0.05 * 放大量级),
+                    ),
+                    float(箭头目标宽) + 8.0,
+                    188.0,
+                )
+            )
+        )
+
+        return {
+            "游戏区缩放": float(游戏区缩放),
+            "UI缩放": float(UI缩放),
+            "文字缩放": float(文字缩放),
+            "主字体字号": float(int(max(15, min(28, round(20.0 * float(文字缩放)))))),
+            "小字体字号": float(int(max(12, min(22, round(16.0 * float(文字缩放)))))),
+            "顶部边距": float(int(max(8, min(18, round(10.0 * float(UI缩放)))))),
+            "左右边距": float(int(max(14, min(34, round(18.0 * float(UI缩放)))))),
+            "底部边距": float(int(max(16, min(32, round(24.0 * float(UI缩放)))))),
+            "信息间距": float(int(max(4, min(10, round(6.0 * float(UI缩放)))))),
+            "信息高度": float(int(max(18, min(32, round(22.0 * float(文字缩放)))))),
+            "头像边": float(int(max(64, min(150, round(115.0 * float(UI缩放)))))),
+            "血条高度": float(int(max(72, min(172, round(132.0 * float(UI缩放)))))),
+            "判定线偏移": float(int(max(52, min(108, round(86.0 * float(游戏区缩放)))))),
+            "箭头基准宽": float(int(箭头基准宽)),
+            "箭头目标宽": float(int(箭头目标宽)),
+            "轨道中心间距": float(int(轨道中心间距)),
+            "轨道槽宽": float(int(轨道槽宽)),
+        }
+
     def _初始化字体(self):
+        主字号 = int(max(15, min(28, int(getattr(self, "_主字体字号", 20) or 20))))
+        小字号 = int(max(12, min(22, int(getattr(self, "_小字体字号", 16) or 16))))
         try:
             from core.工具 import 获取字体  # type: ignore
 
-            self._字体 = 获取字体(20, 是否粗体=False)
-            self._小字体 = 获取字体(16, 是否粗体=False)
+            self._字体 = 获取字体(int(主字号), 是否粗体=False)
+            self._小字体 = 获取字体(int(小字号), 是否粗体=False)
             return
         except Exception:
             pass
 
         pygame.font.init()
         try:
-            self._字体 = pygame.font.SysFont("Microsoft YaHei", 20)
-            self._小字体 = pygame.font.SysFont("Microsoft YaHei", 16)
+            self._字体 = pygame.font.SysFont("Microsoft YaHei", int(主字号))
+            self._小字体 = pygame.font.SysFont("Microsoft YaHei", int(小字号))
         except Exception:
-            self._字体 = pygame.font.Font(None, 20)
-            self._小字体 = pygame.font.Font(None, 16)
+            self._字体 = pygame.font.Font(None, int(主字号))
+            self._小字体 = pygame.font.Font(None, int(小字号))
 
     def _清理背景GIF缓存(self):
         self._背景GIF帧列表 = []
@@ -7883,8 +10129,8 @@ class 场景_谱面播放器(场景基类):
     def _应用背景视频状态(self):
         if bool(self._性能模式):
             self._加载背景视频("")
-        elif self._曲包背景视频自动生效中():
-            self._加载背景视频(self._取曲包背景视频路径())
+        elif str(self._取背景渲染模式() or "图片") != "视频":
+            self._加载背景视频("")
         elif bool(self._视频背景关闭):
             self._加载背景视频("")
         else:
@@ -7939,34 +10185,36 @@ class 场景_谱面播放器(场景基类):
                 带alpha = False
 
             try:
-                if (
-                    not isinstance(getattr(self, "_背景视频缩放缓存", None), pygame.Surface)
-                    or tuple(getattr(self, "_背景视频缩放尺寸", (0, 0))) != (新宽, 新高)
-                    or bool(getattr(self, "_背景视频缩放带alpha", False)) != bool(带alpha)
-                ):
-                    if 带alpha:
-                        self._背景视频缩放缓存 = pygame.Surface(
-                            (新宽, 新高), pygame.SRCALPHA, 32
-                        ).convert_alpha()
-                    else:
-                        self._背景视频缩放缓存 = pygame.Surface((新宽, 新高)).convert()
-                    self._背景视频缩放尺寸 = (新宽, 新高)
-                    self._背景视频缩放带alpha = bool(带alpha)
-                图2 = self._背景视频缩放缓存
-                结果图 = pygame.transform.smoothscale(原图, (新宽, 新高), 图2)
-                if isinstance(结果图, pygame.Surface):
-                    图2 = 结果图
-                    self._背景视频缩放缓存 = 图2
+                图2 = pygame.transform.smoothscale(原图, (新宽, 新高))
+                if bool(带alpha):
+                    try:
+                        图2 = 图2.convert_alpha()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        图2 = 图2.convert()
+                    except Exception:
+                        pass
+                self._背景视频缩放缓存 = 图2
+                self._背景视频缩放尺寸 = (新宽, 新高)
+                self._背景视频缩放带alpha = bool(带alpha)
             except Exception:
                 try:
-                    图2 = self._背景视频缩放缓存
-                    if isinstance(图2, pygame.Surface):
-                        结果图 = pygame.transform.scale(原图, (新宽, 新高), 图2)
-                        if isinstance(结果图, pygame.Surface):
-                            图2 = 结果图
-                            self._背景视频缩放缓存 = 图2
+                    图2 = pygame.transform.scale(原图, (新宽, 新高))
+                    if bool(带alpha):
+                        try:
+                            图2 = 图2.convert_alpha()
+                        except Exception:
+                            pass
                     else:
-                        图2 = pygame.transform.scale(原图, (新宽, 新高)).convert()
+                        try:
+                            图2 = 图2.convert()
+                        except Exception:
+                            pass
+                    self._背景视频缩放缓存 = 图2
+                    self._背景视频缩放尺寸 = (新宽, 新高)
+                    self._背景视频缩放带alpha = bool(带alpha)
                 except Exception:
                     return
 
@@ -8071,6 +10319,9 @@ class 场景_谱面播放器(场景基类):
         双踏板模式 = bool(getattr(self, "_是否双踏板模式", False))
         GPU背景层启用 = bool(self._应使用GPU背景层())
         当前背景模式 = str(self._取背景渲染模式() or "图片")
+        CPU准备动画背景回退 = bool(
+            self._准备动画CPU背景回退启用(当前背景模式)
+        )
         经过秒 = max(
             0.0, float(time.perf_counter() - float(self._准备动画开始秒 or 0.0))
         )
@@ -8083,6 +10334,16 @@ class 场景_谱面播放器(场景基类):
             except Exception:
                 pass
             现在系统秒 = float(time.perf_counter())
+            if bool(CPU准备动画背景回退):
+                try:
+                    截图面 = self._刷新准备动画背景快照(
+                        屏幕.get_size(), 现在系统秒
+                    )
+                    if isinstance(截图面, pygame.Surface):
+                        屏幕.blit(截图面, (0, 0))
+                except Exception:
+                    pass
+                return
             if (not bool(GPU背景层启用)) and (
                 not bool(self._绘制动态背景预览画面(屏幕, None, 现在系统秒))
             ):
@@ -8100,7 +10361,9 @@ class 场景_谱面播放器(场景基类):
         try:
             动画设置 = dict(getattr(self, "_准备动画设置", {}) or {})
             动画设置["背景蒙版透明度"] = float(
-                max(0, min(255, int(getattr(self, "_背景暗层alpha", 224) or 0)))
+                self._取准备动画背景蒙版透明度(
+                    动画设置.get("背景蒙版透明度", 0.0)
+                )
             )
         except Exception:
             动画设置 = dict(getattr(self, "_准备动画设置", {}) or {})
@@ -8220,44 +10483,59 @@ class 场景_谱面播放器(场景基类):
     def _重算布局(self, 强制: bool = False):
         屏幕: pygame.Surface = self.上下文["屏幕"]
         w, h = 屏幕.get_size()
-        if (not 强制) and (self._屏幕尺寸 == (w, h)):
+        输出尺寸 = self._取布局输出尺寸((w, h))
+        if (not 强制) and (self._屏幕尺寸 == (w, h)) and (self._布局输出尺寸 == tuple(输出尺寸)):
             return
 
         self._屏幕尺寸 = (w, h)
+        self._布局输出尺寸 = tuple(int(v) for v in 输出尺寸)
+        布局指标 = self._计算谱面布局指标((w, h), self._布局输出尺寸)
+        self._游戏区布局缩放 = float(布局指标.get("游戏区缩放", 1.0) or 1.0)
+        self._UI布局缩放 = float(布局指标.get("UI缩放", 1.0) or 1.0)
+        self._文字布局缩放 = float(布局指标.get("文字缩放", 1.0) or 1.0)
 
-        # ✅ 头像框更大：由“屏幕宽 5%” -> “屏幕宽 6%”，并把血条高度再抬一点
-        头像边 = int(max(64, min(180, w * 0.06)))
-        self._血条高度 = int(max(int(头像边 * 1.15), 72))
-        self._血条区域 = pygame.Rect(18, 10, w - 36, self._血条高度)
+        新主字体字号 = int(布局指标.get("主字体字号", 20) or 20)
+        新小字体字号 = int(布局指标.get("小字体字号", 16) or 16)
+        if (
+            新主字体字号 != int(getattr(self, "_主字体字号", 20) or 20)
+            or 新小字体字号 != int(getattr(self, "_小字体字号", 16) or 16)
+        ):
+            self._主字体字号 = int(新主字体字号)
+            self._小字体字号 = int(新小字体字号)
+            self._初始化字体()
+        else:
+            self._主字体字号 = int(新主字体字号)
+            self._小字体字号 = int(新小字体字号)
 
-        self._信息高度 = 22
-        self._信息y = int(self._血条区域.bottom + 6)
+        左右边距 = int(布局指标.get("左右边距", 18) or 18)
+        顶部边距 = int(布局指标.get("顶部边距", 10) or 10)
+        信息间距 = int(布局指标.get("信息间距", 6) or 6)
+        底部边距 = int(布局指标.get("底部边距", 24) or 24)
 
-        # ✅ 判定区紧贴血条/信息
-        self._顶部y = int(self._信息y + self._信息高度 + 6)
-        self._判定线y = int(self._顶部y + max(56, int(h * 0.08)))
-        self._底部y = int(h - 24)
+        self._血条高度 = int(布局指标.get("血条高度", 132) or 132)
+        self._血条区域 = pygame.Rect(
+            int(左右边距),
+            int(顶部边距),
+            int(max(200, w - 左右边距 * 2)),
+            int(self._血条高度),
+        )
 
-        # =========================
-        # ✅ 五键紧凑：中心间距更小，但箭头尺寸不缩水
-        # =========================
-        self._箭头基准宽 = int(max(64, min(118, w * 0.072)))
+        self._信息高度 = int(布局指标.get("信息高度", 22) or 22)
+        self._信息y = int(self._血条区域.bottom + 信息间距)
+        self._顶部y = int(self._信息y + self._信息高度 + 信息间距)
+        self._判定线y = int(self._顶部y + int(布局指标.get("判定线偏移", 86) or 86))
+        self._底部y = int(h - 底部边距)
 
-        实际缩放 = float(self._箭头默认缩放) * float(self._尺寸倍率)
-        箭头宽 = int(max(28, int(self._箭头基准宽 * 实际缩放)))
-
-        放大量级 = float(max(0.0, min(1.0, (float(实际缩放) - 0.8) / 0.2)))
-        紧凑系数 = float(0.88 + 0.14 * 放大量级)
-        self._轨道中心间距 = int(max(24, int(箭头宽 * 紧凑系数)))
-        轨道槽宽系数 = float(1.08 + 0.08 * 放大量级)
-        self._轨道槽宽 = int(max(箭头宽 + 10, int(箭头宽 * 轨道槽宽系数)))
+        self._箭头基准宽 = int(布局指标.get("箭头基准宽", 118) or 118)
+        self._轨道中心间距 = int(布局指标.get("轨道中心间距", 112) or 112)
+        self._轨道槽宽 = int(布局指标.get("轨道槽宽", 122) or 122)
 
         轨道数 = (
             5 if bool(getattr(self, "_是否双踏板模式", False)) else int(self._轨道数)
         )
         轨道总宽 = int(self._轨道槽宽 + (轨道数 - 1) * self._轨道中心间距)
 
-        最大总宽 = int(max(260, w - 40))
+        最大总宽 = int(max(260, w - max(40, 左右边距 * 2 + 8)))
         if 轨道总宽 > 最大总宽:
             缩放 = 最大总宽 / float(max(1, 轨道总宽))
             self._轨道槽宽 = int(max(40, int(self._轨道槽宽 * 缩放)))
@@ -8276,6 +10554,7 @@ class 场景_谱面播放器(场景基类):
         self._背景缩放缓存 = None
         self._背景缩放尺寸 = (0, 0)
         self._预热渲染缓存()
+        self._应用播放期运行时优化()
 
     def _取箭头目标宽(self, 实际箭头缩放: float) -> int:
         # ✅ 解耦：箭头宽度跟“箭头基准宽”走，不再跟轨道宽走
@@ -8721,9 +11000,12 @@ class 场景_谱面播放器(场景基类):
     def _加载背景视频(self, 视频来源: str):
         视频来源 = str(视频来源 or "").strip()
         旧错误提示 = str(getattr(self, "_错误提示", "") or "")
+        # 游戏内背景视频统一限制到 720p/30fps，进一步压低解码和上传成本。
         最大输出帧率 = 30.0
+        最大输出尺寸 = (1280, 720)
 
         self._关闭背景视频播放器()
+        self._背景视频待重建 = False
 
         if not 视频来源:
             return
@@ -8735,6 +11017,7 @@ class 场景_谱面播放器(场景基类):
                 播放器 = 全局视频顺序循环播放器(
                     视频来源,
                     最大输出帧率=最大输出帧率,
+                    最大输出尺寸=最大输出尺寸,
                 )
                 播放器.打开(是否重置进度=True)
                 self._背景视频播放器 = 播放器
@@ -8752,6 +11035,7 @@ class 场景_谱面播放器(场景基类):
             播放器 = 全局视频循环播放器(
                 视频来源,
                 最大输出帧率=最大输出帧率,
+                最大输出尺寸=最大输出尺寸,
             )
             播放器.打开(是否重置进度=True)
             self._背景视频播放器 = 播放器
@@ -8774,13 +11058,29 @@ class 场景_谱面播放器(场景基类):
         已绘制背景 = False
 
         背景模式 = self._取背景渲染模式()
+        准备动画激活 = bool(getattr(self, "_显示准备动画", False)) and (
+            not bool(getattr(self, "_准备动画已完成", True))
+        )
+        背景现在秒 = float(time.perf_counter())
         当前背景源 = self._取当前背景源()
         背景图 = None
+        准备动画动态背景图 = None
+        动态背景准备图已刷新 = False
         if str(背景模式 or "图片") != "图片":
             self._停止背景转场()
-        if 当前背景源 is not None and hasattr(当前背景源, "取CPU帧"):
+        if 背景模式 == "动态背景" and bool(准备动画激活):
+            动态背景准备图已刷新 = True
             try:
-                背景图 = 当前背景源.取CPU帧(self, time.perf_counter())
+                准备动画动态背景图 = self._刷新准备动画动态背景截图(
+                    (w, h), 背景现在秒
+                )
+            except Exception:
+                准备动画动态背景图 = getattr(self, "_准备动画背景无蒙版", None)
+        if isinstance(准备动画动态背景图, pygame.Surface):
+            背景图 = 准备动画动态背景图
+        elif 当前背景源 is not None and hasattr(当前背景源, "取CPU帧"):
+            try:
+                背景图 = 当前背景源.取CPU帧(self, 背景现在秒)
             except Exception:
                 背景图 = None
         if isinstance(背景图, pygame.Surface):
@@ -8800,24 +11100,32 @@ class 场景_谱面播放器(场景基类):
                 已绘制背景 = False
 
         if not 已绘制背景:
-            现在秒 = float(time.perf_counter())
-            背景图 = self._取背景图片帧(现在秒)
-            if isinstance(背景图, pygame.Surface):
-                if not self._绘制背景图片转场(屏幕, 现在秒):
-                    self._绘制cover背景面(屏幕, 背景图)
-            else:
+            if 背景模式 == "动态背景" and bool(准备动画激活):
                 self._停止背景转场()
                 屏幕.fill((15, 15, 18))
-
-        if bool(getattr(self, "_显示准备动画", False)) and (
-            not bool(getattr(self, "_准备动画已完成", True))
-        ):
-            if bool(self._准备动画处于动态预展示()):
-                self._刷新准备动画动态背景截图((w, h), time.perf_counter())
+                背景图 = None
+            elif 背景模式 == "视频" and bool(self._准备动画视频背景禁止图片回退()):
+                self._停止背景转场()
+                屏幕.fill((15, 15, 18))
+                背景图 = None
             else:
-                当前背景模式 = str(self._取背景渲染模式() or "图片")
+                背景图 = self._取背景图片帧(背景现在秒)
+                if isinstance(背景图, pygame.Surface):
+                    if not self._绘制背景图片转场(屏幕, 背景现在秒):
+                        self._绘制cover背景面(屏幕, 背景图)
+                else:
+                    self._停止背景转场()
+                    屏幕.fill((15, 15, 18))
+
+        if bool(准备动画激活):
+            if bool(self._准备动画处于动态预展示()):
+                if not bool(动态背景准备图已刷新):
+                    self._刷新准备动画动态背景截图((w, h), 背景现在秒)
+            else:
+                当前背景模式 = str(背景模式 or "图片")
                 if 当前背景模式 == "动态背景":
-                    self._刷新准备动画动态背景截图((w, h), time.perf_counter())
+                    if not bool(动态背景准备图已刷新):
+                        self._刷新准备动画动态背景截图((w, h), 背景现在秒)
                 elif 当前背景模式 == "视频":
                     需刷新视频快照 = False
                     try:
@@ -8859,18 +11167,16 @@ class 场景_谱面播放器(场景基类):
                         self._准备动画最近视频快照命中 = False
 
         try:
-            if int(getattr(self, "_背景暗层alpha", 0) or 0) > 0:
+            遮罩alpha = int(self._取当前背景遮罩alpha())
+            if 遮罩alpha > 0:
                 if (
                     self._背景暗层缓存 is None
                     or self._背景暗层缓存.get_size() != (w, h)
-                    or int(getattr(self, "_背景暗层缓存alpha", -1))
-                    != int(getattr(self, "_背景暗层alpha", 0))
+                    or int(getattr(self, "_背景暗层缓存alpha", -1)) != 遮罩alpha
                 ):
                     self._背景暗层缓存 = pygame.Surface((w, h), pygame.SRCALPHA)
-                    self._背景暗层缓存.fill(
-                        (0, 0, 0, int(max(0, min(255, int(self._背景暗层alpha)))))
-                    )
-                    self._背景暗层缓存alpha = int(self._背景暗层alpha)
+                    self._背景暗层缓存.fill((0, 0, 0, int(遮罩alpha)))
+                    self._背景暗层缓存alpha = int(遮罩alpha)
                 屏幕.blit(self._背景暗层缓存, (0, 0))
         except Exception:
             pass
@@ -8898,20 +11204,27 @@ class 场景_谱面播放器(场景基类):
         self._背景视频卡帧累计秒 = 0.0
         self._背景视频上一帧指纹 = None
         self._背景视频上一有效帧 = None
+        self._背景视频上一有效原始帧 = None
         self._背景视频上次取帧秒 = 0.0
         self._背景视频下次取帧秒 = 0.0
+        self._背景视频待重建 = False
         self._GPU背景视频纹理 = None
         self._GPU背景视频纹理尺寸 = (0, 0)
         self._GPU背景视频纹理源键 = ()
 
-    def _读取背景视频帧(self) -> Optional[pygame.Surface]:
-        def _读取播放器帧(播放器实例) -> Optional[pygame.Surface]:
+    def _读取背景视频帧(self, 原始输出: bool = False) -> Optional[pygame.Surface]:
+        def _读取播放器帧(播放器实例, 原始输出: bool = False) -> Optional[pygame.Surface]:
             if 播放器实例 is None:
                 return None
             try:
                 屏幕对象 = self.上下文.get("屏幕") if isinstance(self.上下文, dict) else None
             except Exception:
                 屏幕对象 = None
+            if bool(原始输出) and hasattr(播放器实例, "读取帧"):
+                try:
+                    return 播放器实例.读取帧()
+                except Exception:
+                    return None
             if isinstance(屏幕对象, pygame.Surface) and hasattr(播放器实例, "读取覆盖帧"):
                 try:
                     目标宽, 目标高 = 屏幕对象.get_size()
@@ -8929,7 +11242,13 @@ class 场景_谱面播放器(场景基类):
         if 播放器 is None or (
             (not hasattr(播放器, "读取覆盖帧")) and (not hasattr(播放器, "读取帧"))
         ):
-            return getattr(self, "_背景视频上一有效帧", None)
+            return getattr(
+                self,
+                "_背景视频上一有效原始帧"
+                if bool(原始输出)
+                else "_背景视频上一有效帧",
+                None,
+            )
 
         try:
             当前系统秒 = float(time.perf_counter())
@@ -8947,7 +11266,10 @@ class 场景_谱面播放器(场景基类):
             时间增量 = float(max(0.0, 当前系统秒 - 上次取帧秒))
         时间增量 = min(0.25, max(1.0 / 240.0, 时间增量))
 
-        上一有效帧 = getattr(self, "_背景视频上一有效帧", None)
+        缓存属性名 = (
+            "_背景视频上一有效原始帧" if bool(原始输出) else "_背景视频上一有效帧"
+        )
+        上一有效帧 = getattr(self, 缓存属性名, None)
         try:
             下次取帧秒 = float(getattr(self, "_背景视频下次取帧秒", 0.0) or 0.0)
         except Exception:
@@ -8957,18 +11279,16 @@ class 场景_谱面播放器(场景基类):
 
         self._背景视频上次取帧秒 = 当前系统秒
         取帧开始秒 = 当前系统秒
-        视频帧 = _读取播放器帧(播放器)
+        视频帧 = _读取播放器帧(播放器, 原始输出=bool(原始输出))
         try:
             取帧耗时秒 = float(max(0.0, time.perf_counter() - 取帧开始秒))
         except Exception:
             取帧耗时秒 = 0.0
 
         基础刷新间隔秒 = float(
-            max(
-                1.0 / 30.0,
-                float(getattr(self, "_背景视频基础刷新间隔秒", 1.0 / 30.0) or 1.0 / 30.0),
-            )
+            getattr(self, "_背景视频基础刷新间隔秒", 1.0 / 30.0) or 1.0 / 30.0
         )
+        基础刷新间隔秒 = max(1.0 / 30.0, float(基础刷新间隔秒))
         刷新间隔秒 = 基础刷新间隔秒
         if 取帧耗时秒 >= 0.018:
             刷新间隔秒 = max(刷新间隔秒, 1.0 / 18.0)
@@ -8977,17 +11297,27 @@ class 场景_谱面播放器(场景基类):
         self._背景视频下次取帧秒 = float(当前系统秒 + 刷新间隔秒)
 
         视频来源 = str(getattr(self, "_背景视频路径", "") or "").strip()
+        正在准备 = False
+        try:
+            if hasattr(播放器, "正在准备"):
+                正在准备 = bool(播放器.正在准备())
+        except Exception:
+            正在准备 = False
 
         if isinstance(视频帧, pygame.Surface):
-            self._背景视频上一有效帧 = 视频帧
+            setattr(self, 缓存属性名, 视频帧)
             self._背景视频连续空帧次数 = 0
             self._背景视频空帧累计秒 = 0.0
             self._背景视频卡帧累计秒 = 0.0
             self._背景视频上一帧指纹 = None
+            self._背景视频待重建 = False
             return 视频帧
 
         self._背景视频上一帧指纹 = None
         self._背景视频卡帧累计秒 = 0.0
+
+        if bool(正在准备):
+            return 上一有效帧 if isinstance(上一有效帧, pygame.Surface) else None
 
         if not 视频来源:
             self._背景视频连续空帧次数 = 0
@@ -9020,11 +11350,18 @@ class 场景_谱面播放器(场景基类):
 
         self._背景视频上次重建秒 = 当前系统秒
         self._背景视频空帧累计秒 = 0.0
-        self._加载背景视频(视频来源)
-        if isinstance(上一有效帧, pygame.Surface) and not isinstance(
-            getattr(self, "_背景视频上一有效帧", None), pygame.Surface
+        if bool(getattr(self, "_背景视频播放中禁止重建", True)) and bool(
+            getattr(self, "_播放中", False)
         ):
-            self._背景视频上一有效帧 = 上一有效帧
+            self._背景视频待重建 = True
+            self._背景视频下次取帧秒 = float(当前系统秒 + max(0.25, 刷新间隔秒))
+            return 上一有效帧 if isinstance(上一有效帧, pygame.Surface) else None
+        self._加载背景视频(视频来源)
+        self._背景视频待重建 = False
+        if isinstance(上一有效帧, pygame.Surface) and not isinstance(
+            getattr(self, 缓存属性名, None), pygame.Surface
+        ):
+            setattr(self, 缓存属性名, 上一有效帧)
         self._背景视频下次取帧秒 = 0.0
 
         播放器 = getattr(self, "_背景视频播放器", None)
@@ -9033,10 +11370,10 @@ class 场景_谱面播放器(场景基类):
         ):
             return 上一有效帧 if isinstance(上一有效帧, pygame.Surface) else None
 
-        重建后帧 = _读取播放器帧(播放器)
+        重建后帧 = _读取播放器帧(播放器, 原始输出=bool(原始输出))
         if isinstance(重建后帧, pygame.Surface):
             self._背景视频连续空帧次数 = 0
-            self._背景视频上一有效帧 = 重建后帧
+            setattr(self, 缓存属性名, 重建后帧)
             return 重建后帧
 
         return 上一有效帧 if isinstance(上一有效帧, pygame.Surface) else None
@@ -9148,12 +11485,20 @@ class 场景_谱面播放器(场景基类):
             "玩家序号": int(self._载荷.get("玩家序号", 1) or 1),
             "曲目名": str(self._歌曲名 or ""),
             "sm路径": str(self._载荷.get("sm路径", "") or ""),
+            "记录键sm路径": str(
+                self._载荷.get(
+                    "记录键sm路径", self._载荷.get("sm路径", "")
+                )
+                or ""
+            ),
             "模式": str(
                 self._载荷.get("模式", self._载荷.get("大模式", "竞速")) or "竞速"
             ),
             "类型": str(
                 self._载荷.get("类型", self._载荷.get("大模式", "竞速")) or "竞速"
             ),
+            "谱面charttype": str(self._载荷.get("谱面charttype", "") or ""),
+            "谱面模式标记": str(self._载荷.get("谱面模式标记", "") or ""),
             "本局最高分": int(分数),
             "本局最大combo": int(最大连击),
             "歌曲时长秒": float(self._谱面总时长秒 or 0.0),

@@ -1,30 +1,33 @@
+import atexit
 import os
 import sys
 import time
-import json
 import inspect
-import webbrowser
+import gc
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 from typing import Optional
 
-try:
-    import cv2
-except Exception:
-    cv2 = None
-
 from core.常量与路径 import 默认资源路径, 取运行根目录
+from core.日志 import (
+    初始化日志系统 as _初始化日志系统,
+    取日志器 as _取日志器,
+    记录异常 as _记录异常日志,
+    记录信息 as _记录信息日志,
+    取日志文件路径 as _取日志文件路径,
+)
 from core.对局状态 import 取每局所需信用
 from core.渲染后端 import 创建显示后端, 取桌面尺寸, 取桌面刷新率
 from core.踏板控制 import 解析踏板动作
 from core.工具 import 获取字体
 from core.音频 import 音乐管理
 from core.视频 import 全局视频循环播放器, 选择第一个视频
-from core.软件版本 import 比较版本号, 规范版本号, 读取当前版本号
+from core.软件版本 import 读取当前版本号
 from core.sqlite_store import (
     SCOPE_GLOBAL_SETTINGS as _全局设置存储作用域,
     read_scope as _读取存储作用域,
     replace_scope as _替换存储作用域,
+    write_scope_patch as _写入存储作用域补丁,
 )
 from scenes.场景_投币 import 场景_投币
 from scenes.场景_登陆磁卡 import 场景_登陆磁卡
@@ -40,820 +43,485 @@ from ui.场景过渡 import 公共黑屏过渡,公共丝滑入场
 from ui.select_scene_esc_menu_host import SelectSceneEscMenuHost
 
 
-更新接口地址 = "http://#/api/update"
-
-
-def _songs目录含有曲包(songs根目录: str) -> bool:
-    路径 = os.path.abspath(str(songs根目录 or "").strip()) if str(songs根目录 or "").strip() else ""
-    if not 路径 or (not os.path.isdir(路径)):
+def _启用稳定GC模式() -> bool:
+    环境值 = str(os.environ.get("E5CM_SAFE_GC", "") or "").strip().lower()
+    if 环境值 in ("1", "true", "yes", "on"):
+        return True
+    if 环境值 in ("0", "false", "no", "off"):
         return False
-
-    目标扩展名 = {".sm", ".sma", ".ssc", ".dwi", ".json"}
-    try:
-        for 根目录, _子目录, 文件列表 in os.walk(路径):
-            for 文件名 in 文件列表:
-                _, 扩展名 = os.path.splitext(str(文件名 or ""))
-                if str(扩展名 or "").lower() in 目标扩展名:
-                    return True
-    except Exception:
-        return False
-    return False
+    return bool(getattr(sys, "frozen", False))
 
 
-def _弹窗提示缺少曲包(songs根目录: str):
-    路径 = os.path.abspath(str(songs根目录 or "").strip()) if str(songs根目录 or "").strip() else ""
-    if 路径:
-        try:
-            os.makedirs(路径, exist_ok=True)
-        except Exception:
-            pass
-
-    标题 = "缺少曲包"
-    正文 = "检测到您没有曲包，请下载曲包并解压，覆盖到软件根目录songs文件夹。"
-    操作步骤 = [
-        "1. 下载所有part的曲包",
-        "2. 解压第一个压缩包，会获得全部的歌曲文件",
-        "3. 打开songs文件夹",
-        "4. 把曲包拖进去",
-        "5. 重启软件",
-    ]
-
-    try:
-        import tkinter as tk
-    except Exception:
-        tk = None
-
-    if tk is None:
-        print(正文)
-        print("下载曲包：http://#")
-        for 文本 in 操作步骤:
-            print(文本)
+def _启用Windows高DPI感知():
+    if os.name != "nt":
         return
-
     try:
-        根窗 = tk.Tk()
-        根窗.withdraw()
+        # 强制按物理像素坐标运行，避免 Win11 150% / 125% 把 SDL 坐标系虚拟成逻辑点。
+        os.environ["SDL_WINDOWS_DPI_AWARENESS"] = "permonitorv2"
+        os.environ["SDL_WINDOWS_DPI_SCALING"] = "0"
+    except Exception:
+        pass
+    try:
+        import ctypes
 
-        弹窗 = tk.Toplevel(根窗)
-        弹窗.title(标题)
-        弹窗.resizable(False, False)
-        弹窗.attributes("-topmost", True)
-        弹窗.configure(bg="#0f1726")
-        弹窗.protocol("WM_DELETE_WINDOW", 弹窗.destroy)
+        user32 = ctypes.windll.user32
+        try:
+            shcore = ctypes.windll.shcore
+        except Exception:
+            shcore = None
 
-        外框 = tk.Frame(弹窗, bg="#0f1726", padx=18, pady=16)
-        外框.pack(fill="both", expand=True)
-
-        tk.Label(
-            外框,
-            text=正文,
-            justify="left",
-            anchor="w",
-            fg="#f3f7ff",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 12, "bold"),
-            wraplength=520,
-        ).pack(fill="x")
-
-        if 路径:
-            tk.Label(
-                外框,
-                text=f"songs文件夹：{路径}",
-                justify="left",
-                anchor="w",
-                fg="#9fb4d9",
-                bg="#0f1726",
-                font=("Microsoft YaHei UI", 10),
-                wraplength=520,
-            ).pack(fill="x", pady=(8, 0))
-
-        tk.Label(
-            外框,
-            text="操作提示：",
-            justify="left",
-            anchor="w",
-            fg="#ffe066",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 11, "bold"),
-        ).pack(fill="x", pady=(14, 6))
-
-        for 文本 in 操作步骤:
-            tk.Label(
-                外框,
-                text=文本,
-                justify="left",
-                anchor="w",
-                fg="#d7e2f5",
-                bg="#0f1726",
-                font=("Microsoft YaHei UI", 10),
-                wraplength=520,
-            ).pack(fill="x", pady=1)
-
-        按钮区 = tk.Frame(外框, bg="#0f1726")
-        按钮区.pack(fill="x", pady=(16, 0))
-
-        def _下载曲包():
+        if hasattr(user32, "SetProcessDpiAwarenessContext"):
             try:
-                webbrowser.open("http://#")
+                if bool(user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))):
+                    return
             except Exception:
                 pass
-
-        tk.Button(
-            按钮区,
-            text="1.下载曲包，http://#",
-            command=_下载曲包,
-            padx=14,
-            pady=8,
-            bg="#1d6cff",
-            fg="#ffffff",
-            activebackground="#2a7fff",
-            activeforeground="#ffffff",
-            relief="flat",
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10, "bold"),
-        ).pack(side="left")
-
-        tk.Button(
-            按钮区,
-            text="关闭",
-            command=弹窗.destroy,
-            padx=14,
-            pady=8,
-            bg="#243248",
-            fg="#f3f7ff",
-            activebackground="#30415d",
-            activeforeground="#ffffff",
-            relief="flat",
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10),
-        ).pack(side="right")
-
-        弹窗.update_idletasks()
-        宽 = int(弹窗.winfo_width() or 560)
-        高 = int(弹窗.winfo_height() or 320)
-        屏宽 = int(弹窗.winfo_screenwidth() or 宽)
-        屏高 = int(弹窗.winfo_screenheight() or 高)
-        x = max(0, (屏宽 - 宽) // 2)
-        y = max(0, (屏高 - 高) // 2)
-        弹窗.geometry(f"{宽}x{高}+{x}+{y}")
-        弹窗.deiconify()
-        弹窗.grab_set()
-        弹窗.focus_force()
-        根窗.wait_window(弹窗)
-        根窗.destroy()
+        if shcore is not None and hasattr(shcore, "SetProcessDpiAwareness"):
+            try:
+                shcore.SetProcessDpiAwareness(2)
+                return
+            except Exception:
+                pass
+        if hasattr(user32, "SetProcessDPIAware"):
+            try:
+                user32.SetProcessDPIAware()
+            except Exception:
+                pass
     except Exception:
+        pass
+
+
+def _读取布尔环境变量(键名: str, 默认值: bool = False) -> bool:
+    文本 = str(os.environ.get(str(键名), "") or "").strip().lower()
+    if 文本 in ("1", "true", "yes", "on"):
+        return True
+    if 文本 in ("0", "false", "no", "off"):
+        return False
+    return bool(默认值)
+
+
+def _读取Windows系统缩放系数() -> float:
+    if os.name != "nt":
+        return 1.0
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        dpi值 = 0
+
+        hwnd = 0
         try:
-            根窗.destroy()
+            hwnd = int(user32.GetForegroundWindow() or 0)
         except Exception:
-            pass
-        print(正文)
-        print("下载曲包：http://#")
-        for 文本 in 操作步骤:
-            print(文本)
+            hwnd = 0
+        if hwnd <= 0 and hasattr(user32, "GetDesktopWindow"):
+            try:
+                hwnd = int(user32.GetDesktopWindow() or 0)
+            except Exception:
+                hwnd = 0
 
+        if hwnd > 0 and hasattr(user32, "GetDpiForWindow"):
+            try:
+                dpi值 = int(user32.GetDpiForWindow(hwnd) or 0)
+            except Exception:
+                dpi值 = 0
+        if dpi值 <= 0 and hasattr(user32, "GetDpiForSystem"):
+            try:
+                dpi值 = int(user32.GetDpiForSystem() or 0)
+            except Exception:
+                dpi值 = 0
+        if dpi值 <= 0:
+            try:
+                hdc = user32.GetDC(0)
+                if hdc:
+                    try:
+                        gdi32 = ctypes.windll.gdi32
+                        LOGPIXELSX = 88
+                        dpi值 = int(gdi32.GetDeviceCaps(hdc, LOGPIXELSX) or 0)
+                    finally:
+                        try:
+                            user32.ReleaseDC(0, hdc)
+                        except Exception:
+                            pass
+            except Exception:
+                dpi值 = 0
 
-def _格式化字节大小(字节数: object) -> str:
-    try:
-        值 = float(字节数 or 0)
+        if dpi值 <= 0:
+            return 1.0
+        return float(max(0.5, min(4.0, float(dpi值) / 96.0)))
     except Exception:
-        值 = 0.0
-
-    单位列表 = ["B", "KB", "MB", "GB"]
-    单位索引 = 0
-    while 值 >= 1024.0 and 单位索引 < len(单位列表) - 1:
-        值 /= 1024.0
-        单位索引 += 1
-
-    if 单位索引 == 0:
-        return f"{int(值)}{单位列表[单位索引]}"
-    return f"{值:.1f}{单位列表[单位索引]}"
+        return 1.0
 
 
-def _清理下载文件名(文本: object) -> str:
-    值 = str(文本 or "").strip()
-    if not 值:
-        return ""
-
-    非法字符 = '<>:"/\\|?*'
-    return "".join("_" if ch in 非法字符 else ch for ch in 值).strip(" .")
-
-
-def _启动安装包(安装包路径: str):
-    路径 = os.path.abspath(str(安装包路径 or "").strip())
-    if not 路径 or (not os.path.isfile(路径)):
-        raise FileNotFoundError(f"未找到安装包：{路径}")
-
-    if sys.platform == "win32" and hasattr(os, "startfile"):
-        os.startfile(路径)
-        return
-
-    import subprocess
-
-    subprocess.Popen([路径])
-
-
-def _后台检查软件更新(当前版本号: str, 结果容器: dict):
-    import urllib.request
-
-    请求 = urllib.request.Request(
-        更新接口地址,
-        method="GET",
-        headers={
-            "Accept": "application/json",
-            "User-Agent": f"E5CM-CG/{规范版本号(当前版本号, 默认值='unknown')}",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(请求, timeout=5) as 响应:
-            编码 = 响应.headers.get_content_charset() or "utf-8"
-            文本 = 响应.read().decode(编码, errors="ignore")
-
-        对象 = json.loads(文本)
-        if not isinstance(对象, dict):
-            raise ValueError("更新接口返回的不是 JSON 对象")
-
-        更新信息 = {
-            "version": str(对象.get("version", "") or "").strip(),
-            "versionLabel": str(对象.get("versionLabel", "") or "").strip(),
-            "downloadUrl": str(对象.get("downloadUrl", "") or "").strip(),
-            "updateContent": str(对象.get("updateContent", "") or "").strip(),
-            "publishedAt": str(对象.get("publishedAt", "") or "").strip(),
-        }
-        远端版本号 = str(更新信息.get("version", "") or "").strip()
-
-        结果容器["查询成功"] = True
-        结果容器["错误"] = ""
-        结果容器["数据"] = 更新信息
-        结果容器["发现新版本"] = bool(
-            远端版本号
-            and 比较版本号(远端版本号, 当前版本号) > 0
-        )
-    except Exception as 异常:
-        结果容器["查询成功"] = False
-        结果容器["错误"] = str(异常 or "")
-        结果容器["数据"] = None
-        结果容器["发现新版本"] = False
-    finally:
-        结果容器["已完成"] = True
-
-
-def _弹窗下载新版安装包(更新信息: dict, 父窗体=None) -> bool:
-    下载链接 = str(更新信息.get("downloadUrl", "") or "").strip()
-    if not 下载链接:
-        return False
-
-    try:
-        import tkinter as tk
-        from tkinter import ttk
-    except Exception:
-        return False
-
-    根窗 = None
-    自建根窗 = 父窗体 is None
-    状态 = {
-        "已完成": False,
-        "成功": False,
-        "取消": False,
-        "已下载字节": 0,
-        "总字节": 0,
-        "错误": "",
-        "保存路径": "",
-        "已启动安装器": False,
+def _应用Windows高DPI启动保底策略(启动调试设置: dict, 日志器) -> dict:
+    信息 = {
+        "已启用": False,
+        "缩放系数": 1.0,
+        "缩放百分比": 100,
+        "调整项": [],
     }
-    已处理完成 = {"值": False}
-    进度条已启动 = {"值": False}
+    if os.name != "nt" or (not isinstance(启动调试设置, dict)):
+        return 信息
+
+    策略文本 = str(os.environ.get("E5CM_HIGHDPI_SAFE_LAUNCH", "auto") or "auto").strip().lower()
+    if 策略文本 in ("0", "false", "no", "off", "disable", "disabled"):
+        return 信息
+
+    缩放系数 = float(_读取Windows系统缩放系数())
+    信息["缩放系数"] = float(缩放系数)
+    信息["缩放百分比"] = int(round(float(缩放系数) * 100.0))
+
+    强制启用 = 策略文本 in ("1", "true", "yes", "on", "force", "enabled")
+    自动启用 = 策略文本 in ("", "auto")
+    if (not bool(强制启用)) and (
+        (not bool(自动启用)) or float(缩放系数) < 1.35
+    ):
+        return 信息
+
+    调整项: list[str] = []
+    # auto 模式下只做轻量保底，避免在 2K/4K + 高缩放环境把正常全屏误降级为窗口模式。
+    # 如需旧版“强制窗口化/CPU”的重度保底，可设 E5CM_HIGHDPI_SAFE_LAUNCH=force。
+    启用重度保底 = bool(强制启用)
+
+    当前后端 = str(启动调试设置.get("默认渲染后端", "") or "").strip().lower()
+    if bool(启用重度保底) and 当前后端.startswith("gpu-"):
+        启动调试设置["默认渲染后端"] = "software"
+        调整项.append("默认渲染后端=software")
+
+    if bool(启用重度保底) and str(启动调试设置.get("默认显示模式", "") or "").strip().lower() == "borderless":
+        启动调试设置["默认显示模式"] = "windowed"
+        调整项.append("默认显示模式=windowed")
+
+    if bool(启动调试设置.get("显示启动幻灯片", True)):
+        启动调试设置["显示启动幻灯片"] = False
+        调整项.append("显示启动幻灯片=False")
 
     try:
-        if 自建根窗:
-            根窗 = tk.Tk()
-            根窗.withdraw()
-        else:
-            根窗 = 父窗体
-
-        弹窗 = tk.Toplevel(根窗)
-        弹窗.title("下载更新")
-        弹窗.resizable(False, False)
-        弹窗.attributes("-topmost", True)
-        弹窗.configure(bg="#0f1726")
-
-        外框 = tk.Frame(弹窗, bg="#0f1726", padx=18, pady=16)
-        外框.pack(fill="both", expand=True)
-
-        标题变量 = tk.StringVar(value="正在准备下载更新包...")
-        详情变量 = tk.StringVar(value=str(下载链接))
-
-        tk.Label(
-            外框,
-            textvariable=标题变量,
-            justify="left",
-            anchor="w",
-            fg="#f3f7ff",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 12, "bold"),
-            wraplength=520,
-        ).pack(fill="x")
-
-        tk.Label(
-            外框,
-            textvariable=详情变量,
-            justify="left",
-            anchor="w",
-            fg="#9fb4d9",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 10),
-            wraplength=520,
-        ).pack(fill="x", pady=(8, 12))
-
-        进度条 = ttk.Progressbar(外框, orient="horizontal", length=520, mode="determinate")
-        进度条.pack(fill="x")
-
-        按钮区 = tk.Frame(外框, bg="#0f1726")
-        按钮区.pack(fill="x", pady=(16, 0))
-
-        def _关闭或取消():
-            if bool(状态.get("已完成", False)):
-                弹窗.destroy()
-                return
-            状态["取消"] = True
-            标题变量.set("正在取消下载...")
-
-        取消按钮 = tk.Button(
-            按钮区,
-            text="取消",
-            command=_关闭或取消,
-            padx=14,
-            pady=8,
-            bg="#243248",
-            fg="#f3f7ff",
-            activebackground="#30415d",
-            activeforeground="#ffffff",
-            relief="flat",
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10),
-        )
-        取消按钮.pack(side="right")
-        弹窗.protocol("WM_DELETE_WINDOW", _关闭或取消)
-
-        def _下载线程():
-            import tempfile
-            import urllib.parse
-            import urllib.request
-
-            目标路径 = ""
-            临时路径 = ""
-
-            try:
-                下载目录 = os.path.join(tempfile.gettempdir(), "E5CM-CG_Update")
-                os.makedirs(下载目录, exist_ok=True)
-
-                解析结果 = urllib.parse.urlparse(下载链接)
-                文件名 = os.path.basename(urllib.parse.unquote(解析结果.path or ""))
-                文件名 = _清理下载文件名(文件名)
-                if not 文件名:
-                    安全版本号 = _清理下载文件名(
-                        str(更新信息.get("version", "") or "")
-                    ) or str(int(time.time()))
-                    文件名 = f"E5CM-CG_Setup_{安全版本号}.exe"
-                if not 文件名.lower().endswith(".exe"):
-                    文件名 += ".exe"
-
-                目标路径 = os.path.join(下载目录, 文件名)
-                临时路径 = 目标路径 + ".part"
-                状态["保存路径"] = 目标路径
-                状态["已下载字节"] = 0
-
-                请求 = urllib.request.Request(
-                    下载链接,
-                    method="GET",
-                    headers={"User-Agent": "E5CM-CG-Updater"},
-                )
-
-                with urllib.request.urlopen(请求, timeout=15) as 响应:
-                    try:
-                        状态["总字节"] = max(
-                            0,
-                            int(响应.headers.get("Content-Length", "0") or 0),
-                        )
-                    except Exception:
-                        状态["总字节"] = 0
-
-                    with open(临时路径, "wb") as 文件:
-                        while True:
-                            if bool(状态.get("取消", False)):
-                                raise RuntimeError("下载已取消")
-
-                            数据块 = 响应.read(262144)
-                            if not 数据块:
-                                break
-
-                            文件.write(数据块)
-                            状态["已下载字节"] = int(
-                                状态.get("已下载字节", 0) or 0
-                            ) + len(数据块)
-
-                if bool(状态.get("取消", False)):
-                    raise RuntimeError("下载已取消")
-
-                if os.path.isfile(目标路径):
-                    try:
-                        os.remove(目标路径)
-                    except Exception:
-                        pass
-                os.replace(临时路径, 目标路径)
-                状态["成功"] = True
-            except Exception as 异常:
-                状态["错误"] = str(异常 or "下载失败")
-                for 路径 in (临时路径, 目标路径):
-                    if 路径 and os.path.isfile(路径):
-                        try:
-                            os.remove(路径)
-                        except Exception:
-                            pass
-            finally:
-                状态["已完成"] = True
-
-        def _刷新进度():
-            已下载字节 = int(状态.get("已下载字节", 0) or 0)
-            总字节 = int(状态.get("总字节", 0) or 0)
-
-            if not bool(状态.get("已完成", False)):
-                if 总字节 > 0:
-                    if bool(进度条已启动.get("值", False)):
-                        try:
-                            进度条.stop()
-                        except Exception:
-                            pass
-                        进度条已启动["值"] = False
-                    进度条.configure(mode="determinate", maximum=max(1, 总字节))
-                    进度条["value"] = min(已下载字节, 总字节)
-                    百分比 = min(100.0, 已下载字节 * 100.0 / max(1, 总字节))
-                    标题变量.set(f"正在下载更新包... {百分比:.1f}%")
-                    详情变量.set(
-                        f"{_格式化字节大小(已下载字节)} / {_格式化字节大小(总字节)}"
-                    )
-                else:
-                    if not bool(进度条已启动.get("值", False)):
-                        进度条.configure(mode="indeterminate")
-                        进度条.start(12)
-                        进度条已启动["值"] = True
-                    标题变量.set("正在下载更新包...")
-                    详情变量.set(f"已下载 {_格式化字节大小(已下载字节)}")
-
-                弹窗.after(120, _刷新进度)
-                return
-
-            if bool(进度条已启动.get("值", False)):
-                try:
-                    进度条.stop()
-                except Exception:
-                    pass
-                进度条已启动["值"] = False
-
-            if bool(已处理完成.get("值", False)):
-                return
-            已处理完成["值"] = True
-
-            if bool(状态.get("成功", False)):
-                标题变量.set("下载完成，正在启动安装包...")
-                详情变量.set(str(状态.get("保存路径", "") or ""))
-                取消按钮.configure(state="disabled")
-                try:
-                    _启动安装包(str(状态.get("保存路径", "") or ""))
-                    状态["已启动安装器"] = True
-                    弹窗.after(180, 弹窗.destroy)
-                except Exception as 异常:
-                    标题变量.set("安装包启动失败")
-                    详情变量.set(str(异常 or ""))
-                    取消按钮.configure(state="normal", text="关闭")
-                return
-
-            if bool(状态.get("取消", False)):
-                标题变量.set("下载已取消")
-            else:
-                标题变量.set("下载失败")
-            详情变量.set(str(状态.get("错误", "") or ""))
-            取消按钮.configure(state="normal", text="关闭")
-
-        import threading
-
-        下载线程 = threading.Thread(
-            target=_下载线程,
-            name="E5CM-CG-UpdateDownload",
-            daemon=True,
-        )
-        下载线程.start()
-
-        弹窗.update_idletasks()
-        宽 = int(弹窗.winfo_width() or 560)
-        高 = int(弹窗.winfo_height() or 220)
-        屏宽 = int(弹窗.winfo_screenwidth() or 宽)
-        屏高 = int(弹窗.winfo_screenheight() or 高)
-        x = max(0, (屏宽 - 宽) // 2)
-        y = max(0, (屏高 - 高) // 2)
-        弹窗.geometry(f"{宽}x{高}+{x}+{y}")
-        弹窗.deiconify()
-        弹窗.grab_set()
-        弹窗.focus_force()
-
-        弹窗.after(120, _刷新进度)
-        根窗.wait_window(弹窗)
-        return bool(状态.get("已启动安装器", False))
-    finally:
-        if 自建根窗 and 根窗 is not None:
-            try:
-                根窗.destroy()
-            except Exception:
-                pass
-
-
-def _弹窗提示软件更新(当前版本号: str, 更新信息: dict) -> bool:
-    远端版本号 = str(更新信息.get("version", "") or "").strip()
-    if not 远端版本号:
-        return False
-    if 比较版本号(远端版本号, 当前版本号) <= 0:
-        return False
-
-    try:
-        import tkinter as tk
+        原窗口w = int(启动调试设置.get("默认窗口宽", 1600) or 1600)
+        原窗口h = int(启动调试设置.get("默认窗口高", 900) or 900)
     except Exception:
-        return False
+        原窗口w, 原窗口h = 1600, 900
+    安全窗口w = max(960, min(1920, int(原窗口w)))
+    安全窗口h = max(540, min(1080, int(原窗口h)))
+    if (安全窗口w, 安全窗口h) != (原窗口w, 原窗口h):
+        启动调试设置["默认窗口宽"] = int(安全窗口w)
+        启动调试设置["默认窗口高"] = int(安全窗口h)
+        调整项.append(f"默认窗口尺寸={安全窗口w}x{安全窗口h}")
 
-    根窗 = None
-    结果 = {"已启动安装器": False}
+    os.environ.setdefault("E5CM_VIDEO_DISABLE_GRAB", "1")
+    调整项.append("E5CM_VIDEO_DISABLE_GRAB=1")
 
+    信息["已启用"] = True
+    信息["调整项"] = list(调整项)
     try:
-        根窗 = tk.Tk()
-        根窗.withdraw()
-
-        弹窗 = tk.Toplevel(根窗)
-        弹窗.title("发现新版本")
-        弹窗.resizable(False, False)
-        弹窗.attributes("-topmost", True)
-        弹窗.configure(bg="#0f1726")
-        弹窗.protocol("WM_DELETE_WINDOW", 弹窗.destroy)
-
-        外框 = tk.Frame(弹窗, bg="#0f1726", padx=18, pady=16)
-        外框.pack(fill="both", expand=True)
-
-        版本提示 = str(更新信息.get("versionLabel", "") or "").strip()
-        更新内容 = str(更新信息.get("updateContent", "") or "").strip() or "暂无更新说明"
-        下载链接 = str(更新信息.get("downloadUrl", "") or "").strip()
-
-        tk.Label(
-            外框,
-            text="发现新版本",
-            justify="left",
-            anchor="w",
-            fg="#f3f7ff",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 14, "bold"),
-        ).pack(fill="x")
-
-        tk.Label(
-            外框,
-            text=f"当前版本：{规范版本号(当前版本号, 默认值='未知版本')}",
-            justify="left",
-            anchor="w",
-            fg="#9fb4d9",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 10),
-        ).pack(fill="x", pady=(8, 0))
-
-        tk.Label(
-            外框,
-            text=f"新版本版本号：{远端版本号}",
-            justify="left",
-            anchor="w",
-            fg="#ffe066",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 11, "bold"),
-            wraplength=520,
-        ).pack(fill="x", pady=(10, 0))
-
-        if 版本提示 and 版本提示 != 远端版本号:
-            tk.Label(
-                外框,
-                text=f"更新提示：{版本提示}",
-                justify="left",
-                anchor="w",
-                fg="#9fb4d9",
-                bg="#0f1726",
-                font=("Microsoft YaHei UI", 10),
-                wraplength=520,
-            ).pack(fill="x", pady=(6, 0))
-
-        tk.Label(
-            外框,
-            text=f"本次更新功能：\n{更新内容}",
-            justify="left",
-            anchor="w",
-            fg="#d7e2f5",
-            bg="#0f1726",
-            font=("Microsoft YaHei UI", 10),
-            wraplength=520,
-        ).pack(fill="x", pady=(12, 0))
-
-        按钮区 = tk.Frame(外框, bg="#0f1726")
-        按钮区.pack(fill="x", pady=(18, 0))
-
-        def _立即更新():
-            try:
-                弹窗.grab_release()
-            except Exception:
-                pass
-            弹窗.withdraw()
-            成功 = _弹窗下载新版安装包(更新信息, 父窗体=根窗)
-            if 成功:
-                结果["已启动安装器"] = True
-                弹窗.destroy()
-                return
-            if 弹窗.winfo_exists():
-                弹窗.deiconify()
-                try:
-                    弹窗.grab_set()
-                except Exception:
-                    pass
-                弹窗.focus_force()
-
-        更新按钮 = tk.Button(
-            按钮区,
-            text="立即更新",
-            command=_立即更新,
-            padx=14,
-            pady=8,
-            bg="#1d6cff",
-            fg="#ffffff",
-            activebackground="#2a7fff",
-            activeforeground="#ffffff",
-            relief="flat",
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10, "bold"),
+        _记录信息日志(
+            日志器,
+            "启用Windows高DPI启动保底策略 "
+            f"缩放={信息['缩放百分比']}% "
+            f"调整={', '.join(list(调整项) or ['无'])}",
         )
-        更新按钮.pack(side="left")
-        if not 下载链接:
-            更新按钮.configure(state="disabled")
-
-        tk.Button(
-            按钮区,
-            text="稍后再说",
-            command=弹窗.destroy,
-            padx=14,
-            pady=8,
-            bg="#243248",
-            fg="#f3f7ff",
-            activebackground="#30415d",
-            activeforeground="#ffffff",
-            relief="flat",
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10),
-        ).pack(side="right")
-
-        弹窗.update_idletasks()
-        宽 = int(弹窗.winfo_width() or 560)
-        高 = int(弹窗.winfo_height() or 280)
-        屏宽 = int(弹窗.winfo_screenwidth() or 宽)
-        屏高 = int(弹窗.winfo_screenheight() or 高)
-        x = max(0, (屏宽 - 宽) // 2)
-        y = max(0, (屏高 - 高) // 2)
-        弹窗.geometry(f"{宽}x{高}+{x}+{y}")
-        弹窗.deiconify()
-        弹窗.grab_set()
-        弹窗.focus_force()
-        根窗.wait_window(弹窗)
-        return bool(结果.get("已启动安装器", False))
-    finally:
-        if 根窗 is not None:
-            try:
-                根窗.destroy()
-            except Exception:
-                pass
+    except Exception:
+        pass
+    return 信息
 
 
-def _切换英文输入法():
-    """自动切换系统输入法为英文（仅 Windows）"""
-    if sys.platform != "win32":
-        return
+def _取Windows显示设置上下文():
+    if os.name != "nt":
+        return None
+
+    已缓存 = getattr(_取Windows显示设置上下文, "_cache", None)
+    if 已缓存 is False:
+        return None
+    if isinstance(已缓存, dict):
+        return 已缓存
 
     try:
         import ctypes
-        import time
+        from ctypes import wintypes
 
-        # 方法 1: 直接使用 ctypes 调用 Windows ActivateKeyboardLayout API
-        try:
-            User32 = ctypes.windll.user32
-            # 英文（美国）= 0x04090409
-            english_layout = 0x04090409
-            result = User32.ActivateKeyboardLayout(english_layout, 0)
-            time.sleep(0.3)
-            if result:
-                return
-        except Exception:
-            pass
+        CCHDEVICENAME = 32
+        CCHFORMNAME = 32
+        ENUM_CURRENT_SETTINGS = -1
 
-        # 方法 2: 使用 PostMessage 发送输入法切换消息到当前窗口
-        try:
-            User32 = ctypes.windll.user32
-            hwnd = User32.GetForegroundWindow()
-            WM_INPUTLANGCHANGEREQUEST = 0x0050
-            english_layout = 0x04090409
-            User32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, english_layout)
-            time.sleep(0.3)
-            return
-        except Exception:
-            pass
+        class POINTL(ctypes.Structure):
+            _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
-        # 方法 3: 使用 subprocess 调用 VBScript 进行切换
-        try:
-            import subprocess
-            import tempfile
-            import os
+        class _打印字段(ctypes.Structure):
+            _fields_ = [
+                ("dmOrientation", ctypes.c_short),
+                ("dmPaperSize", ctypes.c_short),
+                ("dmPaperLength", ctypes.c_short),
+                ("dmPaperWidth", ctypes.c_short),
+                ("dmScale", ctypes.c_short),
+                ("dmCopies", ctypes.c_short),
+                ("dmDefaultSource", ctypes.c_short),
+                ("dmPrintQuality", ctypes.c_short),
+            ]
 
-            vbs_script = """Set objWShell = CreateObject("WScript.Shell")
-objWShell.SendKeys "%({SPACE})"
-WScript.Sleep 500
-For i = 1 To 10
-    objWShell.SendKeys chr(38) & "E"
-    WScript.Sleep 50
-Next
-"""
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".vbs", delete=False
-            ) as f:
-                f.write(vbs_script)
-                script_path = f.name
+        class _显示字段(ctypes.Structure):
+            _fields_ = [
+                ("dmPosition", POINTL),
+                ("dmDisplayOrientation", wintypes.DWORD),
+                ("dmDisplayFixedOutput", wintypes.DWORD),
+            ]
 
-            subprocess.Popen(
-                ["cscript", script_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=0x08000000 if sys.platform == "win32" else 0,
-            )
+        class _DUMMYUNIONNAME(ctypes.Union):
+            _fields_ = [
+                ("printer", _打印字段),
+                ("display", _显示字段),
+            ]
 
-            # 异步删除脚本，不等待
-            try:
-                os.unlink(script_path)
-            except Exception:
-                pass
-            return
-        except Exception:
-            pass
+        class _DUMMYUNIONNAME2(ctypes.Union):
+            _fields_ = [
+                ("dmDisplayFlags", wintypes.DWORD),
+                ("dmNup", wintypes.DWORD),
+            ]
 
+        class DEVMODEW(ctypes.Structure):
+            _anonymous_ = ("u1", "u2")
+            _fields_ = [
+                ("dmDeviceName", wintypes.WCHAR * CCHDEVICENAME),
+                ("dmSpecVersion", wintypes.WORD),
+                ("dmDriverVersion", wintypes.WORD),
+                ("dmSize", wintypes.WORD),
+                ("dmDriverExtra", wintypes.WORD),
+                ("dmFields", wintypes.DWORD),
+                ("u1", _DUMMYUNIONNAME),
+                ("dmColor", ctypes.c_short),
+                ("dmDuplex", ctypes.c_short),
+                ("dmYResolution", ctypes.c_short),
+                ("dmTTOption", ctypes.c_short),
+                ("dmCollate", ctypes.c_short),
+                ("dmFormName", wintypes.WCHAR * CCHFORMNAME),
+                ("dmLogPixels", wintypes.WORD),
+                ("dmBitsPerPel", wintypes.DWORD),
+                ("dmPelsWidth", wintypes.DWORD),
+                ("dmPelsHeight", wintypes.DWORD),
+                ("u2", _DUMMYUNIONNAME2),
+                ("dmDisplayFrequency", wintypes.DWORD),
+                ("dmICMMethod", wintypes.DWORD),
+                ("dmICMIntent", wintypes.DWORD),
+                ("dmMediaType", wintypes.DWORD),
+                ("dmDitherType", wintypes.DWORD),
+                ("dmReserved1", wintypes.DWORD),
+                ("dmReserved2", wintypes.DWORD),
+                ("dmPanningWidth", wintypes.DWORD),
+                ("dmPanningHeight", wintypes.DWORD),
+            ]
+
+        用户32 = ctypes.windll.user32
+        LPDEVMODEW = ctypes.POINTER(DEVMODEW)
+        用户32.EnumDisplaySettingsW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            LPDEVMODEW,
+        ]
+        用户32.EnumDisplaySettingsW.restype = wintypes.BOOL
+        用户32.ChangeDisplaySettingsW.argtypes = [LPDEVMODEW, wintypes.DWORD]
+        用户32.ChangeDisplaySettingsW.restype = wintypes.LONG
+
+        上下文 = {
+            "ctypes": ctypes,
+            "用户32": 用户32,
+            "DEVMODEW": DEVMODEW,
+            "ENUM_CURRENT_SETTINGS": ENUM_CURRENT_SETTINGS,
+            "DM_BITSPERPEL": 0x00040000,
+            "DM_PELSWIDTH": 0x00080000,
+            "DM_PELSHEIGHT": 0x00100000,
+            "DM_DISPLAYFREQUENCY": 0x00400000,
+            "CDS_TEST": 0x00000002,
+            "CDS_FULLSCREEN": 0x00000004,
+            "DISP_CHANGE_SUCCESSFUL": 0,
+        }
+        setattr(_取Windows显示设置上下文, "_cache", 上下文)
+        return 上下文
     except Exception:
-        pass
+        setattr(_取Windows显示设置上下文, "_cache", False)
+        return None
 
 
-def _绘制opencv缺失提示(
-    屏幕: pygame.Surface,
-    字体对象,
-):
-    if cv2 is not None:
-        return
-    if 屏幕 is None:
-        return
-    if 字体对象 is None:
-        return
+def _取Windows当前显示模式() -> Optional[dict]:
+    上下文 = _取Windows显示设置上下文()
+    if not isinstance(上下文, dict):
+        return None
 
     try:
-        提示文本 = "没装opencv"
-        阴影色 = (0, 0, 0)
-        前景色 = (255, 120, 120)
-        背景色 = (20, 20, 20, 170)
+        ctypes = 上下文["ctypes"]
+        用户32 = 上下文["用户32"]
+        DEVMODEW = 上下文["DEVMODEW"]
+        ENUM_CURRENT_SETTINGS = int(上下文["ENUM_CURRENT_SETTINGS"])
 
-        文本面 = 字体对象.render(提示文本, True, 前景色)
-        阴影面 = 字体对象.render(提示文本, True, 阴影色)
-
-        外边距x = 12
-        外边距y = 10
-        内边距x = 10
-        内边距y = 6
-
-        背景宽 = 文本面.get_width() + 内边距x * 2
-        背景高 = 文本面.get_height() + 内边距y * 2
-
-        背景面 = pygame.Surface((背景宽, 背景高), pygame.SRCALPHA)
-        pygame.draw.rect(
-            背景面,
-            背景色,
-            pygame.Rect(0, 0, 背景宽, 背景高),
-            border_radius=8,
-        )
-
-        屏幕.blit(背景面, (外边距x, 外边距y))
-        屏幕.blit(
-            阴影面,
-            (外边距x + 内边距x + 1, 外边距y + 内边距y + 1),
-        )
-        屏幕.blit(
-            文本面,
-            (外边距x + 内边距x, 外边距y + 内边距y),
-        )
+        模式 = DEVMODEW()
+        模式.dmSize = ctypes.sizeof(DEVMODEW)
+        if not bool(用户32.EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, ctypes.byref(模式))):
+            return None
+        return {
+            "宽": int(模式.dmPelsWidth or 0),
+            "高": int(模式.dmPelsHeight or 0),
+            "色深": int(模式.dmBitsPerPel or 32),
+            "刷新率": int(模式.dmDisplayFrequency or 0),
+        }
     except Exception:
-        pass
+        return None
+
+
+def _尝试临时切换Windows桌面到1080p(
+    目标宽: int = 1920,
+    目标高: int = 1080,
+) -> dict:
+    上下文 = _取Windows显示设置上下文()
+    if not isinstance(上下文, dict):
+        return {"成功": False, "已切换": False, "原因": "Windows 显示 API 不可用"}
+
+    当前模式 = _取Windows当前显示模式()
+    if not isinstance(当前模式, dict):
+        return {"成功": False, "已切换": False, "原因": "读取当前桌面模式失败"}
+
+    当前宽 = int(当前模式.get("宽", 0) or 0)
+    当前高 = int(当前模式.get("高", 0) or 0)
+    if 当前宽 <= int(目标宽) and 当前高 <= int(目标高):
+        return {
+            "成功": True,
+            "已切换": False,
+            "原因": "当前桌面分辨率无需降级",
+            "当前模式": dict(当前模式),
+        }
+
+    ctypes = 上下文["ctypes"]
+    用户32 = 上下文["用户32"]
+    DEVMODEW = 上下文["DEVMODEW"]
+    ENUM_CURRENT_SETTINGS = int(上下文["ENUM_CURRENT_SETTINGS"])
+    DM_BITSPERPEL = int(上下文["DM_BITSPERPEL"])
+    DM_PELSWIDTH = int(上下文["DM_PELSWIDTH"])
+    DM_PELSHEIGHT = int(上下文["DM_PELSHEIGHT"])
+    DM_DISPLAYFREQUENCY = int(上下文["DM_DISPLAYFREQUENCY"])
+    CDS_TEST = int(上下文["CDS_TEST"])
+    CDS_FULLSCREEN = int(上下文["CDS_FULLSCREEN"])
+    DISP_CHANGE_SUCCESSFUL = int(上下文["DISP_CHANGE_SUCCESSFUL"])
+
+    当前刷新率 = int(当前模式.get("刷新率", 0) or 0)
+    字段候选列表 = []
+    if 当前刷新率 > 0:
+        字段候选列表.append(
+            (DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY, 当前刷新率)
+        )
+    字段候选列表.append((DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL, 0))
+
+    最后返回码 = None
+    for 字段, 刷新率 in 字段候选列表:
+        模式 = DEVMODEW()
+        模式.dmSize = ctypes.sizeof(DEVMODEW)
+        if not bool(用户32.EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, ctypes.byref(模式))):
+            continue
+        模式.dmPelsWidth = int(目标宽)
+        模式.dmPelsHeight = int(目标高)
+        模式.dmBitsPerPel = int(当前模式.get("色深", 32) or 32)
+        模式.dmFields = int(字段)
+        if int(字段) & int(DM_DISPLAYFREQUENCY) and int(刷新率) > 0:
+            模式.dmDisplayFrequency = int(刷新率)
+
+        测试返回码 = int(用户32.ChangeDisplaySettingsW(ctypes.byref(模式), CDS_TEST))
+        最后返回码 = int(测试返回码)
+        if int(测试返回码) != int(DISP_CHANGE_SUCCESSFUL):
+            continue
+
+        应用返回码 = int(用户32.ChangeDisplaySettingsW(ctypes.byref(模式), CDS_FULLSCREEN))
+        最后返回码 = int(应用返回码)
+        if int(应用返回码) == int(DISP_CHANGE_SUCCESSFUL):
+            新模式 = _取Windows当前显示模式()
+            return {
+                "成功": True,
+                "已切换": True,
+                "切换前模式": dict(当前模式),
+                "切换后模式": dict(新模式 or {}),
+            }
+
+    return {
+        "成功": False,
+        "已切换": False,
+        "原因": f"ChangeDisplaySettingsW 返回 {最后返回码}",
+        "当前模式": dict(当前模式),
+    }
+
+
+def _恢复Windows桌面显示设置() -> bool:
+    上下文 = _取Windows显示设置上下文()
+    if not isinstance(上下文, dict):
+        return False
+
+    try:
+        用户32 = 上下文["用户32"]
+        DISP_CHANGE_SUCCESSFUL = int(上下文["DISP_CHANGE_SUCCESSFUL"])
+        返回码 = int(用户32.ChangeDisplaySettingsW(None, 0))
+        return int(返回码) == int(DISP_CHANGE_SUCCESSFUL)
+    except Exception:
+        return False
+
+
+def _桌面需要全局1080p渲染策略(
+    桌面尺寸: Optional[tuple[int, int]] = None,
+) -> bool:
+    try:
+        if isinstance(桌面尺寸, tuple) and len(桌面尺寸) >= 2:
+            桌面w = int(桌面尺寸[0] or 0)
+            桌面h = int(桌面尺寸[1] or 0)
+        else:
+            桌面w, 桌面h = tuple(取桌面尺寸((1280, 720)))
+            桌面w = int(桌面w or 0)
+            桌面h = int(桌面h or 0)
+    except Exception:
+        return False
+    return int(桌面w) > 1920 or int(桌面h) > 1080
+
+
+def _取应用目标桌面尺寸(
+    默认尺寸: tuple[int, int] = (1280, 720),
+) -> tuple[int, int]:
+    try:
+        桌面w, 桌面h = tuple(取桌面尺寸(默认尺寸))
+        桌面w = int(桌面w or 默认尺寸[0])
+        桌面h = int(桌面h or 默认尺寸[1])
+    except Exception:
+        桌面w, 桌面h = int(默认尺寸[0]), int(默认尺寸[1])
+    if bool(_桌面需要全局1080p渲染策略((桌面w, 桌面h))):
+        return 1920, 1080
+    return int(桌面w), int(桌面h)
 
 
 def 主函数():
     显示后端 = None
+    _保存全局设置 = None
+    日志器 = _取日志器("main")
+    try:
+        日志器 = _初始化日志系统(取运行根目录(), 控制台输出=False)
+    except Exception as 异常:
+        _记录异常日志(日志器, "日志系统初始化失败", 异常)
+    _记录信息日志(日志器, "主函数启动")
+    _启用Windows高DPI感知()
+
+    if bool(_启用稳定GC模式()):
+        try:
+            if bool(gc.isenabled()):
+                gc.disable()
+            _记录信息日志(
+                日志器,
+                "已启用稳定GC模式：默认关闭循环GC（可用 E5CM_SAFE_GC=0 关闭）",
+            )
+        except Exception as 异常:
+            _记录异常日志(日志器, "启用稳定GC模式失败", 异常)
+
+    def _激活谱面播放器输入焦点(场景对象):
+        try:
+            场景名 = str(getattr(场景对象, "名称", "") or "")
+        except Exception:
+            场景名 = ""
+        if 场景名 != "谱面播放器":
+            return
+        try:
+            if 显示后端 is not None:
+                getattr(显示后端, "激活窗口", lambda: False)()
+        except Exception:
+            pass
 
     def _安全进入场景(场景对象, 载荷):
         try:
@@ -872,17 +540,21 @@ def 主函数():
 
             if 有可变参数:
                 进入方法(载荷)
+                _激活谱面播放器输入焦点(场景对象)
                 return
 
             if len(参数列表) == 0:
                 进入方法()
+                _激活谱面播放器输入焦点(场景对象)
                 return
 
             if len(参数列表) == 1 and 参数列表[0].name == "self":
                 进入方法()
+                _激活谱面播放器输入焦点(场景对象)
                 return
 
             进入方法(载荷)
+            _激活谱面播放器输入焦点(场景对象)
             return
 
         except TypeError as 异常:
@@ -893,6 +565,7 @@ def 主函数():
                 or ("takes" in 文本)
             ):
                 getattr(场景对象, "进入")()
+                _激活谱面播放器输入焦点(场景对象)
                 return
             raise
 
@@ -927,29 +600,69 @@ def 主函数():
         except Exception:
             pass
 
+    def _取当前显示模式标识() -> str:
+        return "borderless" if bool(是否全屏) else "windowed"
+
+    def _取当前显示模式文本() -> str:
+        return "无边框窗口" if bool(是否全屏) else "窗口"
+
     def _切换全屏():
-        nonlocal 是否全屏, 上次窗口尺寸, 屏幕
+        nonlocal 是否全屏, 屏幕
 
+        if not bool(是否全屏):
+            当前w, 当前h = _取当前全屏尺寸()
+            _应用全屏分辨率(
+                当前w,
+                当前h,
+                发送事件=False,
+                保存设置=False,
+            )
+            return
+
+        当前w, 当前h = _取当前窗口化尺寸()
+        _应用窗口化分辨率(
+            当前w,
+            当前h,
+            发送事件=False,
+            保存设置=False,
+        )
+
+    def _发送窗口尺寸变化事件(宽: object, 高: object):
+        尺寸变化事件 = None
         try:
-            当前w, 当前h = 上下文["屏幕"].get_size()
+            尺寸变化事件 = pygame.event.Event(
+                pygame.VIDEORESIZE,
+                {
+                    "w": int(max(1, int(宽 or 1))),
+                    "h": int(max(1, int(高 or 1))),
+                },
+            )
+            pygame.event.post(尺寸变化事件)
         except Exception:
-            当前w, 当前h = 1920, 1080
-
-        if not 是否全屏:
-            上次窗口尺寸 = (int(当前w), int(当前h))
-            if 显示后端 is not None:
-                目标w, 目标h = 显示后端.取桌面尺寸()
-                显示后端.调整窗口模式((目标w, 目标h), pygame.FULLSCREEN)
-            是否全屏 = True
-        else:
-            恢复w, 恢复h = 上次窗口尺寸
-            恢复w = int(max(960, int(恢复w)))
-            恢复h = int(max(540, int(恢复h)))
-            if 显示后端 is not None:
-                显示后端.调整窗口模式((恢复w, 恢复h), pygame.RESIZABLE)
-            是否全屏 = False
-
-        _同步屏幕引用()
+            尺寸变化事件 = None
+        if 尺寸变化事件 is None:
+            return
+        try:
+            场景对象 = 当前场景
+        except Exception:
+            场景对象 = None
+        if 场景对象 is None:
+            return
+        处理事件 = getattr(场景对象, "处理事件", None)
+        if not callable(处理事件):
+            return
+        try:
+            处理事件(
+                pygame.event.Event(
+                    pygame.VIDEORESIZE,
+                    {
+                        "w": int(getattr(尺寸变化事件, "w", 1) or 1),
+                        "h": int(getattr(尺寸变化事件, "h", 1) or 1),
+                    },
+                )
+            )
+        except Exception:
+            pass
 
     def _播放开场幻灯片(图片目录: str):
         if (not 图片目录) or (not os.path.isdir(图片目录)):
@@ -1035,16 +748,11 @@ def 主函数():
                         if 事件.key == pygame.K_ESCAPE:
                             pygame.quit()
                             sys.exit(0)
-                        if 事件.key == pygame.K_F11:
-                            _切换全屏()
-                            continue
 
                     if 事件.type == pygame.VIDEORESIZE and (not 是否全屏):
                         新w = int(max(960, int(getattr(事件, "w", 0) or 0)))
                         新h = int(max(540, int(getattr(事件, "h", 0) or 0)))
-                        if 显示后端 is not None:
-                            显示后端.调整窗口模式((新w, 新h), pygame.RESIZABLE)
-                            _同步屏幕引用()
+                        _应用窗口化分辨率(新w, 新h, 发送事件=False)
 
         渐显秒 = 2.0
         停留秒 = 1.0
@@ -1200,6 +908,11 @@ def 主函数():
     def _退出程序():
         音乐.停止()
         try:
+            if callable(_保存全局设置):
+                _保存全局设置()
+        except Exception:
+            pass
+        try:
             背景视频.关闭()
         except Exception:
             pass
@@ -1208,28 +921,149 @@ def 主函数():
                 显示后端.关闭()
         except Exception:
             pass
-        pygame.quit()
+        try:
+            pygame.quit()
+        except Exception:
+            pass
+        try:
+            _恢复1080p全屏兼容(原因="正常退出程序")
+        except Exception:
+            pass
+        _标记会话状态("clean")
         sys.exit(0)
 
-    def _规范渲染后端偏好(值: object, 默认值: str = "gpu") -> str:
-        文本 = str(值 or 默认值).strip().lower()
-        if 文本 in ("gpu", "gpu-sdl2", "sdl2"):
-            return "gpu"
-        if 文本 in ("software", "cpu"):
+    def _默认渲染引擎偏好() -> str:
+        return "gpu-d3d11" if os.name == "nt" else "gpu-auto"
+
+    启动时已启用1080p全屏兼容 = False
+    当前会话已切到1080p全屏兼容 = False
+
+    def _当前桌面需要1080p全屏兼容(模式信息: Optional[dict] = None) -> bool:
+        模式 = 模式信息 if isinstance(模式信息, dict) else _取Windows当前显示模式()
+        if not isinstance(模式, dict):
+            return False
+        try:
+            当前宽 = int(模式.get("宽", 0) or 0)
+            当前高 = int(模式.get("高", 0) or 0)
+        except Exception:
+            return False
+        return int(当前宽) > 1920 or int(当前高) > 1080
+
+    def _启用1080p全屏兼容(*, 原因: str) -> bool:
+        nonlocal 启动时已启用1080p全屏兼容, 当前会话已切到1080p全屏兼容
+
+        if os.name != "nt":
+            return False
+        if bool(当前会话已切到1080p全屏兼容):
+            return True
+
+        当前模式 = _取Windows当前显示模式()
+        if not bool(_当前桌面需要1080p全屏兼容(当前模式)):
+            return False
+
+        结果 = _尝试临时切换Windows桌面到1080p(1920, 1080)
+        if not bool(结果.get("成功", False)) or not bool(结果.get("已切换", False)):
+            try:
+                _记录信息日志(
+                    日志器,
+                    f"1080p全屏兼容模式启用失败 原因={原因} 详情={结果}",
+                )
+            except Exception:
+                pass
+            return False
+
+        当前会话已切到1080p全屏兼容 = True
+        if not bool(启动时已启用1080p全屏兼容):
+            启动时已启用1080p全屏兼容 = ("启动" in str(原因 or ""))
+        try:
+            _记录信息日志(
+                日志器,
+                f"已启用1080p全屏兼容模式 原因={原因} 模式={结果}",
+            )
+        except Exception:
+            pass
+        try:
+            time.sleep(0.15)
+        except Exception:
+            pass
+        return True
+
+    def _恢复1080p全屏兼容(*, 原因: str) -> bool:
+        nonlocal 当前会话已切到1080p全屏兼容
+
+        if not bool(当前会话已切到1080p全屏兼容):
+            return False
+
+        已恢复 = bool(_恢复Windows桌面显示设置())
+        当前模式 = _取Windows当前显示模式()
+        if isinstance(当前模式, dict) and bool(_当前桌面需要1080p全屏兼容(当前模式)):
+            当前会话已切到1080p全屏兼容 = False
+        elif bool(已恢复):
+            当前会话已切到1080p全屏兼容 = False
+
+        try:
+            _记录信息日志(
+                日志器,
+                f"1080p全屏兼容模式恢复结果 原因={原因} 成功={已恢复} 当前模式={当前模式}",
+            )
+        except Exception:
+            pass
+        return bool(已恢复)
+
+    atexit.register(lambda: _恢复1080p全屏兼容(原因="进程退出"))
+
+    def _规范渲染后端偏好(值: object, 默认值: Optional[str] = None) -> str:
+        默认文本 = str(默认值 or _默认渲染引擎偏好() or "gpu-auto")
+        文本 = str(值 or 默认文本).strip().lower().replace("_", "-")
+        if 文本 in ("gpu", "gpu-sdl2", "sdl2", "auto", "gpu-auto"):
+            return "gpu-auto"
+        if 文本 in ("gpu-d3d11", "d3d11", "direct3d11"):
+            return "gpu-d3d11"
+        if 文本 in ("gpu-opengl", "opengl", "ogl"):
+            return "gpu-opengl"
+        if 文本 in ("software", "cpu", "cpu-software"):
             return "software"
-        return str(默认值)
+        return str(默认文本)
+
+    def _读取正整数设置(值: object, 默认值: int) -> int:
+        try:
+            整数值 = int(值)
+        except Exception:
+            整数值 = int(默认值)
+        return max(1, int(整数值))
+
+    def _标记会话状态(状态值: object):
+        try:
+            文本 = str(状态值 or "").strip().lower() or "clean"
+            _写入存储作用域补丁(
+                _全局设置存储作用域,
+                {"最近会话状态": str(文本)},
+            )
+        except Exception:
+            pass
 
     def _读取启动调试设置() -> dict:
+        try:
+            默认全屏宽, 默认全屏高 = tuple(_取应用目标桌面尺寸((1600, 900)))
+        except Exception:
+            默认全屏宽, 默认全屏高 = (1600, 900)
         默认设置 = {
-            "默认渲染后端": "gpu",
+            "默认渲染后端": _默认渲染引擎偏好(),
             "默认GPU谱面管线": True,
+            "打包版选歌强制CPU兼容": False,
+            "默认显示模式": "borderless",
             "显示性能调试信息": False,
+            "显示状态HUD": True,
             "显示启动幻灯片": True,
             "显示谱面开场动画": True,
             "全局静音": False,
             "开发默认选歌载荷启用": True,
             "开发默认选歌类型": "竞速",
             "开发默认选歌模式": "混音",
+            "默认窗口宽": 1600,
+            "默认窗口高": 900,
+            "默认全屏宽": int(默认全屏宽),
+            "默认全屏高": int(默认全屏高),
         }
         数据 = _读取存储作用域(_全局设置存储作用域)
         if not isinstance(数据, dict):
@@ -1243,8 +1077,31 @@ def 主函数():
         结果["默认GPU谱面管线"] = bool(
             数据.get("默认GPU谱面管线", 默认设置["默认GPU谱面管线"])
         )
+        结果["打包版选歌强制CPU兼容"] = bool(
+            数据.get(
+                "打包版选歌强制CPU兼容",
+                默认设置["打包版选歌强制CPU兼容"],
+            )
+        )
+        默认显示模式文本 = str(
+            数据.get("默认显示模式", 默认设置["默认显示模式"]) or "windowed"
+        ).strip().lower()
+        if 默认显示模式文本 in (
+            "borderless",
+            "borderless_window",
+            "fullscreen",
+            "全屏",
+            "无边框",
+            "无边框窗口",
+        ):
+            结果["默认显示模式"] = "borderless"
+        else:
+            结果["默认显示模式"] = "windowed"
         结果["显示性能调试信息"] = bool(
             数据.get("显示性能调试信息", 默认设置["显示性能调试信息"])
+        )
+        结果["显示状态HUD"] = bool(
+            数据.get("显示状态HUD", 默认设置["显示状态HUD"])
         )
         结果["显示启动幻灯片"] = bool(
             数据.get("显示启动幻灯片", 默认设置["显示启动幻灯片"])
@@ -1267,47 +1124,118 @@ def 主函数():
         结果["开发默认选歌模式"] = str(
             数据.get("开发默认选歌模式", 默认设置["开发默认选歌模式"]) or "混音"
         ).strip() or "混音"
+        结果["默认窗口宽"] = _读取正整数设置(
+            数据.get("默认窗口宽", 默认设置["默认窗口宽"]),
+            默认设置["默认窗口宽"],
+        )
+        结果["默认窗口高"] = _读取正整数设置(
+            数据.get("默认窗口高", 默认设置["默认窗口高"]),
+            默认设置["默认窗口高"],
+        )
+        结果["默认全屏宽"] = _读取正整数设置(
+            数据.get("默认全屏宽", 默认设置["默认全屏宽"]),
+            默认设置["默认全屏宽"],
+        )
+        结果["默认全屏高"] = _读取正整数设置(
+            数据.get("默认全屏高", 默认设置["默认全屏高"]),
+            默认设置["默认全屏高"],
+        )
+        结果["默认全屏尺寸是否已保存"] = bool(
+            ("默认全屏宽" in 数据) and ("默认全屏高" in 数据)
+        )
+        结果["最近会话未正常退出"] = (
+            str(数据.get("最近会话状态", "clean") or "clean").strip().lower()
+            == "running"
+        )
+        环境渲染后端 = str(os.environ.get("E5CM_RENDER_BACKEND", "") or "").strip()
+        if 环境渲染后端:
+            结果["默认渲染后端"] = _规范渲染后端偏好(
+                环境渲染后端,
+                默认值=str(结果.get("默认渲染后端", _默认渲染引擎偏好()) or _默认渲染引擎偏好()),
+            )
+        if str(os.environ.get("E5CM_GPU_PIPELINE", "") or "").strip():
+            结果["默认GPU谱面管线"] = _读取布尔环境变量(
+                "E5CM_GPU_PIPELINE",
+                bool(结果.get("默认GPU谱面管线", True)),
+            )
         return 结果
 
     # _切换英文输入法()
 
     启动调试设置 = _读取启动调试设置()
+    原生桌面尺寸 = tuple(取桌面尺寸((1600, 900)))
+    应用目标桌面尺寸 = tuple(_取应用目标桌面尺寸((1600, 900)))
+    高分屏统一1080p策略启用 = bool(_桌面需要全局1080p渲染策略(原生桌面尺寸))
+    环境强制软件启动 = (
+        _规范渲染后端偏好(
+            os.environ.get("E5CM_RENDER_BACKEND", ""),
+            默认值="",
+        )
+        == "software"
+    )
+    if bool(高分屏统一1080p策略启用) and (not bool(环境强制软件启动)):
+        当前默认后端 = _规范渲染后端偏好(
+            启动调试设置.get("默认渲染后端", _默认渲染引擎偏好()),
+            默认值=_默认渲染引擎偏好(),
+        )
+        if str(当前默认后端) in ("software", "gpu-auto"):
+            启动调试设置["默认渲染后端"] = _默认渲染引擎偏好()
+        启动调试设置["默认GPU谱面管线"] = True
+        启动调试设置["打包版选歌强制CPU兼容"] = False
+        启动调试设置["默认显示模式"] = "borderless"
+        启动调试设置["默认窗口宽"] = int(应用目标桌面尺寸[0])
+        启动调试设置["默认窗口高"] = int(应用目标桌面尺寸[1])
+        启动调试设置["默认全屏宽"] = int(应用目标桌面尺寸[0])
+        启动调试设置["默认全屏高"] = int(应用目标桌面尺寸[1])
+    高DPI启动保底信息 = _应用Windows高DPI启动保底策略(启动调试设置, 日志器)
+    # 背景视频输出尺寸不再在高 DPI 下强制钳到 1920x1080，
+    # 否则在 2K/4K 画布上会出现左上角贴图+右侧黑边。
+    启动背景视频最大输出尺寸 = None
+    启动恢复模式已启用 = bool(启动调试设置.get("最近会话未正常退出", False))
+    _标记会话状态("running")
     当前版本号 = 读取当前版本号(_取运行根目录())
-    更新检查状态 = {
-        "线程已启动": False,
-        "已完成": False,
-        "已提示": False,
-        "查询成功": False,
-        "发现新版本": False,
-        "错误": "",
-        "数据": None,
-    }
     os.environ.setdefault(
         "E5CM_GPU_PIPELINE",
         "1" if bool(启动调试设置.get("默认GPU谱面管线", True)) else "0",
     )
 
-    try:
-        import threading
-
-        threading.Thread(
-            target=_后台检查软件更新,
-            args=(当前版本号, 更新检查状态),
-            name="E5CM-CG-UpdateCheck",
-            daemon=True,
-        ).start()
-        更新检查状态["线程已启动"] = True
-    except Exception:
-        更新检查状态["线程已启动"] = False
-        更新检查状态["已完成"] = True
-
-    songs根目录 = os.path.join(_取运行根目录(), "songs")
-    if not _songs目录含有曲包(songs根目录):
-        _弹窗提示缺少曲包(songs根目录)
-        return
-
+    if (
+        (not bool(高分屏统一1080p策略启用))
+        and str(启动调试设置.get("默认显示模式", "windowed") or "windowed").strip().lower() == "borderless"
+    ):
+        _启用1080p全屏兼容(原因="启动进入无边框全屏")
     pygame.init()
     窗口标题 = "e舞成名重构版"
+    默认窗口尺寸 = (1600, 900)
+    最小窗口尺寸 = (960, 540)
+
+    def _规范窗口尺寸设置(宽值: object, 高值: object) -> tuple[int, int]:
+        桌面w, 桌面h = tuple(应用目标桌面尺寸)
+        桌面w = _读取正整数设置(桌面w, 默认窗口尺寸[0])
+        桌面h = _读取正整数设置(桌面h, 默认窗口尺寸[1])
+        宽 = _读取正整数设置(宽值, 默认窗口尺寸[0])
+        高 = _读取正整数设置(高值, 默认窗口尺寸[1])
+        最小w = min(int(最小窗口尺寸[0]), int(桌面w))
+        最小h = min(int(最小窗口尺寸[1]), int(桌面h))
+        宽 = max(int(最小w), min(int(宽), int(桌面w)))
+        高 = max(int(最小h), min(int(高), int(桌面h)))
+        return int(宽), int(高)
+
+    def _规范显示模式设置(值: object) -> str:
+        文本 = str(值 or "").strip().lower()
+        if 文本 in ("borderless", "borderless_window", "fullscreen", "全屏", "无边框", "无边框窗口"):
+            return "borderless"
+        return "windowed"
+
+    def _规范初始全屏尺寸设置(宽值: object, 高值: object) -> tuple[int, int]:
+        桌面w, 桌面h = _规范窗口尺寸设置(*取桌面尺寸(默认窗口尺寸))
+        宽 = _读取正整数设置(宽值, 桌面w)
+        高 = _读取正整数设置(高值, 桌面h)
+        最小w = int(min(最小窗口尺寸[0], 桌面w))
+        最小h = int(min(最小窗口尺寸[1], 桌面h))
+        宽 = max(int(最小w), min(int(宽), int(桌面w)))
+        高 = max(int(最小h), min(int(高), int(桌面h)))
+        return int(宽), int(高)
 
     def _取渲染模式文本(后端对象) -> str:
         return "GPU" if bool(getattr(后端对象, "是否GPU", False)) else "CPU"
@@ -1315,26 +1243,157 @@ def 主函数():
     def _取渲染后端偏好值(后端对象) -> str:
         return "gpu" if bool(getattr(后端对象, "是否GPU", False)) else "software"
 
+    def _渲染引擎偏好是否GPU(偏好: object) -> bool:
+        return str(_规范渲染后端偏好(偏好, _默认渲染引擎偏好())).startswith("gpu-")
+
+    def _场景是否强制CPU渲染(场景名: object) -> bool:
+        场景文本 = str(场景名 or "").strip()
+        if not 场景文本:
+            return False
+        try:
+            配置列表 = 状态.get(
+                "强制CPU场景名单",
+                启动调试设置.get("强制CPU场景名单", []),
+            )
+        except Exception:
+            配置列表 = []
+        if not isinstance(配置列表, (list, tuple, set)):
+            return False
+        for 项 in 配置列表:
+            try:
+                if str(项 or "").strip() == 场景文本:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _场景允许手动切换渲染后端(场景名: object) -> bool:
+        return not bool(_场景是否强制CPU渲染(场景名))
+
+    def _打包版选歌CPU兼容策略启用() -> bool:
+        try:
+            if isinstance(状态, dict):
+                return bool(
+                    状态.get(
+                        "打包版选歌强制CPU兼容",
+                        启动调试设置.get("打包版选歌强制CPU兼容", True),
+                    )
+                )
+        except Exception:
+            pass
+        return bool(启动调试设置.get("打包版选歌强制CPU兼容", True))
+
+    def _取场景策略渲染后端(场景名: object, 默认偏好: object) -> str:
+        场景文本 = str(场景名 or "").strip()
+        if bool(getattr(sys, "frozen", False)) and 场景文本 == "选歌":
+            if bool(_打包版选歌CPU兼容策略启用()):
+                if not bool(getattr(_取场景策略渲染后端, "_打包选歌CPU策略已记录", False)):
+                    _记录信息日志(日志器, "打包版选歌场景启用CPU兼容策略")
+                    setattr(_取场景策略渲染后端, "_打包选歌CPU策略已记录", True)
+                return "software"
+        if bool(_场景是否强制CPU渲染(场景名)):
+            return "software"
+        return _规范渲染后端偏好(默认偏好, _默认渲染引擎偏好())
+
+    def _取渲染引擎偏好标签(偏好: object) -> str:
+        规范值 = _规范渲染后端偏好(偏好, _默认渲染引擎偏好())
+        映射 = {
+            "gpu-auto": "GPU-Auto",
+            "gpu-d3d11": "GPU-D3D11",
+            "gpu-opengl": "GPU-OpenGL",
+            "software": "CPU-Software",
+        }
+        return str(映射.get(规范值, "GPU-Auto"))
+
+    def _取渲染引擎说明文本(偏好: object) -> str:
+        规范值 = _规范渲染后端偏好(偏好, _默认渲染引擎偏好())
+        映射 = {
+            "gpu-auto": "优点：自动选当前机器最合适的 GPU 引擎，最省心。\n缺点：不同机器命中的实际引擎不固定，排查问题时可预期性较弱。",
+            "gpu-d3d11": "优点：Windows 10/11 下一般最稳，延迟和清晰度表现最好，NVIDIA / Xbox Game Bar 识别更友好。\n缺点：极老驱动或老显卡上可能创建失败。",
+            "gpu-opengl": "优点：兼容性广，老机器和跨平台环境通常更容易跑起来。\n缺点：Windows 下叠加层识别和帧延迟表现通常不如 D3D11。",
+            "software": "优点：兼容性最高，GPU 环境出问题时最容易保底跑起来。\n缺点：最吃 CPU，放大输出更容易糊，外部 FPS / 延迟叠加常常拿不到数据。",
+        }
+        return str(映射.get(规范值, ""))
+
+    def _取渲染引擎菜单选项() -> list[dict]:
+        return [
+            {
+                "id": "gpu-d3d11",
+                "label": "GPU-D3D11 | Win11 推荐，低延迟",
+            },
+            {
+                "id": "gpu-opengl",
+                "label": "GPU-OpenGL | 兼容旧机，通用",
+            },
+            {
+                "id": "gpu-auto",
+                "label": "GPU-Auto | 自动择优，省心",
+            },
+            {
+                "id": "software",
+                "label": "CPU-Software | 最稳，但最吃 CPU",
+            },
+        ]
+
+    def _取实际渲染引擎标签(后端对象) -> str:
+        if 后端对象 is None:
+            return _取渲染引擎偏好标签(状态.get("默认渲染后端", _默认渲染引擎偏好()))
+        获取标签 = getattr(后端对象, "取渲染驱动标签", None)
+        if callable(获取标签):
+            try:
+                标签 = str(获取标签() or "").strip()
+                if 标签:
+                    return 标签
+            except Exception:
+                pass
+        return _取渲染引擎偏好标签(
+            "software" if not bool(getattr(后端对象, "是否GPU", False)) else 状态.get("默认渲染后端", _默认渲染引擎偏好())
+        )
+
     def _刷新窗口标题(后端对象):
         try:
-            后端对象.设置标题(f"{窗口标题} ---{_取渲染模式文本(后端对象)}")
+            后端对象.设置标题(f"{窗口标题} ---{_取实际渲染引擎标签(后端对象)}")
         except Exception:
             pass
 
     def _取当前实际渲染后端偏好() -> str:
         if 显示后端 is None:
-            return str(状态.get("默认渲染后端", "gpu") or "gpu")
+            return str(状态.get("默认渲染后端", _默认渲染引擎偏好()) or _默认渲染引擎偏好())
         return _取渲染后端偏好值(显示后端)
 
-    默认窗口w, 默认窗口h = 1280, 720
-    桌面w, 桌面h = 取桌面尺寸((默认窗口w, 默认窗口h))
-    初始w = min(默认窗口w, int(桌面w or 默认窗口w))
-    初始h = min(默认窗口h, int(桌面h or 默认窗口h))
+    初始场景名 = "投币"
+    初始显示模式 = _规范显示模式设置(启动调试设置.get("默认显示模式", "windowed"))
+    初始窗口w, 初始窗口h = _规范窗口尺寸设置(
+        启动调试设置.get("默认窗口宽", 默认窗口尺寸[0]),
+        启动调试设置.get("默认窗口高", 默认窗口尺寸[1]),
+    )
+    默认桌面w, 默认桌面h = _规范窗口尺寸设置(*取桌面尺寸(默认窗口尺寸))
+    if bool(启动调试设置.get("默认全屏尺寸是否已保存", False)):
+        初始全屏源w = 启动调试设置.get("默认全屏宽", 默认桌面w)
+        初始全屏源h = 启动调试设置.get("默认全屏高", 默认桌面h)
+    else:
+        初始全屏源w = 默认桌面w
+        初始全屏源h = 默认桌面h
+    初始全屏w, 初始全屏h = _规范初始全屏尺寸设置(
+        初始全屏源w,
+        初始全屏源h,
+    )
+    共享背景视频桌面尺寸上限 = (1920, 1080)
+    初始w, 初始h = (
+        (int(初始全屏w), int(初始全屏h))
+        if str(初始显示模式) == "borderless"
+        else (int(初始窗口w), int(初始窗口h))
+    )
+    初始flags = pygame.NOFRAME if str(初始显示模式) == "borderless" else pygame.RESIZABLE
+    初始后端偏好 = _取场景策略渲染后端(
+        初始场景名,
+        启动调试设置.get("默认渲染后端", _默认渲染引擎偏好()),
+    )
     显示后端 = 创建显示后端(
         (初始w, 初始h),
-        pygame.RESIZABLE,
+        int(初始flags),
         窗口标题,
-        偏好=str(启动调试设置.get("默认渲染后端", "gpu") or "gpu"),
+        偏好=str(初始后端偏好),
     )
     _刷新窗口标题(显示后端)
     屏幕 = 显示后端.取绘制屏幕()
@@ -1349,31 +1408,32 @@ def 主函数():
     # _切换英文输入法()
     pygame.event.clear()
 
-    def _最大化窗口():
-        if 显示后端 is not None and 显示后端.最大化窗口():
-            return
-        if sys.platform != "win32":
-            return
-        try:
-            import ctypes
-
-            User32 = ctypes.windll.user32
-            hwnd = User32.GetForegroundWindow()
-            SW_MAXIMIZE = 3
-            User32.ShowWindow(hwnd, SW_MAXIMIZE)
-        except Exception:
-            pass
-
-    _最大化窗口()
+    try:
+        if 显示后端 is not None:
+            getattr(显示后端, "激活窗口", lambda: False)()
+    except Exception:
+        pass
 
     时钟 = pygame.time.Clock()
     资源 = 默认资源路径()
+    共享背景回退图路径 = os.path.join(
+        资源.get("根", os.getcwd()),
+        "冷资源",
+        "backimages",
+        "背景图",
+        "02.jpg",
+    )
+    共享背景视频超分辨率禁用 = bool(
+        int(默认桌面w) > int(共享背景视频桌面尺寸上限[0])
+        or int(默认桌面h) > int(共享背景视频桌面尺寸上限[1])
+    )
 
     音乐 = 音乐管理()
     字体 = {
         "大字": 获取字体(72),
         "中字": 获取字体(36),
         "小字": 获取字体(22),
+        "HUD字": 获取字体(18),
         "投币_credit字": 获取字体(28, 是否粗体=False),
         "投币_请投币字": 获取字体(48, 是否粗体=False),
     }
@@ -1391,9 +1451,12 @@ def 主函数():
         "投币快捷键": int(pygame.K_f),
         "投币快捷键显示": "F",
         "显示器刷新率": int(max(30, min(240, int(当前显示器刷新率 or 60)))),
-        "默认渲染后端": str(启动调试设置.get("默认渲染后端", "gpu") or "gpu"),
+        "默认渲染后端": str(启动调试设置.get("默认渲染后端", _默认渲染引擎偏好()) or _默认渲染引擎偏好()),
         "默认GPU谱面管线": bool(启动调试设置.get("默认GPU谱面管线", True)),
+        "打包版选歌强制CPU兼容": bool(启动调试设置.get("打包版选歌强制CPU兼容", True)),
+        "默认显示模式": str(初始显示模式),
         "显示性能调试信息": bool(启动调试设置.get("显示性能调试信息", False)),
+        "显示状态HUD": bool(启动调试设置.get("显示状态HUD", True)),
         "显示启动幻灯片": bool(启动调试设置.get("显示启动幻灯片", False)),
         "显示谱面开场动画": bool(启动调试设置.get("显示谱面开场动画", True)),
         "全局静音": bool(启动调试设置.get("全局静音", False)),
@@ -1406,14 +1469,27 @@ def 主函数():
         "开发默认选歌模式": str(
             启动调试设置.get("开发默认选歌模式", "混音") or "混音"
         ),
+        "默认窗口宽": int(初始窗口w),
+        "默认窗口高": int(初始窗口h),
+        "默认全屏宽": int(初始全屏w),
+        "默认全屏高": int(初始全屏h),
         "软件版本": str(当前版本号),
+        "日志文件路径": str(_取日志文件路径() or ""),
     }
 
     def _同步渲染后端状态(后端对象, 当前载荷=None):
         实际后端 = _取渲染后端偏好值(后端对象)
         实际启用GPU谱面管线 = bool(getattr(后端对象, "是否GPU", False))
-        状态["当前渲染后端"] = str(实际后端)
+        实际引擎标签 = _取实际渲染引擎标签(后端对象)
+        获取驱动名 = getattr(后端对象, "取渲染驱动名", None)
+        try:
+            实际驱动名 = str(获取驱动名() if callable(获取驱动名) else "" or "")
+        except Exception:
+            实际驱动名 = ""
+        状态["当前渲染后端"] = str("gpu" if bool(实际启用GPU谱面管线) else "software")
         状态["当前GPU谱面管线"] = bool(实际启用GPU谱面管线)
+        状态["当前渲染引擎标签"] = str(实际引擎标签)
+        状态["当前渲染驱动"] = str(实际驱动名)
         os.environ["E5CM_RENDER_BACKEND"] = str(实际后端)
         管线偏好开启 = bool(状态.get("默认GPU谱面管线", True))
         os.environ["E5CM_GPU_PIPELINE"] = (
@@ -1437,8 +1513,406 @@ def 主函数():
         缩放比例=1.0,
     )
 
-    是否全屏 = False
-    上次窗口尺寸 = 屏幕.get_size()
+    是否全屏 = bool(str(初始显示模式) == "borderless")
+    上次窗口尺寸 = (int(初始窗口w), int(初始窗口h))
+    上次全屏尺寸 = (int(初始全屏w), int(初始全屏h))
+
+    def _取当前显示分辨率() -> tuple[int, int]:
+        try:
+            if 显示后端 is not None:
+                当前尺寸 = tuple(显示后端.取窗口尺寸())
+            else:
+                当前尺寸 = tuple(屏幕.get_size())
+        except Exception:
+            try:
+                当前尺寸 = tuple(上次全屏尺寸 if bool(是否全屏) else 上次窗口尺寸)
+            except Exception:
+                当前尺寸 = 默认窗口尺寸
+        return _规范窗口尺寸设置(
+            当前尺寸[0] if len(当前尺寸) > 0 else 默认窗口尺寸[0],
+            当前尺寸[1] if len(当前尺寸) > 1 else 默认窗口尺寸[1],
+        )
+
+    def _记录窗口化显示分辨率(宽值: object, 高值: object) -> tuple[int, int]:
+        nonlocal 上次窗口尺寸
+        窗口w, 窗口h = _规范窗口尺寸设置(宽值, 高值)
+        上次窗口尺寸 = (int(窗口w), int(窗口h))
+        try:
+            状态["默认窗口宽"] = int(窗口w)
+            状态["默认窗口高"] = int(窗口h)
+        except Exception:
+            pass
+        return int(窗口w), int(窗口h)
+
+    def _记录全屏显示分辨率(宽值: object, 高值: object) -> tuple[int, int]:
+        nonlocal 上次全屏尺寸
+        全屏w, 全屏h = _规范全屏尺寸设置(宽值, 高值)
+        上次全屏尺寸 = (int(全屏w), int(全屏h))
+        try:
+            状态["默认全屏宽"] = int(全屏w)
+            状态["默认全屏高"] = int(全屏h)
+        except Exception:
+            pass
+        return int(全屏w), int(全屏h)
+
+    def _取当前窗口化尺寸() -> tuple[int, int]:
+        try:
+            if not bool(是否全屏):
+                return _取当前显示分辨率()
+            当前尺寸 = tuple(上次窗口尺寸)
+        except Exception:
+            当前尺寸 = 默认窗口尺寸
+        return _规范窗口尺寸设置(
+            当前尺寸[0] if len(当前尺寸) > 0 else 默认窗口尺寸[0],
+            当前尺寸[1] if len(当前尺寸) > 1 else 默认窗口尺寸[1],
+        )
+
+    def _取可用窗口尺寸列表() -> list[tuple[int, int]]:
+        桌面w, 桌面h = 取桌面尺寸(默认窗口尺寸)
+        桌面w, 桌面h = _规范窗口尺寸设置(桌面w, 桌面h)
+        候选列表 = [
+            (960, 540),
+            (1024, 576),
+            (1280, 720),
+            (1366, 768),
+            (1600, 900),
+            (1920, 1080),
+            (2560, 1440),
+        ]
+        结果: list[tuple[int, int]] = []
+        已存在: set[tuple[int, int]] = set()
+
+        def _加入候选(宽值: object, 高值: object):
+            尺寸 = _规范窗口尺寸设置(宽值, 高值)
+            if tuple(尺寸) in 已存在:
+                return
+            已存在.add(tuple(尺寸))
+            结果.append(tuple(尺寸))
+
+        for 候选w, 候选h in 候选列表:
+            if int(候选w) > int(桌面w) or int(候选h) > int(桌面h):
+                continue
+            _加入候选(候选w, 候选h)
+
+        _加入候选(*默认窗口尺寸)
+        _加入候选(*_取当前窗口化尺寸())
+        _加入候选(桌面w, 桌面h)
+        结果.sort(key=lambda 项: (int(项[0]) * int(项[1]), int(项[0]), int(项[1])))
+        return list(结果)
+
+    def _取可用全屏尺寸列表() -> list[tuple[int, int]]:
+        桌面w, 桌面h = _规范窗口尺寸设置(*取桌面尺寸(默认窗口尺寸))
+        最小w = int(min(最小窗口尺寸[0], 桌面w))
+        最小h = int(min(最小窗口尺寸[1], 桌面h))
+        结果: list[tuple[int, int]] = []
+        已存在: set[tuple[int, int]] = set()
+        额外候选列表 = [
+            (960, 540),
+            (1024, 576),
+            (1280, 720),
+            (1366, 768),
+            (1600, 900),
+            (1920, 1080),
+            (2560, 1440),
+        ]
+
+        def _加入候选(宽值: object, 高值: object):
+            try:
+                宽 = int(宽值)
+                高 = int(高值)
+            except Exception:
+                return
+            if 宽 < 最小w or 高 < 最小h:
+                return
+            if 宽 > int(桌面w) or 高 > int(桌面h):
+                return
+            尺寸 = (int(宽), int(高))
+            if 尺寸 in 已存在:
+                return
+            已存在.add(尺寸)
+            结果.append(尺寸)
+
+        for 候选w, 候选h in 额外候选列表:
+            _加入候选(候选w, 候选h)
+
+        _加入候选(*默认窗口尺寸)
+        _加入候选(*_取当前窗口化尺寸())
+        _加入候选(
+            上次全屏尺寸[0] if len(上次全屏尺寸) > 0 else 默认窗口尺寸[0],
+            上次全屏尺寸[1] if len(上次全屏尺寸) > 1 else 默认窗口尺寸[1],
+        )
+        _加入候选(桌面w, 桌面h)
+        结果.sort(key=lambda 项: (int(项[0]) * int(项[1]), int(项[0]), int(项[1])))
+        return list(结果)
+
+    def _取窗口尺寸候选索引(
+        尺寸: tuple[int, int],
+        候选列表: list[tuple[int, int]],
+        规范化函数=None,
+    ) -> int:
+        if not 候选列表:
+            return 0
+        if callable(规范化函数):
+            目标w, 目标h = 规范化函数(
+                尺寸[0] if len(尺寸) > 0 else 默认窗口尺寸[0],
+                尺寸[1] if len(尺寸) > 1 else 默认窗口尺寸[1],
+            )
+        else:
+            目标w, 目标h = _规范窗口尺寸设置(
+                尺寸[0] if len(尺寸) > 0 else 默认窗口尺寸[0],
+                尺寸[1] if len(尺寸) > 1 else 默认窗口尺寸[1],
+            )
+        try:
+            return 候选列表.index((int(目标w), int(目标h)))
+        except Exception:
+            pass
+        return int(
+            min(
+                range(len(候选列表)),
+                key=lambda 索引: (
+                    abs(int(候选列表[索引][0]) - int(目标w))
+                    + abs(int(候选列表[索引][1]) - int(目标h)),
+                    abs(
+                        int(候选列表[索引][0]) * int(候选列表[索引][1])
+                        - int(目标w) * int(目标h)
+                    ),
+                ),
+            )
+        )
+
+    def _规范全屏尺寸设置(宽值: object, 高值: object) -> tuple[int, int]:
+        桌面w, 桌面h = _规范窗口尺寸设置(*取桌面尺寸(默认窗口尺寸))
+        宽 = _读取正整数设置(宽值, 默认窗口尺寸[0])
+        高 = _读取正整数设置(高值, 默认窗口尺寸[1])
+        最小w = int(min(最小窗口尺寸[0], 桌面w))
+        最小h = int(min(最小窗口尺寸[1], 桌面h))
+        宽 = max(int(最小w), min(int(宽), int(桌面w)))
+        高 = max(int(最小h), min(int(高), int(桌面h)))
+        候选列表 = _取可用全屏尺寸列表()
+        if not 候选列表:
+            return int(宽), int(高)
+        try:
+            return 候选列表[_取窗口尺寸候选索引((宽, 高), 候选列表, lambda 值w, 值h: (int(值w), int(值h)))]
+        except Exception:
+            return int(宽), int(高)
+
+    def _取当前全屏尺寸() -> tuple[int, int]:
+        try:
+            if bool(是否全屏):
+                当前尺寸 = tuple(_取当前显示分辨率())
+            else:
+                当前尺寸 = tuple(上次全屏尺寸)
+        except Exception:
+            当前尺寸 = 默认窗口尺寸
+        return _规范全屏尺寸设置(
+            当前尺寸[0] if len(当前尺寸) > 0 else 默认窗口尺寸[0],
+            当前尺寸[1] if len(当前尺寸) > 1 else 默认窗口尺寸[1],
+        )
+
+    def _应用窗口化分辨率(
+        宽值: object,
+        高值: object,
+        *,
+        发送事件: bool = True,
+        保存设置: bool = True,
+    ) -> tuple[int, int]:
+        nonlocal 是否全屏
+        if bool(是否全屏) and (not bool(高分屏统一1080p策略启用)):
+            try:
+                _恢复1080p全屏兼容(原因="切回窗口模式")
+            except Exception:
+                pass
+        目标w, 目标h = _规范窗口尺寸设置(宽值, 高值)
+        当前窗口模式尺寸 = _取当前窗口化尺寸()
+        if (
+            (not bool(是否全屏))
+            and tuple(int(v) for v in 当前窗口模式尺寸) == (int(目标w), int(目标h))
+        ):
+            _记录窗口化显示分辨率(int(目标w), int(目标h))
+            try:
+                状态["默认显示模式"] = "windowed"
+            except Exception:
+                pass
+            if bool(保存设置):
+                try:
+                    if callable(_保存全局设置):
+                        _保存全局设置()
+                except Exception:
+                    pass
+            return int(目标w), int(目标h)
+        if 显示后端 is not None:
+            显示后端.调整窗口模式((目标w, 目标h), pygame.RESIZABLE)
+        是否全屏 = False
+        _记录窗口化显示分辨率(int(目标w), int(目标h))
+        _同步屏幕引用()
+        try:
+            状态["默认显示模式"] = "windowed"
+        except Exception:
+            pass
+        if bool(保存设置):
+            try:
+                if callable(_保存全局设置):
+                    _保存全局设置()
+            except Exception:
+                pass
+        if bool(发送事件):
+            _发送窗口尺寸变化事件(int(目标w), int(目标h))
+        return int(目标w), int(目标h)
+
+    def _应用全屏分辨率(
+        宽值: object,
+        高值: object,
+        *,
+        发送事件: bool = True,
+        保存设置: bool = True,
+    ) -> tuple[int, int]:
+        nonlocal 是否全屏
+        if not bool(高分屏统一1080p策略启用):
+            try:
+                _启用1080p全屏兼容(原因="切换无边框全屏")
+            except Exception:
+                pass
+        目标w, 目标h = _规范全屏尺寸设置(宽值, 高值)
+        当前全屏尺寸 = _取当前全屏尺寸()
+        if (
+            bool(是否全屏)
+            and tuple(int(v) for v in 当前全屏尺寸) == (int(目标w), int(目标h))
+        ):
+            _记录全屏显示分辨率(int(目标w), int(目标h))
+            try:
+                状态["默认显示模式"] = "borderless"
+            except Exception:
+                pass
+            if bool(保存设置):
+                try:
+                    if callable(_保存全局设置):
+                        _保存全局设置()
+                except Exception:
+                    pass
+            return int(目标w), int(目标h)
+        if 显示后端 is not None:
+            显示后端.调整窗口模式((目标w, 目标h), pygame.NOFRAME)
+        是否全屏 = True
+        _记录全屏显示分辨率(int(目标w), int(目标h))
+        _同步屏幕引用()
+        try:
+            状态["默认显示模式"] = "borderless"
+        except Exception:
+            pass
+        if bool(保存设置):
+            try:
+                if callable(_保存全局设置):
+                    _保存全局设置()
+            except Exception:
+                pass
+        if bool(发送事件):
+            _发送窗口尺寸变化事件(int(目标w), int(目标h))
+        return int(目标w), int(目标h)
+
+    def _应用显示分辨率(
+        宽值: object,
+        高值: object,
+        *,
+        发送事件: bool = True,
+        保存设置: bool = True,
+    ) -> tuple[int, int]:
+        if bool(是否全屏):
+            return _应用全屏分辨率(
+                宽值,
+                高值,
+                发送事件=bool(发送事件),
+                保存设置=bool(保存设置),
+            )
+        return _应用窗口化分辨率(
+            宽值,
+            高值,
+            发送事件=bool(发送事件),
+            保存设置=bool(保存设置),
+        )
+
+    def _切换全屏到(目标值: Optional[bool] = None) -> bool:
+        当前 = bool(是否全屏)
+        目标 = (not 当前) if 目标值 is None else bool(目标值)
+        if 当前 == 目标:
+            return bool(是否全屏)
+        _切换全屏()
+        try:
+            if callable(_保存全局设置):
+                _保存全局设置()
+        except Exception:
+            pass
+        try:
+            当前w, 当前h = tuple(上下文["屏幕"].get_size())
+        except Exception:
+            if bool(是否全屏):
+                当前w, 当前h = _取当前全屏尺寸()
+            else:
+                当前w, 当前h = _取当前窗口化尺寸()
+        _发送窗口尺寸变化事件(int(当前w), int(当前h))
+        return bool(是否全屏)
+
+    def _循环窗口分辨率(step: int = 1) -> tuple[int, int]:
+        if bool(是否全屏):
+            候选列表 = _取可用全屏尺寸列表()
+            if not 候选列表:
+                return _取当前全屏尺寸()
+            当前尺寸 = _取当前全屏尺寸()
+            当前索引 = _取窗口尺寸候选索引(
+                当前尺寸,
+                候选列表,
+                _规范全屏尺寸设置,
+            )
+            新尺寸 = 候选列表[(int(当前索引) + int(step)) % len(候选列表)]
+            return _应用全屏分辨率(新尺寸[0], 新尺寸[1], 发送事件=True)
+
+        候选列表 = _取可用窗口尺寸列表()
+        if not 候选列表:
+            return _取当前窗口化尺寸()
+        当前尺寸 = _取当前窗口化尺寸()
+        当前索引 = _取窗口尺寸候选索引(当前尺寸, 候选列表)
+        新尺寸 = 候选列表[(int(当前索引) + int(step)) % len(候选列表)]
+        return _应用窗口化分辨率(新尺寸[0], 新尺寸[1], 发送事件=True)
+
+    def _取显示设置快照() -> dict:
+        当前窗口w, 当前窗口h = _取当前窗口化尺寸()
+        当前全屏w, 当前全屏h = _取当前全屏尺寸()
+        当前有效尺寸 = (
+            (int(当前全屏w), int(当前全屏h))
+            if bool(是否全屏)
+            else (int(当前窗口w), int(当前窗口h))
+        )
+        候选列表 = _取可用全屏尺寸列表() if bool(是否全屏) else _取可用窗口尺寸列表()
+        当前渲染偏好 = _规范渲染后端偏好(
+            状态.get("默认渲染后端", _默认渲染引擎偏好()),
+            _默认渲染引擎偏好(),
+        )
+        渲染引擎选项 = []
+        for 选项 in _取渲染引擎菜单选项():
+            选项标识 = str(选项.get("id", "") or "")
+            if not 选项标识:
+                continue
+            渲染引擎选项.append(
+                {
+                    "id": str(选项标识),
+                    "label": str(选项.get("label", 选项标识) or 选项标识),
+                    "selected": bool(str(选项标识) == str(当前渲染偏好)),
+                }
+            )
+        return {
+            "display_mode": str(_取当前显示模式标识()),
+            "display_mode_text": str(_取当前显示模式文本()),
+            "fullscreen": bool(是否全屏),
+            "window_size": (int(当前窗口w), int(当前窗口h)),
+            "fullscreen_size": (int(当前全屏w), int(当前全屏h)),
+            "active_size": tuple(int(v) for v in 当前有效尺寸),
+            "resolution_options": [tuple(int(v) for v in 项) for 项 in 候选列表],
+            "desktop_size": tuple(int(v) for v in 应用目标桌面尺寸),
+            "render_backend": str(当前渲染偏好),
+            "render_backend_text": str(_取渲染引擎偏好标签(当前渲染偏好)),
+            "render_backend_actual_text": str(_取实际渲染引擎标签(显示后端)),
+            "render_backend_description": str(_取渲染引擎说明文本(当前渲染偏好)),
+            "render_backend_options": list(渲染引擎选项),
+        }
 
     上下文 = {
         "屏幕": 屏幕,
@@ -1450,12 +1924,22 @@ def 主函数():
         "全局点击特效": 全局点击特效,
         "背景视频": None,
         "显示后端": 显示后端,
-        "渲染后端名称": str(getattr(显示后端, "名称", "software") or "software"),
+        "渲染后端名称": str(_取实际渲染引擎标签(显示后端)),
         "主循环最近统计": {},
         "显示后端最近统计": {},
         "显示性能调试信息": bool(启动调试设置.get("显示性能调试信息", False)),
+        "显示状态HUD": bool(启动调试设置.get("显示状态HUD", True)),
         "显示器刷新率": int(max(30, min(240, int(当前显示器刷新率 or 60)))),
+        "共享背景回退图路径": str(共享背景回退图路径 or ""),
+        "共享背景视频超分辨率禁用": bool(共享背景视频超分辨率禁用),
         "开发调试菜单开启": False,
+        "取显示设置": _取显示设置快照,
+        "切换全屏": _切换全屏到,
+        "循环显示分辨率": _循环窗口分辨率,
+        "循环窗口分辨率": _循环窗口分辨率,
+        "应用显示分辨率": _应用显示分辨率,
+        "应用全屏分辨率": _应用全屏分辨率,
+        "应用窗口分辨率": _应用窗口化分辨率,
     }
 
     backmovies目录 = 资源.get(
@@ -1464,16 +1948,28 @@ def 主函数():
     开场动画目录 = os.path.join(backmovies目录, "开场动画")
     if bool(启动调试设置.get("显示启动幻灯片", True)):
         _播放开场幻灯片(开场动画目录)
-    
-    强制视频 = os.path.join(backmovies目录, "003.mp4")
-    if os.path.isfile(强制视频):
-        视频路径 = 强制视频
-    else:
-        视频路径 = 选择第一个视频(backmovies目录)
 
-    原始背景视频播放器 = 全局视频循环播放器(视频路径)
-    原始背景视频播放器.打开(是否重置进度=True)
-    背景视频 = 全局视频循环播放器(视频路径)
+    视频路径 = ""
+    if bool(共享背景视频超分辨率禁用):
+        _记录信息日志(
+            日志器,
+            "桌面尺寸超过 1920x1080，启动共享背景视频已禁用 "
+            f"桌面={默认桌面w}x{默认桌面h} "
+            f"回退图={共享背景回退图路径}",
+        )
+    else:
+        强制视频 = os.path.join(backmovies目录, "003.mp4")
+        if os.path.isfile(强制视频):
+            视频路径 = 强制视频
+        else:
+            视频路径 = 选择第一个视频(backmovies目录)
+
+    背景视频 = None
+    if str(视频路径 or "").strip():
+        背景视频 = 全局视频循环播放器(
+            视频路径,
+            最大输出尺寸=启动背景视频最大输出尺寸,
+        )
     上下文["背景视频"] = 背景视频
 
     场景表 = {
@@ -1489,7 +1985,7 @@ def 主函数():
     }
 
 
-    当前场景名 = "投币"
+    当前场景名 = str(初始场景名)
     当前场景 = 场景表[当前场景名](上下文)
     _安全进入场景(当前场景, None)
 
@@ -1501,6 +1997,7 @@ def 主函数():
 
     调试提示文本 = ""
     调试提示截止 = 0.0
+    右上状态条上次矩形 = pygame.Rect(0, 0, 0, 0)
     非游戏菜单开启 = False
     非游戏菜单索引 = 0
     投币快捷键录入中 = False
@@ -1509,10 +2006,24 @@ def 主函数():
     非游戏菜单背景音乐路径 = ""
     选歌ESC菜单宿主 = SelectSceneEscMenuHost(上下文)
     投币音效对象 = None
+    def _解析安全短音效路径(原路径: object) -> str:
+        路径 = str(原路径 or "").strip()
+        if (not 路径) or (not os.path.isfile(路径)):
+            return ""
+        后缀 = str(os.path.splitext(路径)[1] or "").strip().lower()
+        if 后缀 != ".mp3":
+            return 路径
+        根路径, _ = os.path.splitext(路径)
+        for 候选后缀 in (".wav", ".ogg"):
+            候选路径 = f"{根路径}{候选后缀}"
+            if os.path.isfile(候选路径):
+                return 候选路径
+        # 兼容性保护：避免在部分机器上触发 mp3 短音效硬崩。
+        return ""
     try:
-        投币音效路径 = str(资源.get("投币音效", "") or "")
-        if 投币音效路径 and os.path.isfile(投币音效路径) and pygame.mixer.get_init():
-            投币音效对象 = pygame.mixer.Sound(投币音效路径)
+        投币音效路径 = _解析安全短音效路径(资源.get("投币音效", ""))
+        if 投币音效路径 and pygame.mixer.get_init():
+            投币音效对象 = pygame.mixer.Sound(str(投币音效路径))
     except Exception:
         投币音效对象 = None
 
@@ -1532,6 +2043,8 @@ def 主函数():
             当前投币数 = max(0, int(状态.get("投币数", 0) or 0))
         except Exception:
             当前投币数 = 0
+        当前窗口w, 当前窗口h = _取当前窗口化尺寸()
+        当前全屏w, 当前全屏h = _取当前全屏尺寸()
 
         旧数据 = _读取存储作用域(_全局设置存储作用域)
         if not isinstance(旧数据, dict):
@@ -1543,12 +2056,19 @@ def 主函数():
                 "投币快捷键": int(投币快捷键),
                 "投币快捷键显示": str(投币快捷键显示),
                 "投币数": int(当前投币数),
-                "默认渲染后端": str(状态.get("默认渲染后端", "gpu") or "gpu"),
+                "默认渲染后端": str(状态.get("默认渲染后端", _默认渲染引擎偏好()) or _默认渲染引擎偏好()),
                 "默认GPU谱面管线": bool(
                     状态.get("默认GPU谱面管线", True)
                 ),
+                "打包版选歌强制CPU兼容": bool(
+                    状态.get("打包版选歌强制CPU兼容", True)
+                ),
+                "默认显示模式": str(_取当前显示模式标识()),
                 "显示性能调试信息": bool(
                     状态.get("显示性能调试信息", False)
+                ),
+                "显示状态HUD": bool(
+                    状态.get("显示状态HUD", True)
                 ),
                 "显示启动幻灯片": bool(
                     状态.get("显示启动幻灯片", True)
@@ -1568,6 +2088,10 @@ def 主函数():
                 "开发默认选歌模式": str(
                     状态.get("开发默认选歌模式", "混音") or "混音"
                 ),
+                "默认窗口宽": int(当前窗口w),
+                "默认窗口高": int(当前窗口h),
+                "默认全屏宽": int(当前全屏w),
+                "默认全屏高": int(当前全屏h),
             }
         )
 
@@ -1605,14 +2129,35 @@ def 主函数():
         状态["投币数"] = int(当前投币数)
         状态["credit"] = str(int(当前投币数))
         状态["默认渲染后端"] = _规范渲染后端偏好(
-            数据.get("默认渲染后端", 状态.get("默认渲染后端", "gpu")),
-            默认值=str(状态.get("默认渲染后端", "gpu") or "gpu"),
+            数据.get("默认渲染后端", 状态.get("默认渲染后端", _默认渲染引擎偏好())),
+            默认值=str(状态.get("默认渲染后端", _默认渲染引擎偏好()) or _默认渲染引擎偏好()),
         )
         状态["默认GPU谱面管线"] = bool(
             数据.get("默认GPU谱面管线", 状态.get("默认GPU谱面管线", True))
         )
+        状态["打包版选歌强制CPU兼容"] = bool(
+            数据.get(
+                "打包版选歌强制CPU兼容",
+                状态.get("打包版选歌强制CPU兼容", True),
+            )
+        )
+        状态["默认显示模式"] = _规范显示模式设置(
+            数据.get("默认显示模式", 状态.get("默认显示模式", "windowed"))
+        )
+        if bool(高分屏统一1080p策略启用) and (not bool(环境强制软件启动)):
+            状态["默认渲染后端"] = _默认渲染引擎偏好()
+            状态["默认GPU谱面管线"] = True
+            状态["打包版选歌强制CPU兼容"] = False
+            状态["默认显示模式"] = "borderless"
+            状态["默认窗口宽"] = int(应用目标桌面尺寸[0])
+            状态["默认窗口高"] = int(应用目标桌面尺寸[1])
+            状态["默认全屏宽"] = int(应用目标桌面尺寸[0])
+            状态["默认全屏高"] = int(应用目标桌面尺寸[1])
         状态["显示性能调试信息"] = bool(
             数据.get("显示性能调试信息", 状态.get("显示性能调试信息", False))
+        )
+        状态["显示状态HUD"] = bool(
+            数据.get("显示状态HUD", 状态.get("显示状态HUD", True))
         )
         状态["显示启动幻灯片"] = bool(
             数据.get("显示启动幻灯片", 状态.get("显示启动幻灯片", True))
@@ -1643,8 +2188,12 @@ def 主函数():
             )
             or "混音"
         ).strip() or "混音"
+        状态["日志文件路径"] = str(_取日志文件路径() or "")
         上下文["显示性能调试信息"] = bool(
             状态.get("显示性能调试信息", False)
+        )
+        上下文["显示状态HUD"] = bool(
+            状态.get("显示状态HUD", True)
         )
         os.environ["E5CM_GPU_PIPELINE"] = (
             "1" if bool(状态.get("默认GPU谱面管线", True)) else "0"
@@ -1678,6 +2227,190 @@ def 主函数():
         调试提示文本 = 文本
         调试提示截止 = time.time() + float(秒)
 
+    上下文["显示调试提示"] = _显示调试提示
+
+    def _追加GPU上传脏矩形(矩形: pygame.Rect):
+        if not isinstance(矩形, pygame.Rect) or 矩形.w <= 0 or 矩形.h <= 0:
+            return
+        try:
+            if bool(上下文.get("GPU强制全量上传", False)):
+                return
+        except Exception:
+            return
+        try:
+            现有列表 = 上下文.get("GPU上传脏矩形列表", None)
+            if not isinstance(现有列表, list):
+                return
+            现有列表.append(矩形.copy())
+            上下文["GPU上传脏矩形列表"] = 现有列表
+        except Exception:
+            pass
+
+    def _构建右上状态条图层(
+        参考宽: int,
+        参考高: int,
+    ) -> tuple[pygame.Surface | None, pygame.Rect]:
+        if not bool(状态.get("显示状态HUD", True)):
+            return None, pygame.Rect(0, 0, 0, 0)
+        try:
+            小字 = 上下文["字体"].get("HUD字") or 上下文["字体"].get("小字")
+        except Exception:
+            小字 = None
+        if not isinstance(小字, pygame.font.Font):
+            try:
+                小字 = 获取字体(18)
+            except Exception:
+                return None, pygame.Rect(0, 0, 0, 0)
+
+        fps值 = 0.0
+        try:
+            fps值 = float(时钟.get_fps() or 0.0)
+        except Exception:
+            fps值 = 0.0
+        if fps值 <= 0.1:
+            try:
+                主循环统计 = dict(上下文.get("主循环最近统计", {}) or {})
+                帧毫秒 = float(主循环统计.get("frame_ms", 0.0) or 0.0)
+                if 帧毫秒 > 0.001:
+                    fps值 = 1000.0 / float(帧毫秒)
+            except Exception:
+                fps值 = 0.0
+
+        if fps值 > 0.1:
+            fps文本 = f"{fps值:.1f}"
+        else:
+            fps文本 = "--"
+        渲染文本 = str(_取实际渲染引擎标签(显示后端) or "CPU-Software")
+        try:
+            分辨率w, 分辨率h = _取当前显示分辨率()
+            分辨率文本 = f"{int(分辨率w)}*{int(分辨率h)}"
+        except Exception:
+            分辨率文本 = ""
+        状态文本 = f"{fps文本} FPS | {渲染文本}"
+        if 分辨率文本:
+            状态文本 = f"{状态文本} | {分辨率文本}"
+
+        文图 = 小字.render(状态文本, True, (188, 194, 201))
+        内边距x = 12
+        内边距y = 6
+        面板矩形 = pygame.Rect(
+            0,
+            0,
+            int(文图.get_width() + 内边距x * 2),
+            int(文图.get_height() + 内边距y * 2),
+        )
+        面板矩形.bottomright = (
+            int(max(1, int(参考宽)) - 14),
+            int(max(1, int(参考高)) - 12),
+        )
+        面板 = pygame.Surface((int(面板矩形.w), int(面板矩形.h)), pygame.SRCALPHA)
+        pygame.draw.rect(
+            面板,
+            (6, 8, 12, 126),
+            pygame.Rect(0, 0, 面板矩形.w, 面板矩形.h),
+            border_radius=10,
+        )
+        pygame.draw.rect(
+            面板,
+            (255, 255, 255, 36),
+            pygame.Rect(0, 0, 面板矩形.w, 面板矩形.h),
+            width=1,
+            border_radius=10,
+        )
+        面板.blit(
+            文图,
+            (
+                int(内边距x),
+                int(内边距y),
+            ),
+        )
+        return 面板, 面板矩形.copy()
+
+    def _绘制右上状态条() -> pygame.Rect:
+        nonlocal 右上状态条上次矩形
+        try:
+            屏幕对象 = 上下文.get("屏幕", None)
+        except Exception:
+            屏幕对象 = None
+        if not isinstance(屏幕对象, pygame.Surface):
+            return pygame.Rect(0, 0, 0, 0)
+        面板, 面板矩形 = _构建右上状态条图层(
+            int(屏幕对象.get_width()),
+            int(屏幕对象.get_height()),
+        )
+        if not isinstance(面板, pygame.Surface):
+            右上状态条上次矩形 = pygame.Rect(0, 0, 0, 0)
+            return pygame.Rect(0, 0, 0, 0)
+        屏幕对象.blit(面板, 面板矩形.topleft)
+        脏矩形 = 面板矩形.copy()
+        if isinstance(右上状态条上次矩形, pygame.Rect) and 右上状态条上次矩形.w > 0 and 右上状态条上次矩形.h > 0:
+            脏矩形 = 脏矩形.union(右上状态条上次矩形)
+        右上状态条上次矩形 = 面板矩形.copy()
+        return 脏矩形
+
+    def _绘制右上状态条_到显示后端(显示后端对象) -> pygame.Rect:
+        if not bool(getattr(显示后端对象, "是否GPU", False)):
+            return pygame.Rect(0, 0, 0, 0)
+        try:
+            from pygame._sdl2 import video as _sdl2_video
+        except Exception:
+            return pygame.Rect(0, 0, 0, 0)
+        if _sdl2_video is None:
+            return pygame.Rect(0, 0, 0, 0)
+        取渲染器 = getattr(显示后端对象, "取GPU渲染器", None)
+        if not callable(取渲染器):
+            return pygame.Rect(0, 0, 0, 0)
+        渲染器 = 取渲染器()
+        if 渲染器 is None:
+            return pygame.Rect(0, 0, 0, 0)
+        try:
+            渲染宽, 渲染高 = tuple(int(v) for v in 显示后端对象.取窗口尺寸())
+        except Exception:
+            try:
+                渲染宽, 渲染高 = tuple(int(v) for v in 上下文["屏幕"].get_size())
+            except Exception:
+                return pygame.Rect(0, 0, 0, 0)
+        面板, 渲染矩形 = _构建右上状态条图层(int(渲染宽), int(渲染高))
+        if not isinstance(面板, pygame.Surface):
+            return pygame.Rect(0, 0, 0, 0)
+        目标矩形 = 渲染矩形.copy()
+        try:
+            使用逻辑坐标映射 = bool(
+                getattr(显示后端对象, "使用逻辑坐标映射", lambda: False)()
+            )
+        except Exception:
+            使用逻辑坐标映射 = False
+        if not bool(使用逻辑坐标映射):
+            try:
+                输出宽, 输出高 = tuple(int(v) for v in 显示后端对象.取输出尺寸())
+            except Exception:
+                输出宽, 输出高 = int(渲染宽), int(渲染高)
+            比例x = float(max(1, int(输出宽))) / float(max(1, int(渲染宽)))
+            比例y = float(max(1, int(输出高))) / float(max(1, int(渲染高)))
+            目标矩形 = pygame.Rect(
+                int(round(float(渲染矩形.x) * 比例x)),
+                int(round(float(渲染矩形.y) * 比例y)),
+                max(1, int(round(float(渲染矩形.w) * 比例x))),
+                max(1, int(round(float(渲染矩形.h) * 比例y))),
+            )
+        try:
+            纹理 = _sdl2_video.Texture.from_surface(渲染器, 面板)
+            try:
+                纹理.blend_mode = 1
+            except Exception:
+                pass
+            纹理.draw(
+                dstrect=(
+                    int(目标矩形.x),
+                    int(目标矩形.y),
+                    int(目标矩形.w),
+                    int(目标矩形.h),
+                )
+            )
+            return 目标矩形
+        except Exception:
+            return pygame.Rect(0, 0, 0, 0)
+
     def _同步投币显示():
         try:
             投币数 = int(状态.get("投币数", 0) or 0)
@@ -1687,12 +2420,22 @@ def 主函数():
         投币数 = max(0, 投币数)
         状态["投币数"] = int(投币数)
         状态["credit"] = str(int(投币数))
-        _保存全局设置()
+        try:
+            if callable(_保存全局设置):
+                _保存全局设置()
+        except Exception:
+            pass
         
     _加载全局设置()
     _同步渲染后端状态(显示后端)
     _应用全局静音状态()
     _同步投币显示()
+    if bool(启动恢复模式已启用):
+        _显示调试提示("检测到上次异常退出，已用窗口/CPU兼容模式启动", 3.6)
+    elif bool(高分屏统一1080p策略启用):
+        _显示调试提示("检测到高分屏，已统一切到全局1080p渲染（GPU优先）", 3.2)
+    elif bool(启动时已启用1080p全屏兼容):
+        _显示调试提示("检测到 2K 桌面，已自动切到 1080p 全屏兼容模式", 3.2)
 
     状态["非游戏菜单背景音乐关闭"] = bool(非游戏菜单背景音乐关闭)
     开发调试菜单开启 = False
@@ -1768,51 +2511,195 @@ def 主函数():
             return {"加载页_载荷": dict(选歌载荷)} if bool(选歌载荷) else None
         return None
 
-    def _重建当前场景并切换后端(目标后端: str):
-        nonlocal 显示后端, 屏幕, 当前场景
-        目标后端 = _规范渲染后端偏好(目标后端, 默认值="gpu")
-        状态["默认渲染后端"] = str(目标后端)
-        当前载荷 = _取当前场景载荷()
-        目标flags = pygame.FULLSCREEN if bool(是否全屏) else pygame.RESIZABLE
+    def _当前显示后端满足目标偏好(目标后端: object) -> bool:
+        规范目标 = _规范渲染后端偏好(目标后端, _默认渲染引擎偏好())
+        当前是GPU = bool(getattr(显示后端, "是否GPU", False)) if 显示后端 is not None else False
+        if str(规范目标) == "software":
+            return not bool(当前是GPU)
+        if not bool(当前是GPU):
+            return False
+        if str(规范目标) == "gpu-auto":
+            return True
+        try:
+            取驱动名 = getattr(显示后端, "取渲染驱动名", None)
+            当前驱动名 = (
+                str(取驱动名() or "").strip().lower()
+                if callable(取驱动名)
+                else ""
+            )
+        except Exception:
+            当前驱动名 = ""
+        当前标签 = str(_取实际渲染引擎标签(显示后端) or "").strip()
+
+        if str(规范目标) == "gpu-opengl":
+            if 当前驱动名 in ("opengl", "opengles2"):
+                return True
+            return 当前标签 in ("GPU-OpenGL", "GPU-OpenGLES2")
+
+        if str(规范目标) == "gpu-d3d11":
+            if 当前驱动名 in ("direct3d11", "direct3d", "direct3d12"):
+                return True
+            return 当前标签 in ("GPU-D3D11", "GPU-D3D", "GPU-D3D12")
+
+        return str(当前标签) == str(_取渲染引擎偏好标签(规范目标))
+
+    def _切换显示后端(
+        目标后端: str,
+        *,
+        当前载荷: Optional[dict] = None,
+        持久化为默认: bool = True,
+    ):
+        nonlocal 显示后端
+        目标后端 = _规范渲染后端偏好(目标后端, 默认值=_默认渲染引擎偏好())
+        if bool(持久化为默认):
+            状态["默认渲染后端"] = str(目标后端)
+        目标flags = pygame.NOFRAME if bool(是否全屏) else pygame.RESIZABLE
         try:
             目标尺寸 = tuple(int(v) for v in 上下文["屏幕"].get_size())
         except Exception:
             目标尺寸 = (1280, 720)
-
-        try:
-            当前场景.退出()
-        except Exception:
-            pass
         try:
             if 显示后端 is not None:
                 显示后端.关闭()
         except Exception:
             pass
-
-        显示后端 = 创建显示后端(
-            目标尺寸,
-            int(目标flags),
-            窗口标题,
-            偏好=str(目标后端),
+        try:
+            显示后端 = 创建显示后端(
+                目标尺寸,
+                int(目标flags),
+                窗口标题,
+                偏好=str(目标后端),
+            )
+        except Exception as 异常:
+            _记录异常日志(
+                日志器,
+                f"创建显示后端失败，目标后端={目标后端}",
+                异常,
+            )
+            显示后端 = 创建显示后端(
+                目标尺寸,
+                int(目标flags),
+                窗口标题,
+                偏好="software",
+            )
+            状态["默认GPU谱面管线"] = False
+            if bool(持久化为默认):
+                状态["默认渲染后端"] = "software"
+            _显示调试提示("渲染后端创建失败，已降级为CPU兼容模式", 2.2)
+        _同步渲染后端状态(
+            显示后端,
+            当前载荷 if isinstance(当前载荷, dict) else None,
         )
-        实际后端 = _同步渲染后端状态(显示后端, 当前载荷)
         _同步屏幕引用()
         上下文["显示后端"] = 显示后端
-        上下文["渲染后端名称"] = str(
-            getattr(显示后端, "名称", 实际后端) or 实际后端
-        )
+        上下文["渲染后端名称"] = str(_取实际渲染引擎标签(显示后端))
         上下文["显示性能调试信息"] = bool(状态.get("显示性能调试信息", False))
+        上下文["显示状态HUD"] = bool(状态.get("显示状态HUD", True))
+
+    def _按场景策略同步显示后端(目标场景名: object, 当前载荷: Optional[dict] = None):
+        目标后端 = _取场景策略渲染后端(
+            目标场景名,
+            状态.get("默认渲染后端", _默认渲染引擎偏好()),
+        )
+        try:
+            if bool(_当前显示后端满足目标偏好(目标后端)):
+                return
+            _切换显示后端(
+                str(目标后端),
+                当前载荷=当前载荷 if isinstance(当前载荷, dict) else None,
+                持久化为默认=False,
+            )
+        except Exception as 异常:
+            _记录异常日志(
+                日志器,
+                f"按场景策略切换显示后端失败，场景={目标场景名} 目标后端={目标后端}",
+                异常,
+            )
+            _切换显示后端(
+                "software",
+                当前载荷=当前载荷 if isinstance(当前载荷, dict) else None,
+                持久化为默认=False,
+            )
+
+    def _重建当前场景并切换后端(
+        目标后端: str,
+        *,
+        持久化为默认: bool = True,
+        显示提示: bool = True,
+    ):
+        nonlocal 当前场景
+        目标后端 = _规范渲染后端偏好(目标后端, 默认值=_默认渲染引擎偏好())
+        当前载荷 = _取当前场景载荷()
+
+        try:
+            当前场景.退出()
+        except Exception:
+            pass
+
+        _切换显示后端(
+            str(目标后端),
+            当前载荷=当前载荷,
+            持久化为默认=bool(持久化为默认),
+        )
         try:
             当前场景 = 场景表[当前场景名](上下文)
             _安全进入场景(当前场景, 当前载荷 if bool(当前载荷) else None)
-        except Exception:
+        except Exception as 异常:
+            _记录异常日志(
+                日志器,
+                f"重建场景失败，场景={当前场景名}，已回退投币",
+                异常,
+            )
             当前场景 = 场景表["投币"](上下文)
             _安全进入场景(当前场景, None)
-        _保存全局设置()
-        _显示调试提示(
-            f"渲染后端已切换为：{_取渲染模式文本(显示后端)}",
-            1.2,
+        if bool(持久化为默认):
+            _保存全局设置()
+        if bool(显示提示):
+            _显示调试提示(
+                (
+                    f"渲染引擎已切换为：{_取实际渲染引擎标签(显示后端)}"
+                    if bool(持久化为默认)
+                    else f"本次会话已切换为：{_取实际渲染引擎标签(显示后端)}"
+                ),
+                1.2,
+            )
+
+    def _应用渲染引擎偏好(目标偏好: object):
+        if not bool(_场景允许手动切换渲染后端(当前场景名)):
+            _显示调试提示("当前场景已锁定CPU渲染（可在强制CPU场景名单中调整）", 1.8)
+            return
+        规范目标 = _规范渲染后端偏好(目标偏好, _默认渲染引擎偏好())
+        if bool(getattr(sys, "frozen", False)) and bool(
+            _渲染引擎偏好是否GPU(规范目标)
+        ):
+            if bool(状态.get("打包版选歌强制CPU兼容", True)):
+                状态["打包版选歌强制CPU兼容"] = False
+                try:
+                    启动调试设置["打包版选歌强制CPU兼容"] = False
+                except Exception:
+                    pass
+                _显示调试提示("已关闭打包版选歌CPU锁定：后续场景保持GPU渲染", 1.6)
+        当前偏好 = _规范渲染后端偏好(
+            状态.get("默认渲染后端", _默认渲染引擎偏好()),
+            _默认渲染引擎偏好(),
         )
+        当前实际可用 = bool(getattr(显示后端, "是否GPU", False)) if 显示后端 is not None else False
+        当前实际标签 = _取实际渲染引擎标签(显示后端)
+        目标偏好标签 = _取渲染引擎偏好标签(规范目标)
+        实际满足目标 = False
+        if str(规范目标) == "software":
+            实际满足目标 = (not bool(当前实际可用))
+        elif str(规范目标) == "gpu-auto":
+            实际满足目标 = bool(当前实际可用)
+        else:
+            实际满足目标 = bool(当前实际可用) and str(当前实际标签) == str(目标偏好标签)
+        if (
+            str(规范目标) == str(当前偏好)
+            and bool(实际满足目标)
+        ):
+            _显示调试提示(f"渲染引擎：{_取渲染引擎偏好标签(规范目标)}", 1.0)
+            return
+        _重建当前场景并切换后端(str(规范目标), 持久化为默认=True)
 
     def _切换性能调试信息显示():
         状态["显示性能调试信息"] = not bool(状态.get("显示性能调试信息", False))
@@ -1822,6 +2709,18 @@ def 主函数():
             f"性能调试信息已{'显示' if bool(状态['显示性能调试信息']) else '隐藏'}",
             1.0,
         )
+
+    def _切换状态HUD显示():
+        状态["显示状态HUD"] = not bool(状态.get("显示状态HUD", True))
+        上下文["显示状态HUD"] = bool(状态["显示状态HUD"])
+        _保存全局设置()
+        _显示调试提示(
+            f"状态HUD已{'显示' if bool(状态['显示状态HUD']) else '隐藏'}",
+            1.0,
+        )
+
+    上下文["切换状态HUD"] = _切换状态HUD显示
+    上下文["应用渲染引擎偏好"] = _应用渲染引擎偏好
 
     def _切换全局静音():
         状态["全局静音"] = not bool(状态.get("全局静音", False))
@@ -1860,7 +2759,15 @@ def 主函数():
         except Exception:
             pass
         当前场景名 = str(目标场景名)
+        _按场景策略同步显示后端(当前场景名, 载荷 if isinstance(载荷, dict) else None)
+        # 优化思路：
+        # 1. 场景实例化应该只做轻量级的变量初始化
         当前场景 = 场景表[当前场景名](上下文)
+        
+        # 2. 将重量级加载放入一个独立的方法，并让场景自己决定是否异步
+        # if hasattr(当前场景, '开始异步加载'):
+        #     当前场景.开始异步加载(载荷)
+        
         _安全进入场景(当前场景, 载荷)
         开发调试菜单开启 = False
         _显示调试提示(f"已切换到场景：{当前场景名}", 1.0)
@@ -1887,8 +2794,8 @@ def 主函数():
         索引 = int(max(0, min(len(_取开发调试菜单项()) - 1, int(索引))))
         if 索引 == 0:
             当前模式 = _取当前实际渲染后端偏好()
-            目标模式 = "software" if 当前模式 == "gpu" else "gpu"
-            _重建当前场景并切换后端(目标模式)
+            目标模式 = "software" if _渲染引擎偏好是否GPU(当前模式) else _默认渲染引擎偏好()
+            _应用渲染引擎偏好(目标模式)
             return
         if 索引 == 1:
             _切换性能调试信息显示()
@@ -2079,7 +2986,7 @@ def 主函数():
 
             提示行 = [
                 f"{str(状态.get('投币快捷键显示', 投币快捷键显示))}投币   ESC关闭",
-                "鼠标点击 / 小键盘1-3切换 / 5确认",
+                "鼠标点击 / 1或7上一项 / 3或9下一项 / 5确认",
             ]
             提示y = int(选项起y + len(菜单项) * (按钮高 + 按钮间距) + 12)
             for 文本 in 提示行:
@@ -2229,18 +3136,32 @@ def 主函数():
             if 事件.key == pygame.K_ESCAPE:
                 非游戏菜单开启 = False
                 return True
-            if 事件.key in (pygame.K_LEFT, pygame.K_KP1, pygame.K_UP, pygame.K_KP7):
+            if 事件.key in (
+                pygame.K_LEFT,
+                pygame.K_1,
+                pygame.K_KP1,
+                pygame.K_UP,
+                pygame.K_7,
+                pygame.K_KP7,
+            ):
                 非游戏菜单索引 = (int(非游戏菜单索引) - 1) % len(菜单项)
                 return True
             if 事件.key in (
                 pygame.K_RIGHT,
+                pygame.K_3,
                 pygame.K_KP3,
                 pygame.K_DOWN,
+                pygame.K_9,
                 pygame.K_KP9,
             ):
                 非游戏菜单索引 = (int(非游戏菜单索引) + 1) % len(菜单项)
                 return True
-            if 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP5):
+            if 事件.key in (
+                pygame.K_RETURN,
+                pygame.K_KP_ENTER,
+                pygame.K_5,
+                pygame.K_KP5,
+            ):
                 _执行非游戏菜单选项(int(非游戏菜单索引))
                 return True
             return True
@@ -2278,19 +3199,38 @@ def 主函数():
             if 事件.key == pygame.K_ESCAPE or ctrl_f10:
                 开发调试菜单开启 = False
                 return True
-            if 事件.key in (pygame.K_UP, pygame.K_KP7, pygame.K_LEFT, pygame.K_KP1):
-                if 事件.key in (pygame.K_LEFT, pygame.K_KP1):
+            if 事件.key in (
+                pygame.K_UP,
+                pygame.K_7,
+                pygame.K_KP7,
+                pygame.K_LEFT,
+                pygame.K_1,
+                pygame.K_KP1,
+            ):
+                if 事件.key in (pygame.K_LEFT, pygame.K_1, pygame.K_KP1):
                     _执行开发调试菜单选项(int(开发调试菜单索引), -1)
                 else:
                     开发调试菜单索引 = (int(开发调试菜单索引) - 1) % len(菜单项)
                 return True
-            if 事件.key in (pygame.K_DOWN, pygame.K_KP9, pygame.K_RIGHT, pygame.K_KP3):
-                if 事件.key in (pygame.K_RIGHT, pygame.K_KP3):
+            if 事件.key in (
+                pygame.K_DOWN,
+                pygame.K_9,
+                pygame.K_KP9,
+                pygame.K_RIGHT,
+                pygame.K_3,
+                pygame.K_KP3,
+            ):
+                if 事件.key in (pygame.K_RIGHT, pygame.K_3, pygame.K_KP3):
                     _执行开发调试菜单选项(int(开发调试菜单索引), 1)
                 else:
                     开发调试菜单索引 = (int(开发调试菜单索引) + 1) % len(菜单项)
                 return True
-            if 事件.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_KP5):
+            if 事件.key in (
+                pygame.K_RETURN,
+                pygame.K_KP_ENTER,
+                pygame.K_5,
+                pygame.K_KP5,
+            ):
                 _执行开发调试菜单选项(int(开发调试菜单索引), 0)
                 return True
             return True
@@ -2330,9 +3270,47 @@ def 主函数():
         except Exception:
             pass
 
-        当前场景名 = 目标
-        当前场景 = 场景表[当前场景名](上下文)
-        _安全进入场景(当前场景, 载荷)
+        # 在加载重型场景前，强制刷新一次屏幕，防止上一帧残留在缓冲区
+        if 显示后端:
+            try:
+                显示后端.呈现(lambda b: None, lambda b: None, lambda b: None)
+            except Exception:
+                pass
+
+        try:
+            _按场景策略同步显示后端(
+                str(目标),
+                载荷 if isinstance(载荷, dict) else None,
+            )
+            当前场景名 = 目标
+            当前场景 = 场景表[当前场景名](上下文)
+            _安全进入场景(当前场景, 载荷)
+        except Exception as 异常:
+            _记录异常日志(
+                日志器,
+                f"场景切换失败：{原场景名} -> {目标}",
+                异常,
+            )
+            try:
+                _切换显示后端(
+                    "software",
+                    当前载荷=载荷 if isinstance(载荷, dict) else None,
+                    持久化为默认=False,
+                )
+                当前场景名 = 目标
+                当前场景 = 场景表[当前场景名](上下文)
+                _安全进入场景(当前场景, 载荷)
+                _显示调试提示("场景切换异常，已降级CPU后重试", 2.0)
+            except Exception as 二次异常:
+                _记录异常日志(
+                    日志器,
+                    f"场景切换二次失败，已回退投币：{原场景名} -> {目标}",
+                    二次异常,
+                )
+                当前场景名 = "投币"
+                当前场景 = 场景表["投币"](上下文)
+                _安全进入场景(当前场景, None)
+                _显示调试提示("场景切换失败，已回退投币场景", 2.4)
         if str(当前场景名 or "") != "选歌" and bool(选歌ESC菜单宿主.is_open()):
             选歌ESC菜单宿主.close()
 
@@ -2355,6 +3333,12 @@ def 主函数():
         except Exception:
             值 = 60
         return max(30, min(240, 值))
+
+    def _当前场景使用高精度帧率节流() -> bool:
+        try:
+            return bool(getattr(当前场景, "高精度帧率节流", False))
+        except Exception:
+            return False
 
     def _处理场景返回结果(结果) -> bool:
         nonlocal 待切换目标场景名, 待切换载荷
@@ -2392,7 +3376,10 @@ def 主函数():
 
     while True:
         循环开始秒 = time.perf_counter()
-        时钟.tick(_获取当前目标帧率())
+        if _当前场景使用高精度帧率节流() and hasattr(时钟, "tick_busy_loop"):
+            时钟.tick_busy_loop(_获取当前目标帧率())
+        else:
+            时钟.tick(_获取当前目标帧率())
 
         for 原始事件 in pygame.event.get():
             事件列表 = (
@@ -2422,7 +3409,16 @@ def 主函数():
                     and int(事件.key) == int(投币快捷键)
                     and (not bool(投币快捷键录入中))
                 ):
-                    _全局投币一次()
+                    try:
+                        _全局投币一次()
+                    except Exception as 异常:
+                        try:
+                            _显示调试提示(
+                                f"投币处理异常：{type(异常).__name__}",
+                                1.6,
+                            )
+                        except Exception:
+                            pass
                     if (not 过渡.是否进行中()) and 当前场景名 == "投币":
                         try:
                             当前币 = int(状态.get("投币数", 0) or 0)
@@ -2441,18 +3437,18 @@ def 主函数():
                             )
                     continue
 
-                if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_F11:
-                    if not 过渡.是否进行中():
-                        _切换全屏()
-                    continue
-
-                if 事件.type == pygame.VIDEORESIZE and (not 是否全屏):
+                窗口变化事件类型 = {
+                    pygame.VIDEORESIZE,
+                    getattr(pygame, "WINDOWRESIZED", -1),
+                    getattr(pygame, "WINDOWSIZECHANGED", -1),
+                }
+                if int(getattr(事件, "type", -1)) in 窗口变化事件类型 and (not 是否全屏):
                     新w = int(max(960, int(getattr(事件, "w", 0) or 0)))
                     新h = int(max(540, int(getattr(事件, "h", 0) or 0)))
-                    if 显示后端 is not None:
-                        显示后端.调整窗口模式((新w, 新h), pygame.RESIZABLE)
-                        _同步屏幕引用()
-                    上次窗口尺寸 = 上下文["屏幕"].get_size()
+                    if int(新w) <= 0 or int(新h) <= 0:
+                        新w = int(max(960, int(getattr(事件, "x", 0) or 0)))
+                        新h = int(max(540, int(getattr(事件, "y", 0) or 0)))
+                    _应用窗口化分辨率(新w, 新h, 发送事件=False)
 
                 # if 事件.type == pygame.KEYDOWN and 事件.key == pygame.K_F5:
                 #     if not 过渡.是否进行中():
@@ -2519,25 +3515,19 @@ def 主函数():
                         _处理场景返回结果(踏板结果)
                         continue
 
-                结果 = 当前场景.处理事件(事件)
+                try:
+                    结果 = 当前场景.处理事件(事件)
+                except Exception as 异常:
+                    结果 = None
+                    try:
+                        _显示调试提示(
+                            f"场景事件异常：{type(异常).__name__}",
+                            1.5,
+                        )
+                    except Exception:
+                        pass
+                    _记录异常日志(日志器, "主循环处理场景事件异常", 异常)
                 _处理场景返回结果(结果)
-
-        if (
-            bool(更新检查状态.get("已完成", False))
-            and (not bool(更新检查状态.get("已提示", False)))
-            and bool(更新检查状态.get("发现新版本", False))
-            and (not bool(非游戏菜单开启))
-            and (not bool(选歌ESC菜单宿主.is_open()))
-            and (not bool(开发调试菜单开启))
-            and (not 过渡.是否进行中())
-            and 当前场景名 not in ("谱面播放器", "结算")
-        ):
-            更新检查状态["已提示"] = True
-            if _弹窗提示软件更新(
-                当前版本号,
-                dict(更新检查状态.get("数据") or {}),
-            ):
-                _退出程序()
 
         if (not 过渡.是否进行中()) and hasattr(当前场景, "更新"):
             try:
@@ -2553,15 +3543,64 @@ def 主函数():
         上下文["GPU上传脏矩形列表"] = None
         上下文["GPU强制全量上传"] = False
         上下文["开发调试菜单开启"] = bool(开发调试菜单开启)
-        当前场景.绘制()
+        try:
+            当前场景.绘制()
+        except Exception as 异常:
+            _记录异常日志(日志器, "主循环场景绘制异常", 异常)
+            try:
+                if (
+                    str(当前场景名 or "") == "谱面播放器"
+                    and bool(getattr(当前场景, "_暂停菜单开启", False))
+                ):
+                    关闭暂停菜单 = getattr(当前场景, "_关闭暂停菜单", None)
+                    if callable(关闭暂停菜单):
+                        关闭暂停菜单(恢复播放=False)
+                    _显示调试提示(
+                        f"ESC菜单绘制异常，已自动关闭：{type(异常).__name__}",
+                        2.6,
+                    )
+                else:
+                    _显示调试提示(
+                        f"场景绘制异常：{type(异常).__name__}",
+                        2.4,
+                    )
+            except Exception:
+                pass
+            try:
+                if isinstance(上下文.get("屏幕"), pygame.Surface):
+                    上下文["屏幕"].fill((0, 0, 0))
+            except Exception:
+                pass
+        场景后CPU叠加已绘制 = False
         if bool(选歌ESC菜单宿主.is_open()) and str(当前场景名 or "") == "选歌":
+            场景后CPU叠加已绘制 = True
             选歌ESC菜单宿主.draw(上下文["屏幕"])
         else:
+            if bool(非游戏菜单开启):
+                场景后CPU叠加已绘制 = True
             _绘制非游戏菜单()
+        if bool(开发调试菜单开启):
+            场景后CPU叠加已绘制 = True
         _绘制开发调试菜单()
         全局点击特效.更新并绘制(上下文["屏幕"])
+        if bool(getattr(全局点击特效, "_实例列表", [])):
+            场景后CPU叠加已绘制 = True
+
+        if bool(getattr(显示后端, "是否GPU", False)):
+            try:
+                _右上图层, 右上状态条矩形 = _构建右上状态条图层(
+                    int(上下文["屏幕"].get_width()),
+                    int(上下文["屏幕"].get_height()),
+                )
+                del _右上图层
+            except Exception:
+                右上状态条矩形 = pygame.Rect(0, 0, 0, 0)
+        else:
+            右上状态条矩形 = _绘制右上状态条()
+            _追加GPU上传脏矩形(右上状态条矩形)
 
         if 调试提示文本 and time.time() < 调试提示截止:
+            场景后CPU叠加已绘制 = True
             try:
                 小字 = 上下文["字体"]["小字"]
                 文面 = 小字.render(调试提示文本, True, (255, 220, 120))
@@ -2575,10 +3614,9 @@ def 主函数():
         过渡.绘制(上下文["屏幕"])
         入场.绘制(上下文["屏幕"])
 
-        _绘制opencv缺失提示(
-            屏幕=上下文["屏幕"],
-            字体对象=上下文["字体"].get("小字"),
-        )
+        if bool(场景后CPU叠加已绘制):
+            上下文["GPU上传脏矩形列表"] = None
+            上下文["GPU强制全量上传"] = True
         CPU绘制毫秒 = (time.perf_counter() - CPU绘制开始秒) * 1000.0
 
         呈现统计 = {}
@@ -2597,6 +3635,7 @@ def 主函数():
                 绘制方法 = getattr(当前场景, "绘制GPU叠加", None)
                 if callable(绘制方法):
                     绘制方法(后端)
+                _绘制右上状态条_到显示后端(后端)
 
             GPU上传脏矩形列表 = 上下文.get("GPU上传脏矩形列表", None)
             GPU强制全量上传 = bool(上下文.get("GPU强制全量上传", False))
@@ -2607,13 +3646,41 @@ def 主函数():
                     GPU强制全量上传 = True
             except Exception:
                 GPU强制全量上传 = True
-            呈现统计 = 显示后端.呈现(
-                _绘制GPU背景,
-                _绘制GPU中层,
-                _绘制GPU叠加,
-                上传脏矩形列表=GPU上传脏矩形列表,
-                强制全量上传=bool(GPU强制全量上传),
-            ) or {}
+            try:
+                呈现统计 = (
+                    显示后端.呈现(
+                        _绘制GPU背景,
+                        _绘制GPU中层,
+                        _绘制GPU叠加,
+                        上传脏矩形列表=GPU上传脏矩形列表,
+                        强制全量上传=bool(GPU强制全量上传),
+                    )
+                    or {}
+                )
+            except Exception as 异常:
+                _记录异常日志(日志器, "显示后端呈现异常", 异常)
+                if bool(getattr(显示后端, "是否GPU", False)):
+                    _重建当前场景并切换后端(
+                        "software",
+                        持久化为默认=False,
+                    )
+                    try:
+                        if bool(是否全屏):
+                            安全窗口w, 安全窗口h = _取当前窗口化尺寸()
+                            _应用窗口化分辨率(
+                                安全窗口w,
+                                安全窗口h,
+                                发送事件=False,
+                                保存设置=False,
+                            )
+                    except Exception:
+                        pass
+                    _显示调试提示(
+                        f"GPU显示异常，本次会话已切换CPU兼容模式：{type(异常).__name__}",
+                        2.4,
+                    )
+                    continue
+                raise
         else:
             pygame.display.flip()
         帧总毫秒 = (time.perf_counter() - 循环开始秒) * 1000.0
@@ -2628,3 +3695,4 @@ def 主函数():
 
 if __name__ == "__main__":
     主函数()
+

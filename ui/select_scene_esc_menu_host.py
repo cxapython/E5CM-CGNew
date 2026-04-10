@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Dict, List, Optional, Tuple
@@ -55,6 +56,31 @@ from core.sqlite_store import (
 from core.工具 import 获取字体
 from ui.game_esc_menu import GameEscMenuController
 from ui.谱面渲染器 import _皮肤包
+
+
+_常见纵横比标签 = (
+    (16, 9),
+    (16, 10),
+    (21, 9),
+    (32, 9),
+    (4, 3),
+    (5, 4),
+)
+
+
+def _格式化分辨率纵横比(宽: int, 高: int) -> str:
+    宽 = int(max(1, int(宽 or 1)))
+    高 = int(max(1, int(高 or 1)))
+    比值 = float(宽) / float(max(1, 高))
+    for 候选宽, 候选高 in _常见纵横比标签:
+        if abs(float(候选宽) / float(候选高) - 比值) <= 0.02:
+            return f"{int(候选宽)}:{int(候选高)}"
+    公约数 = int(math.gcd(int(宽), int(高)) or 1)
+    return f"{int(宽 // 公约数)}:{int(高 // 公约数)}"
+
+
+def _格式化分辨率标签(宽: int, 高: int) -> str:
+    return f"{int(宽)} x {int(高)} ({_格式化分辨率纵横比(int(宽), int(高))})"
 
 
 class SelectSceneEscMenuHost:
@@ -136,8 +162,187 @@ class SelectSceneEscMenuHost:
         标签 = ["默认", "较亮", "明亮", "最亮", "关闭"]
         return str(标签[int(max(0, min(len(标签) - 1, 索引)))])
 
-    def _设置操作反馈(self, _文本: str):
-        return
+    def _取显示设置数据(self) -> Dict[str, object]:
+        getter = self._context.get("取显示设置", None) if isinstance(self._context, dict) else None
+        if callable(getter):
+            try:
+                数据 = getter()
+                if isinstance(数据, dict):
+                    return dict(数据)
+            except Exception:
+                return {}
+        return {}
+
+    def _esc_menu_supports_display_settings(self) -> bool:
+        if not isinstance(self._context, dict):
+            return False
+        return (
+            callable(self._context.get("取显示设置", None))
+            and callable(self._context.get("切换全屏", None))
+            and (
+                callable(self._context.get("应用显示分辨率", None))
+                or callable(self._context.get("应用全屏分辨率", None))
+                or callable(self._context.get("应用窗口分辨率", None))
+                or callable(self._context.get("循环显示分辨率", None))
+                or callable(self._context.get("循环窗口分辨率", None))
+            )
+        )
+
+    def _取当前显示尺寸(self) -> Tuple[int, int]:
+        数据 = self._取显示设置数据()
+        尺寸 = 数据.get("active_size", None)
+        if not isinstance(尺寸, (tuple, list)):
+            尺寸 = 数据.get(
+                "fullscreen_size" if bool(数据.get("fullscreen", False)) else "window_size",
+                (0, 0),
+            )
+        try:
+            return int(tuple(尺寸)[0]), int(tuple(尺寸)[1])
+        except Exception:
+            return 0, 0
+
+    def _取分辨率菜单文本(self) -> str:
+        宽, 高 = self._取当前显示尺寸()
+        if 宽 <= 0 or 高 <= 0:
+            return "未知"
+        return _格式化分辨率标签(int(宽), int(高))
+
+    def _取状态HUD菜单文本(self) -> str:
+        if not isinstance(self._context, dict):
+            return "开启"
+        return "开启" if bool(self._context.get("显示状态HUD", True)) else "关闭"
+
+    def _取渲染引擎菜单文本(self) -> str:
+        数据 = self._取显示设置数据()
+        文本 = str(数据.get("render_backend_text", "") or "").strip()
+        return 文本 or "GPU-Auto"
+
+    def _取实际渲染引擎菜单文本(self) -> str:
+        数据 = self._取显示设置数据()
+        文本 = str(数据.get("render_backend_actual_text", "") or "").strip()
+        return 文本 or self._取渲染引擎菜单文本()
+
+    def _取渲染引擎说明文本(self) -> str:
+        数据 = self._取显示设置数据()
+        return str(
+            数据.get(
+                "render_backend_description",
+                "切换实际渲染引擎；D3D11 通常最适合 Windows 11。",
+            )
+            or "切换实际渲染引擎；D3D11 通常最适合 Windows 11。"
+        )
+
+    def _esc_menu_has_dropdown(self, row_id: str) -> bool:
+        return str(row_id or "").strip() in ("display_resolution", "render_backend")
+
+    def _esc_menu_get_dropdown_options(self, row_id: str) -> List[Dict[str, object]]:
+        行标识 = str(row_id or "").strip()
+        if 行标识 == "render_backend":
+            数据 = self._取显示设置数据()
+            结果: List[Dict[str, object]] = []
+            for 项 in list(数据.get("render_backend_options", []) or []):
+                if not isinstance(项, dict):
+                    continue
+                标识 = str(项.get("id", "") or "").strip()
+                标签 = str(项.get("label", 标识) or 标识).strip()
+                if not 标识 or not 标签:
+                    continue
+                结果.append(
+                    {
+                        "id": 标识,
+                        "label": 标签,
+                        "selected": bool(项.get("selected", False)),
+                    }
+                )
+            return 结果
+        if 行标识 != "display_resolution":
+            return []
+        数据 = self._取显示设置数据()
+        当前尺寸 = tuple(int(v) for v in self._取当前显示尺寸())
+        结果: List[Dict[str, object]] = []
+        for 项 in list(数据.get("resolution_options", []) or []):
+            try:
+                宽, 高 = tuple(项)
+                宽 = int(宽)
+                高 = int(高)
+            except Exception:
+                continue
+            if 宽 <= 0 or 高 <= 0:
+                continue
+            结果.append(
+                {
+                    "id": f"{int(宽)}x{int(高)}",
+                    "label": _格式化分辨率标签(int(宽), int(高)),
+                    "selected": tuple((int(宽), int(高))) == tuple(当前尺寸),
+                }
+            )
+        return 结果
+
+    def _应用精确显示分辨率(self, 宽: int, 高: int) -> bool:
+        if not isinstance(self._context, dict):
+            return False
+        应用方法 = self._context.get("应用显示分辨率", None)
+        if callable(应用方法):
+            try:
+                应用方法(int(宽), int(高))
+                return True
+            except Exception:
+                return False
+        数据 = self._取显示设置数据()
+        if bool(数据.get("fullscreen", False)):
+            应用方法 = self._context.get("应用全屏分辨率", None)
+        else:
+            应用方法 = self._context.get("应用窗口分辨率", None)
+        if callable(应用方法):
+            try:
+                应用方法(int(宽), int(高))
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _esc_menu_apply_dropdown_option(self, row_id: str, option_id: str):
+        行标识 = str(row_id or "").strip()
+        if 行标识 == "render_backend":
+            if not isinstance(self._context, dict):
+                return None
+            应用方法 = self._context.get("应用渲染引擎偏好", None)
+            if callable(应用方法):
+                try:
+                    应用方法(str(option_id or ""))
+                    self._设置操作反馈(f"渲染引擎：{self._取渲染引擎菜单文本()}")
+                except Exception:
+                    pass
+            return None
+        if 行标识 != "display_resolution":
+            return None
+        文本 = str(option_id or "").strip().lower().replace(" ", "")
+        if "x" not in 文本:
+            return None
+        try:
+            宽文本, 高文本 = 文本.split("x", 1)
+            宽 = int(宽文本)
+            高 = int(高文本)
+        except Exception:
+            return None
+        if self._应用精确显示分辨率(int(宽), int(高)):
+            self._设置操作反馈(f"分辨率：{self._取分辨率菜单文本()}")
+        return None
+
+    def _取显示模式菜单文本(self) -> str:
+        数据 = self._取显示设置数据()
+        文本 = str(数据.get("display_mode_text", "") or "").strip()
+        if 文本:
+            return 文本
+        return "无边框窗口" if bool(数据.get("fullscreen", False)) else "窗口"
+
+    def _设置操作反馈(self, 文本: str):
+        setter = self._context.get("显示调试提示", None) if isinstance(self._context, dict) else None
+        if callable(setter):
+            try:
+                setter(str(文本 or ""), 1.2)
+            except Exception:
+                pass
 
     def _取谱面偏移菜单文本(self) -> str:
         return format_chart_visual_offset_ms(getattr(self, "_谱面视觉偏移毫秒", 0))
@@ -332,6 +537,40 @@ class SelectSceneEscMenuHost:
             )
             self._卷轴速度倍率 = float(options[(index + step) % len(options)])
             self._save_select_visual_settings()
+            return None
+
+        if key == "display_mode":
+            切换方法 = self._context.get("切换全屏", None) if isinstance(self._context, dict) else None
+            if callable(切换方法):
+                try:
+                    切换方法()
+                except Exception:
+                    pass
+                self._设置操作反馈(f"显示模式：{self._取显示模式菜单文本()}")
+            return None
+
+        if key == "display_resolution":
+            切换方法 = None
+            if isinstance(self._context, dict):
+                切换方法 = self._context.get("循环显示分辨率", None)
+                if not callable(切换方法):
+                    切换方法 = self._context.get("循环窗口分辨率", None)
+            if callable(切换方法):
+                try:
+                    切换方法(int(step))
+                except Exception:
+                    pass
+                self._设置操作反馈(f"分辨率：{self._取分辨率菜单文本()}")
+            return None
+
+        if key == "status_hud":
+            切换方法 = self._context.get("切换状态HUD", None) if isinstance(self._context, dict) else None
+            if callable(切换方法):
+                try:
+                    切换方法()
+                except Exception:
+                    pass
+                self._设置操作反馈(f"状态HUD：{self._取状态HUD菜单文本()}")
             return None
 
         if key == "bpm_scroll_effect":

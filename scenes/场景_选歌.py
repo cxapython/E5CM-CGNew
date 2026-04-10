@@ -4,8 +4,12 @@ import json
 import re
 import math
 import time
+import gc
+import sys
+import threading
 from collections import deque
 from dataclasses import dataclass
+from functools import wraps
 from typing import Dict, List, Optional, Tuple, Set, Callable
 from core.常量与路径 import (
     取冷资源路径 as _公共取冷资源路径,
@@ -18,7 +22,15 @@ from core.常量与路径 import (
     取songs根目录 as _公共取songs根目录,
     取调试配置路径 as _公共取调试配置路径,
 )
+from core.日志 import (
+    取日志器 as _取日志器,
+    记录异常 as _记录异常日志,
+    记录信息 as _记录信息日志,
+    记录警告 as _记录警告日志,
+)
 from core.动态背景 import DynamicBackgroundContext, DynamicBackgroundManager
+from core.音频 import 确保pygame基础模块已初始化 as _确保pygame基础模块已初始化
+from core.音频 import 确保混音器已初始化 as _确保混音器已初始化
 from core.game_esc_menu_settings import (
     GAME_ESC_SETTINGS_KEY_IMAGE_SLIDESHOW as _游戏esc图片幻灯片模式键,
 )
@@ -83,7 +95,7 @@ from core.select_scene_settings_layout import (
     recompute_select_settings_layout as 重算设置页布局,
 )
 from core.歌曲记录 import 读取歌曲记录索引, 取歌曲记录键
-from core.对局状态 import 取当前关卡, 取累计S数, 是否赠送第四把
+from core.对局状态 import 取当前关卡, 取累计S数, 是否赠送第四把, 重置游戏流程状态
 from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 from ui.top栏 import 生成top栏
 import pygame
@@ -93,6 +105,8 @@ try:
     from pygame._sdl2 import video as _sdl2_video
 except Exception:
     _sdl2_video = None
+
+_日志器 = _取日志器("scene.选歌")
 
 
 def 确保项目根目录在模块路径里():
@@ -106,6 +120,105 @@ _songs根目录_缓存: str | None = None
 _歌曲扫描缓存: Dict[Tuple[object, ...], dict] = {}
 _歌曲扫描缓存顺序: List[Tuple[object, ...]] = []
 _歌曲扫描缓存上限 = 8
+_歌曲扫描缓存锁 = threading.RLock()
+_歌曲扫描执行锁 = threading.Lock()
+_懒解析模式标记缓存: Dict[Tuple[str, int], dict] = {}
+_懒解析模式标记缓存顺序: List[Tuple[str, int]] = []
+_懒解析模式标记缓存上限 = 1024
+_懒解析模式标记缓存锁 = threading.RLock()
+_稳定谱面解析模式日志已输出 = False
+_稳定NEW标记模式日志已输出 = False
+_稳定场景初始化模式日志已输出 = False
+_懒解析模式标记日志已输出 = False
+_最近扫描谱面路径 = ""
+_候选谱面扩展名集合 = {".json", ".ssc", ".sm", ".sma"}
+
+
+def _进入稳定GC区间(需要关闭: bool) -> bool:
+    if (not bool(需要关闭)) or (not bool(gc.isenabled())):
+        return False
+    try:
+        gc.disable()
+        return True
+    except Exception:
+        return False
+
+
+def _离开稳定GC区间(曾关闭GC: bool) -> None:
+    if (not bool(曾关闭GC)) or bool(gc.isenabled()):
+        return
+    try:
+        gc.enable()
+    except Exception:
+        pass
+
+
+def _串行化歌曲扫描(函数):
+    @wraps(函数)
+    def _包装(*args, **kwargs):
+        with _歌曲扫描执行锁:
+            需要关闭GC = bool(_启用稳定谱面解析模式())
+            曾关闭GC = _进入稳定GC区间(需要关闭GC)
+            try:
+                return 函数(*args, **kwargs)
+            finally:
+                _离开稳定GC区间(曾关闭GC)
+
+    return _包装
+
+
+def _启用稳定谱面解析模式() -> bool:
+    环境值 = str(os.environ.get("E5CM_SAFE_SM_PARSE", "") or "").strip().lower()
+    if 环境值 in ("1", "true", "yes", "on"):
+        return True
+    if 环境值 in ("0", "false", "no", "off"):
+        return False
+    # 默认始终使用完整谱面扫描；仅在显式开启时才走稳定/保守解析模式。
+    return False
+
+
+def _启用懒解析模式标记() -> bool:
+    环境值 = str(os.environ.get("E5CM_LAZY_MODE_TAG", "") or "").strip().lower()
+    if 环境值 in ("1", "true", "yes", "on"):
+        return True
+    if 环境值 in ("0", "false", "no", "off"):
+        return False
+    return bool(_启用稳定谱面解析模式())
+
+
+def _启用稳定NEW标记模式() -> bool:
+    环境值 = str(os.environ.get("E5CM_SAFE_NEW_TAG", "") or "").strip().lower()
+    if 环境值 in ("1", "true", "yes", "on"):
+        return True
+    if 环境值 in ("0", "false", "no", "off"):
+        return False
+    return bool(getattr(sys, "frozen", False))
+
+
+def _启用稳定场景初始化模式() -> bool:
+    环境值 = str(os.environ.get("E5CM_SAFE_SCENE_INIT", "") or "").strip().lower()
+    if 环境值 in ("1", "true", "yes", "on"):
+        return True
+    if 环境值 in ("0", "false", "no", "off"):
+        return False
+    return bool(getattr(sys, "frozen", False))
+
+
+def _记录扫描谱面路径(sm路径: str, 类型名: str, 模式名: str) -> None:
+    global _最近扫描谱面路径
+    if not bool(_启用稳定谱面解析模式()):
+        return
+    路径 = os.path.abspath(str(sm路径 or "").strip()) if str(sm路径 or "").strip() else ""
+    if (not 路径) or 路径 == str(_最近扫描谱面路径):
+        return
+    _最近扫描谱面路径 = str(路径)
+    try:
+        _记录信息日志(
+            _日志器,
+            f"扫描谱面文件 类型={str(类型名 or '')} 模式={str(模式名 or '')} 路径={路径}",
+        )
+    except Exception:
+        pass
 
 
 def _取项目根目录() -> str:
@@ -146,6 +259,79 @@ def _取目录修改时间秒(目录路径: str) -> int:
         return int(os.path.getmtime(str(目录路径 or "")))
     except Exception:
         return 0
+
+
+def _取文件修改时间秒(文件路径: str) -> int:
+    try:
+        return int(os.path.getmtime(str(文件路径 or "")))
+    except Exception:
+        return 0
+
+
+def _读取懒解析模式标记缓存(缓存键: Tuple[str, int]) -> Optional[dict]:
+    if (not isinstance(缓存键, tuple)) or len(缓存键) != 2:
+        return None
+    with _懒解析模式标记缓存锁:
+        命中 = _懒解析模式标记缓存.get(缓存键)
+        if not isinstance(命中, dict):
+            return None
+        try:
+            if 缓存键 in _懒解析模式标记缓存顺序:
+                _懒解析模式标记缓存顺序.remove(缓存键)
+        except Exception:
+            pass
+        _懒解析模式标记缓存顺序.append(缓存键)
+        return dict(命中)
+
+
+def _写入懒解析模式标记缓存(缓存键: Tuple[str, int], 值: dict) -> None:
+    if (not isinstance(缓存键, tuple)) or len(缓存键) != 2:
+        return
+    if not isinstance(值, dict):
+        return
+    with _懒解析模式标记缓存锁:
+        _懒解析模式标记缓存[缓存键] = dict(值)
+        try:
+            if 缓存键 in _懒解析模式标记缓存顺序:
+                _懒解析模式标记缓存顺序.remove(缓存键)
+        except Exception:
+            pass
+        _懒解析模式标记缓存顺序.append(缓存键)
+        while len(_懒解析模式标记缓存顺序) > _懒解析模式标记缓存上限:
+            最旧键 = _懒解析模式标记缓存顺序.pop(0)
+            _懒解析模式标记缓存.pop(最旧键, None)
+
+
+def _目录含候选谱面文件(目录路径: str, 最大命中数: int = 1) -> bool:
+    根目录 = os.path.abspath(str(目录路径 or "").strip()) if str(目录路径 or "").strip() else ""
+    if (not 根目录) or (not os.path.isdir(根目录)):
+        return False
+    try:
+        已命中数 = 0
+        for 当前根, _目录列表, 文件列表 in os.walk(根目录):
+            for 文件名 in 文件列表:
+                扩展名 = os.path.splitext(str(文件名 or ""))[1].lower()
+                if 扩展名 not in _候选谱面扩展名集合:
+                    continue
+                已命中数 += 1
+                if 已命中数 >= max(1, int(最大命中数 or 1)):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _统计数据树歌曲总数(数据树: Dict[str, Dict[str, List["歌曲信息"]]]) -> int:
+    if not isinstance(数据树, dict):
+        return 0
+    总数 = 0
+    for 模式映射 in 数据树.values():
+        if not isinstance(模式映射, dict):
+            continue
+        for 列表 in 模式映射.values():
+            if isinstance(列表, list):
+                总数 += int(len(列表))
+    return int(max(0, 总数))
 
 
 def _数子目录数量(目录路径: str) -> int:
@@ -479,6 +665,21 @@ class 场景_选歌(场景基类):
                 状态["子模式"] = 最终模式
 
         songs根目录 = _取songs根目录(资源, 状态)
+        运行根songs目录 = _公共取songs根目录(资源=资源, 状态={})
+        if (
+            songs根目录
+            and os.path.isdir(str(songs根目录))
+            and (not _目录含候选谱面文件(str(songs根目录), 最大命中数=1))
+            and _目录含候选谱面文件(str(运行根songs目录), 最大命中数=1)
+        ):
+            _记录警告日志(
+                _日志器,
+                (
+                    "选歌入口检测到状态中的songs根目录为空目录，已自动回退到运行根songs目录 "
+                    f"原路径={songs根目录} 回退路径={运行根songs目录}"
+                ),
+            )
+            songs根目录 = str(运行根songs目录)
         玩家数 = int(状态.get("玩家数", 1) or 1)
 
         类型名, 模式名 = _解析选歌入口参数(状态, songs根目录)
@@ -488,6 +689,18 @@ class 场景_选歌(场景基类):
 
         try:
             状态["songs根目录"] = songs根目录
+        except Exception:
+            pass
+
+        try:
+            _记录信息日志(
+                _日志器,
+                (
+                    "进入选歌场景 "
+                    f"渲染后端={str(os.environ.get('E5CM_RENDER_BACKEND', '') or '-')} "
+                    f"songs根目录={songs根目录} 类型={类型名 or '-'} 模式={模式名 or '-'}"
+                ),
+            )
         except Exception:
             pass
 
@@ -553,15 +766,38 @@ class 场景_选歌(场景基类):
                 str(资源.get("投币_BGM", "") or ""),
             )
 
-
-        self._选歌实例 = 选歌游戏(
-            songs根目录=songs根目录,
-            背景音乐路径=背景音乐路径,
-            指定类型名=类型名,
-            指定模式名=模式名,
-            玩家数=玩家数,
-            是否继承已有窗口=True,
-        )
+        已启用稳定场景初始化模式 = bool(_启用稳定场景初始化模式())
+        if 已启用稳定场景初始化模式:
+            global _稳定场景初始化模式日志已输出
+            if not bool(_稳定场景初始化模式日志已输出):
+                try:
+                    _记录信息日志(
+                        _日志器,
+                        "已启用稳定场景初始化模式：选歌实例创建期间暂时关闭循环GC",
+                    )
+                except Exception:
+                    pass
+                _稳定场景初始化模式日志已输出 = True
+        曾关闭GC = _进入稳定GC区间(已启用稳定场景初始化模式)
+        try:
+            self._选歌实例 = 选歌游戏(
+                songs根目录=songs根目录,
+                背景音乐路径=背景音乐路径,
+                指定类型名=类型名,
+                指定模式名=模式名,
+                玩家数=玩家数,
+                是否继承已有窗口=True,
+            )
+        except Exception as 异常:
+            _记录异常日志(
+                _日志器,
+                f"创建选歌实例失败 songs根目录={songs根目录} 类型={类型名} 模式={模式名}",
+                异常,
+            )
+            self._选歌实例 = None
+            raise
+        finally:
+            _离开稳定GC区间(曾关闭GC)
         try:
             self._选歌实例.上下文 = self.上下文
         except Exception:
@@ -688,7 +924,8 @@ class 场景_选歌(场景基类):
         try:
             if hasattr(self._选歌实例, "帧更新"):
                 退出状态 = self._选歌实例.帧更新()
-        except Exception:
+        except Exception as 异常:
+            _记录异常日志(_日志器, "选歌场景帧更新异常", 异常)
             退出状态 = None
 
         if 退出状态:
@@ -702,7 +939,8 @@ class 场景_选歌(场景基类):
         try:
             if hasattr(self._选歌实例, "帧绘制"):
                 self._选歌实例.帧绘制()
-        except Exception:
+        except Exception as 异常:
+            _记录异常日志(_日志器, "选歌场景帧绘制异常", 异常)
             # 防御：别让选歌绘制崩全局
             pass
 
@@ -734,7 +972,8 @@ class 场景_选歌(场景基类):
         try:
             if hasattr(self._选歌实例, "处理全局踏板"):
                 退出状态 = self._选歌实例.处理全局踏板(动作)
-        except Exception:
+        except Exception as 异常:
+            _记录异常日志(_日志器, "选歌场景处理全局踏板异常", 异常)
             退出状态 = None
 
         if 退出状态:
@@ -749,7 +988,8 @@ class 场景_选歌(场景基类):
         try:
             if hasattr(self._选歌实例, "处理事件_外部"):
                 退出状态 = self._选歌实例.处理事件_外部(事件)
-        except Exception:
+        except Exception as 异常:
+            _记录异常日志(_日志器, "选歌场景处理事件异常", 异常)
             退出状态 = None
 
         if 退出状态:
@@ -806,12 +1046,11 @@ class 场景_选歌(场景基类):
 
         if 退出状态 == "RESELECT_MAIN":
             try:
-                状态.pop("选歌_类型", None)
-                状态.pop("选歌_模式", None)
-                状态.pop("选歌_BGM", None)
-                状态["大模式"] = ""
-                状态["子模式"] = ""
+                # 明确“重选模式”语义：结束当前局流程，避免旧局数/奖励状态残留到新模式。
+                重置游戏流程状态(状态)
                 状态["songs子文件夹"] = ""
+                状态.pop("选歌_恢复收藏夹模式", None)
+                状态.pop("选歌_恢复收藏夹页码", None)
             except Exception:
                 pass
             return {"切换到": "大模式", "禁用黑屏过渡": True}
@@ -843,6 +1082,10 @@ class 歌曲信息:
     是否HOT: bool = False
     是否收藏: bool = False
     是否带MV: bool = False
+    谱面charttype: str = ""
+    谱面模式标记: str = ""
+    记录键sm路径: str = ""
+    是否10位复合谱: bool = False
 
 
 def _克隆歌曲信息对象(歌: 歌曲信息) -> 歌曲信息:
@@ -864,6 +1107,10 @@ def _克隆歌曲信息对象(歌: 歌曲信息) -> 歌曲信息:
         是否HOT=bool(getattr(歌, "是否HOT", False)),
         是否收藏=bool(getattr(歌, "是否收藏", False)),
         是否带MV=bool(getattr(歌, "是否带MV", False)),
+        谱面charttype=str(getattr(歌, "谱面charttype", "") or ""),
+        谱面模式标记=str(getattr(歌, "谱面模式标记", "") or ""),
+        记录键sm路径=str(getattr(歌, "记录键sm路径", "") or ""),
+        是否10位复合谱=bool(getattr(歌, "是否10位复合谱", False)),
     )
 
 
@@ -889,16 +1136,17 @@ def _克隆数据树(数据树: Dict[str, Dict[str, List[歌曲信息]]]) -> Dic
 def _读取歌曲扫描缓存(缓存键: Tuple[object, ...]) -> Optional[Dict[str, Dict[str, List[歌曲信息]]]]:
     if not isinstance(缓存键, tuple):
         return None
-    缓存值 = _歌曲扫描缓存.get(缓存键)
-    if not isinstance(缓存值, dict):
-        return None
-    try:
-        if 缓存键 in _歌曲扫描缓存顺序:
-            _歌曲扫描缓存顺序.remove(缓存键)
-    except Exception:
-        pass
-    _歌曲扫描缓存顺序.append(缓存键)
-    return _克隆数据树(缓存值)
+    with _歌曲扫描缓存锁:
+        缓存值 = _歌曲扫描缓存.get(缓存键)
+        if not isinstance(缓存值, dict):
+            return None
+        try:
+            if 缓存键 in _歌曲扫描缓存顺序:
+                _歌曲扫描缓存顺序.remove(缓存键)
+        except Exception:
+            pass
+        _歌曲扫描缓存顺序.append(缓存键)
+        return _克隆数据树(缓存值)
 
 
 def _按前缀读取歌曲扫描缓存(
@@ -906,7 +1154,9 @@ def _按前缀读取歌曲扫描缓存(
 ) -> Optional[Dict[str, Dict[str, List[歌曲信息]]]]:
     if not isinstance(键前缀, tuple) or (not 键前缀):
         return None
-    for 候选键 in reversed(list(_歌曲扫描缓存顺序 or [])):
+    with _歌曲扫描缓存锁:
+        候选键列表 = list(_歌曲扫描缓存顺序 or [])
+    for 候选键 in reversed(候选键列表):
         if not isinstance(候选键, tuple):
             continue
         if len(候选键) < len(键前缀):
@@ -924,16 +1174,17 @@ def _写入歌曲扫描缓存(缓存键: Tuple[object, ...], 数据树: Dict[str
         return
     if not isinstance(数据树, dict):
         return
-    _歌曲扫描缓存[缓存键] = _克隆数据树(数据树)
-    try:
-        if 缓存键 in _歌曲扫描缓存顺序:
-            _歌曲扫描缓存顺序.remove(缓存键)
-    except Exception:
-        pass
-    _歌曲扫描缓存顺序.append(缓存键)
-    while len(_歌曲扫描缓存顺序) > max(1, int(_歌曲扫描缓存上限)):
-        旧键 = _歌曲扫描缓存顺序.pop(0)
-        _歌曲扫描缓存.pop(旧键, None)
+    with _歌曲扫描缓存锁:
+        _歌曲扫描缓存[缓存键] = _克隆数据树(数据树)
+        try:
+            if 缓存键 in _歌曲扫描缓存顺序:
+                _歌曲扫描缓存顺序.remove(缓存键)
+        except Exception:
+            pass
+        _歌曲扫描缓存顺序.append(缓存键)
+        while len(_歌曲扫描缓存顺序) > max(1, int(_歌曲扫描缓存上限)):
+            旧键 = _歌曲扫描缓存顺序.pop(0)
+            _歌曲扫描缓存.pop(旧键, None)
 
 
 def 安全加载图片(路径: str, 透明: bool = True) -> Optional[pygame.Surface]:
@@ -3445,7 +3696,126 @@ def _需要HOT标记(游玩次数: int) -> bool:
         return False
 
 
-_支持背景视频扩展名 = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v")
+def _取歌曲模式标记文本(歌: Optional["歌曲信息"]) -> str:
+    if 歌 is None:
+        return ""
+    try:
+        _按需补全歌曲模式标记字段(歌)
+    except Exception:
+        pass
+    try:
+        文本 = str(getattr(歌, "谱面模式标记", "") or "").strip()
+    except Exception:
+        文本 = ""
+    if 文本:
+        return 文本
+    try:
+        谱面类型 = str(getattr(歌, "谱面charttype", "") or "").strip().lower()
+    except Exception:
+        谱面类型 = ""
+    映射文本 = _推断谱面类型模式标记(谱面类型)
+    if 映射文本:
+        return 映射文本
+    try:
+        模式文本 = str(getattr(歌, "模式", "") or "").strip()
+    except Exception:
+        模式文本 = ""
+    模式小写 = 模式文本.lower()
+    if ("情侣" in 模式文本) or ("lover" in 模式小写):
+        return "情侣"
+    return ""
+
+
+def _取歌曲模式标记配色(模式标记: str) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+    文本 = str(模式标记 or "").strip()
+    if 文本 == "疯狂":
+        return (230, 96, 42), (255, 248, 238)
+    if 文本 == "表演":
+        return (45, 122, 222), (245, 250, 255)
+    if 文本 == "混音":
+        return (156, 72, 214), (251, 245, 255)
+    if 文本 == "情侣":
+        return (223, 82, 132), (255, 246, 250)
+    if 文本 == "双踏板":
+        return (34, 158, 150), (242, 255, 252)
+    return (70, 70, 78), (255, 255, 255)
+
+
+def _绘制歌曲模式标记(
+    屏幕: pygame.Surface,
+    锚点矩形: pygame.Rect,
+    歌: Optional["歌曲信息"],
+    *,
+    是否大图: bool = False,
+    透明度: int = 255,
+) -> None:
+    if not isinstance(屏幕, pygame.Surface):
+        return
+    if not isinstance(锚点矩形, pygame.Rect) or 锚点矩形.w <= 8 or 锚点矩形.h <= 8:
+        return
+
+    模式标记 = _取歌曲模式标记文本(歌)
+    if not 模式标记:
+        return
+
+    透明度 = max(0, min(255, int(透明度 or 0)))
+    if 透明度 <= 0:
+        return
+
+    最短边 = max(1, min(int(锚点矩形.w), int(锚点矩形.h)))
+    目标字号 = int(round(最短边 * (0.12 if 是否大图 else 0.16)))
+    最小字号 = 14 if bool(是否大图) else 10
+    字号 = max(最小字号, 目标字号)
+    最大宽 = max(28, int(round(float(锚点矩形.w) * (0.36 if 是否大图 else 0.54))))
+    背景色, 文字色 = _取歌曲模式标记配色(模式标记)
+
+    try:
+        字体 = 获取字体(字号, 是否粗体=True)
+        while 字号 > 最小字号 and 字体.size(模式标记)[0] > 最大宽:
+            字号 -= 1
+            字体 = 获取字体(字号, 是否粗体=True)
+        文字面 = 字体.render(模式标记, True, 文字色)
+    except Exception:
+        return
+
+    内边距x = max(6, int(round(字号 * (0.85 if 是否大图 else 0.70))))
+    内边距y = max(3, int(round(字号 * 0.38)))
+    圆角 = max(6, int(round(字号 * 0.48)))
+    标记宽 = max(文字面.get_width() + 内边距x * 2, int(round(字号 * 2.4)))
+    标记高 = max(文字面.get_height() + 内边距y * 2, int(round(字号 * 1.8)))
+    外边距 = max(4, int(round(最短边 * (0.04 if 是否大图 else 0.03))))
+
+    标记面 = pygame.Surface((标记宽, 标记高), pygame.SRCALPHA)
+    pygame.draw.rect(
+        标记面,
+        (0, 0, 0, max(0, int(透明度 * 0.22))),
+        pygame.Rect(2, 3, 标记宽 - 2, 标记高 - 2),
+        border_radius=圆角,
+    )
+    pygame.draw.rect(
+        标记面,
+        (背景色[0], 背景色[1], 背景色[2], int(透明度)),
+        pygame.Rect(0, 0, 标记宽, 标记高),
+        border_radius=圆角,
+    )
+    pygame.draw.rect(
+        标记面,
+        (255, 255, 255, max(0, int(透明度 * 0.50))),
+        pygame.Rect(0, 0, 标记宽, 标记高),
+        width=max(1, int(round(字号 * 0.08))),
+        border_radius=圆角,
+    )
+
+    文字矩形 = 文字面.get_rect(center=(标记宽 // 2, 标记高 // 2))
+    标记面.blit(文字面, 文字矩形.topleft)
+
+    绘制矩形 = 标记面.get_rect()
+    绘制矩形.top = int(锚点矩形.top + 外边距)
+    绘制矩形.right = int(锚点矩形.right - 外边距)
+    屏幕.blit(标记面, 绘制矩形.topleft)
+
+
+_支持背景视频扩展名 = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ogv")
 
 
 def _归一化资源名(文本: str) -> str:
@@ -3511,15 +3881,16 @@ def _查找歌曲目录背景视频(
     )
     return str(候选列表[0][2] or "")
 
-def 安全读取文本(文件路径: str) -> str:
+def 安全读取文本(文件路径: str, 最大字符数: int = 0) -> str:
+    读取长度 = int(最大字符数 or 0)
     for 编码 in ("utf-8-sig", "utf-8", "gbk"):
         try:
             with open(文件路径, "r", encoding=编码, errors="strict") as f:
-                return f.read()
+                return f.read(读取长度) if 读取长度 > 0 else f.read()
         except Exception:
             continue
     with open(文件路径, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
+        return f.read(读取长度) if 读取长度 > 0 else f.read()
 
 
 def 安全读取json(文件路径: str) -> Optional[dict]:
@@ -3535,17 +3906,49 @@ def 安全读取json(文件路径: str) -> Optional[dict]:
     except Exception:
         return None
 
+def _提取SM标签原始值(sm文本: str, 标签名: str) -> str:
+    try:
+        文本 = str(sm文本 or "").replace("\r\n", "\n").replace("\r", "\n")
+        标签 = str(标签名 or "").strip()
+        if (not 文本) or (not 标签):
+            return ""
+
+        匹配 = re.search(rf"(?im)^\s*#{re.escape(标签)}\s*:\s*", 文本)
+        if not 匹配:
+            return ""
+
+        起始 = int(匹配.end())
+        结束 = 起始
+        总长 = len(文本)
+        while 结束 < 总长:
+            当前字符 = 文本[结束]
+            if 当前字符 == ";":
+                break
+            if 当前字符 == "\n":
+                下标 = 结束 + 1
+                while 下标 < 总长 and 文本[下标] in (" ", "\t"):
+                    下标 += 1
+                if 下标 < 总长 and 文本[下标] == "#":
+                    break
+            结束 += 1
+
+        return str(文本[起始:结束] or "").strip()
+    except Exception:
+        return ""
+
+
 def _提取SM标签值(sm文本: str, 标签名: str) -> str:
-    if not sm文本:
+    原始值 = _提取SM标签原始值(sm文本, 标签名)
+    if not 原始值:
         return ""
-    匹配 = re.search(
-        rf"#{re.escape(str(标签名 or '').strip())}\s*:\s*(.*?)\s*;",
-        sm文本,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not 匹配:
-        return ""
-    return str(匹配.group(1) or "").strip()
+
+    行列表 = str(原始值).split("\n")
+    去注释后: List[str] = []
+    for 行 in 行列表:
+        if "//" in 行:
+            行 = 行.split("//", 1)[0]
+        去注释后.append(行)
+    return "".join(去注释后).strip()
 
 def _解析文本里的首个正数(文本: str) -> Optional[float]:
     if not 文本:
@@ -3607,21 +4010,50 @@ def _计算谱面列数(谱面数据文本: str) -> int:
         return 5
     return 5
 
+
+def _解析SMNotes块字段(块文本: str) -> Optional[dict]:
+    文本 = str(块文本 or "")
+    if not 文本.strip():
+        return None
+
+    标准字段 = 文本.split(":", 5)
+    if len(标准字段) >= 6:
+        return {
+            "charttype": str(标准字段[0] or "").strip().lower(),
+            "description_text": str(标准字段[1] or "").strip(),
+            "difficulty_text": str(标准字段[2] or "").strip(),
+            "meter_text": str(标准字段[3] or "").strip(),
+            "notes_text": str(标准字段[5] or ""),
+        }
+
+    舞推字段 = 文本.split(":", 4)
+    if len(舞推字段) >= 5:
+        return {
+            "charttype": str(舞推字段[0] or "").strip().lower(),
+            "description_text": str(舞推字段[1] or "").strip(),
+            "difficulty_text": str(舞推字段[2] or "").strip(),
+            "meter_text": str(舞推字段[3] or "").strip(),
+            "notes_text": str(舞推字段[4] or ""),
+        }
+
+    return None
+
+
 def _收集SM谱面候选信息(谱面文本: str) -> List[dict]:
     结果: List[dict] = []
 
     for 匹配 in re.finditer(r"#NOTES\s*:\s*(.*?);", 谱面文本, flags=re.IGNORECASE | re.DOTALL):
-        块文本 = str(匹配.group(1) or "")
-        段列表 = 块文本.split(":", 5)
-        if len(段列表) < 6:
+        字段 = _解析SMNotes块字段(str(匹配.group(1) or ""))
+        if not isinstance(字段, dict):
             continue
-
-        谱面类型 = str(段列表[0] or "").strip().lower()
-        星级文本 = str(段列表[3] or "").strip()
-        谱面数据文本 = str(段列表[5] or "")
+        谱面类型 = str(字段.get("charttype", "") or "")
+        星级文本 = str(字段.get("meter_text", "") or "")
+        谱面数据文本 = str(字段.get("notes_text", "") or "")
         结果.append(
             {
                 "charttype": 谱面类型,
+                "description_text": str(字段.get("description_text", "") or ""),
+                "difficulty_text": str(字段.get("difficulty_text", "") or ""),
                 "meter_text": 星级文本,
                 "notes_text": 谱面数据文本,
                 "bpms_text": "",
@@ -3640,6 +4072,8 @@ def _收集SM谱面候选信息(谱面文本: str) -> List[dict]:
         结果.append(
             {
                 "charttype": 谱面类型,
+                "description_text": "",
+                "difficulty_text": "",
                 "meter_text": 星级文本,
                 "notes_text": 谱面数据文本,
                 "bpms_text": _提取SM标签值(块文本, "BPMS"),
@@ -3656,8 +4090,14 @@ def _首选谱面优先级(charttype: str) -> int:
         return 50
     if "dance-single" in 谱面类型:
         return 45
+    if 谱面类型 == "hard":
+        return 42
     if "single" in 谱面类型:
         return 40
+    if 谱面类型 == "remix":
+        return 35
+    if 谱面类型 in {"lover1", "lover2"}:
+        return 18
     if "pump-double" in 谱面类型:
         return 30
     if "double" in 谱面类型:
@@ -3677,6 +4117,463 @@ def _选取首选谱面候选(候选列表: List[dict]) -> Optional[dict]:
         return (优先级, 列数)
 
     return max(候选列表, key=_排序键)
+
+
+_10位复合谱模式映射: Dict[str, str] = {
+    "hard": "疯狂",
+    "single": "表演",
+    "remix": "混音",
+    "double": "双踏板",
+    "lover": "情侣",
+}
+_10位复合谱模式别名: Dict[str, str] = {"lover1": "lover", "lover2": "lover"}
+_10位复合谱模式顺序: Dict[str, int] = {
+    "hard": 0,
+    "single": 1,
+    "remix": 2,
+    "double": 3,
+    "lover": 4,
+}
+
+
+def _标准化谱面候选文本(文本: str) -> str:
+    结果 = str(文本 or "").strip().lower()
+    结果 = re.sub(r"[\s_\-]+", "", 结果)
+    return str(结果)
+
+
+def _解析10位复合谱模式键(
+    charttype: str, description_text: str = "", difficulty_text: str = ""
+) -> str:
+    谱面类型 = str(charttype or "").strip().lower()
+    if 谱面类型 in _10位复合谱模式映射:
+        return str(谱面类型)
+    别名模式 = str(_10位复合谱模式别名.get(谱面类型, "") or "")
+    if 别名模式:
+        return 别名模式
+
+    描述标准 = _标准化谱面候选文本(description_text)
+    难度标准 = _标准化谱面候选文本(difficulty_text)
+    if any(
+        关键词 in 描述标准 or 关键词 in 难度标准
+        for 关键词 in ("lover1", "lover2", "lover", "情侣")
+    ):
+        return "lover"
+    return ""
+
+
+def _推断情侣模式charttype(
+    charttype: str, description_text: str = "", difficulty_text: str = ""
+) -> str:
+    谱面类型 = str(charttype or "").strip().lower()
+    if 谱面类型 in {"lover1", "lover2"}:
+        return str(谱面类型)
+
+    描述标准 = _标准化谱面候选文本(description_text)
+    难度标准 = _标准化谱面候选文本(difficulty_text)
+    if ("lover2" in 描述标准) or ("lover2" in 难度标准):
+        return "lover2"
+    return "lover1"
+
+
+def _是否10位复合谱候选(
+    charttype: str,
+    列数: int,
+    description_text: str = "",
+    difficulty_text: str = "",
+) -> bool:
+    谱面类型 = str(charttype or "").strip().lower()
+    try:
+        总列数 = int(列数 or 0)
+    except Exception:
+        总列数 = 0
+    模式键 = _解析10位复合谱模式键(
+        谱面类型,
+        description_text=description_text,
+        difficulty_text=difficulty_text,
+    )
+    return 总列数 in (10, 20) and bool(模式键)
+
+
+def _解析复合谱level星级(*候选文本: str) -> Optional[int]:
+    for 文本 in 候选文本:
+        匹配 = re.search(r"(?i)\blevel\s*([0-9]+)\b", str(文本 or "").strip())
+        if not 匹配:
+            continue
+        try:
+            星级 = int(匹配.group(1))
+        except Exception:
+            continue
+        if 星级 > 0:
+            return max(1, min(20, 星级))
+    return None
+
+
+def _解析谱面候选星级(谱面信息: dict) -> Optional[int]:
+    if not isinstance(谱面信息, dict):
+        return None
+
+    谱面类型 = str(谱面信息.get("charttype", "") or "").strip().lower()
+    try:
+        列数 = int(谱面信息.get("columns", 0) or 0)
+    except Exception:
+        列数 = 0
+
+    描述文本 = str(谱面信息.get("description_text", "") or "")
+    难度文本 = str(谱面信息.get("difficulty_text", "") or "")
+    if _是否10位复合谱候选(
+        谱面类型,
+        列数,
+        description_text=描述文本,
+        difficulty_text=难度文本,
+    ):
+        level星级 = _解析复合谱level星级(
+            描述文本,
+            难度文本,
+        )
+        if level星级 is not None:
+            return int(level星级)
+
+    星级数值 = _解析文本里的首个正数(str(谱面信息.get("meter_text", "") or ""))
+    if 星级数值 is None:
+        return None
+    try:
+        星级 = int(round(float(星级数值)))
+    except Exception:
+        return None
+    if 星级 <= 0:
+        return None
+    return max(1, min(20, 星级))
+
+
+def _提取10位复合谱模式条目(谱面候选列表: List[dict]) -> List[dict]:
+    if not isinstance(谱面候选列表, list):
+        return []
+
+    模式最佳候选: Dict[str, dict] = {}
+    for 谱面信息 in 谱面候选列表:
+        if not isinstance(谱面信息, dict):
+            continue
+        谱面类型 = str(谱面信息.get("charttype", "") or "").strip().lower()
+        描述文本 = str(谱面信息.get("description_text", "") or "")
+        难度文本 = str(谱面信息.get("difficulty_text", "") or "")
+        try:
+            列数 = int(谱面信息.get("columns", 0) or 0)
+        except Exception:
+            列数 = 0
+        模式键 = _解析10位复合谱模式键(
+            谱面类型,
+            description_text=描述文本,
+            difficulty_text=难度文本,
+        )
+        if (not 模式键) or (
+            not _是否10位复合谱候选(
+                谱面类型,
+                列数,
+                description_text=描述文本,
+                difficulty_text=难度文本,
+            )
+        ):
+            continue
+
+        模式标记 = _10位复合谱模式映射.get(模式键, "")
+        if not 模式标记:
+            continue
+
+        记录charttype = (
+            _推断情侣模式charttype(谱面类型, 描述文本, 难度文本)
+            if 模式键 == "lover"
+            else 谱面类型
+        )
+        星级 = _解析谱面候选星级(谱面信息)
+        当前条目 = {
+            "charttype": str(记录charttype),
+            "模式键": str(模式键),
+            "模式标记": 模式标记,
+            "星级": int(星级) if 星级 is not None else None,
+            "columns": int(列数),
+            "meter_text": str(谱面信息.get("meter_text", "") or ""),
+        }
+        已有条目 = 模式最佳候选.get(模式键)
+        if 已有条目 is None:
+            模式最佳候选[模式键] = 当前条目
+            continue
+
+        旧星级 = 已有条目.get("星级")
+        新星级 = 当前条目.get("星级")
+        if int(新星级 or 0) > int(旧星级 or 0):
+            模式最佳候选[模式键] = 当前条目
+            continue
+        if int(新星级 or 0) == int(旧星级 or 0) and int(列数) > int(
+            已有条目.get("columns", 0) or 0
+        ):
+            模式最佳候选[模式键] = 当前条目
+            continue
+        if (
+            str(模式键) == "lover"
+            and int(新星级 or 0) == int(旧星级 or 0)
+            and int(列数) == int(已有条目.get("columns", 0) or 0)
+        ):
+            旧charttype = str(已有条目.get("charttype", "") or "").strip().lower()
+            新charttype = str(当前条目.get("charttype", "") or "").strip().lower()
+            if 旧charttype == "lover2" and 新charttype == "lover1":
+                模式最佳候选[模式键] = 当前条目
+
+    return sorted(
+        模式最佳候选.values(),
+        key=lambda 项: (
+            int(_10位复合谱模式顺序.get(str(项.get("模式键", "") or ""), 999)),
+            str(项.get("模式键", "") or ""),
+        ),
+    )
+
+
+def _解析模式文本到复合谱模式键(模式文本: str) -> str:
+    文本 = str(模式文本 or "").strip().lower()
+    if not 文本:
+        return ""
+    if ("疯狂" in 文本) or ("hard" in 文本):
+        return "hard"
+    if ("表演" in 文本) or ("single" in 文本):
+        return "single"
+    if ("混音" in 文本) or ("remix" in 文本):
+        return "remix"
+    if ("双踏板" in 文本) or ("double" in 文本):
+        return "double"
+    if ("情侣" in 文本) or ("lover" in 文本):
+        return "lover"
+    return ""
+
+
+def _按模式键选取复合谱条目(条目列表: List[dict], 模式文本: str) -> Optional[dict]:
+    if not isinstance(条目列表, list) or (not 条目列表):
+        return None
+    目标模式键 = _解析模式文本到复合谱模式键(模式文本)
+    if 目标模式键:
+        for 条目 in 条目列表:
+            if not isinstance(条目, dict):
+                continue
+            if str(条目.get("模式键", "") or "").strip().lower() == 目标模式键:
+                return 条目
+    for 条目 in 条目列表:
+        if isinstance(条目, dict):
+            return 条目
+    return None
+
+
+def _推断谱面类型模式标记(
+    charttype: str, description_text: str = "", difficulty_text: str = ""
+) -> str:
+    谱面类型 = str(charttype or "").strip().lower()
+    模式键 = _解析10位复合谱模式键(
+        谱面类型,
+        description_text=description_text,
+        difficulty_text=difficulty_text,
+    )
+    模式标记 = str(_10位复合谱模式映射.get(模式键, "") or "")
+    if 模式标记:
+        return 模式标记
+
+    if 谱面类型 in {"lover1", "lover2"}:
+        return "情侣"
+    if "double" in 谱面类型:
+        return "双踏板"
+    if "remix" in 谱面类型:
+        return "混音"
+    if 谱面类型 == "hard":
+        return "疯狂"
+    if "single" in 谱面类型:
+        return "表演"
+    return ""
+
+
+def _解析SM模式标记候选信息(sm路径: str) -> dict:
+    空结果 = {"复合谱模式条目": [], "首选charttype": "", "首选模式标记": ""}
+    路径 = os.path.abspath(str(sm路径 or "").strip()) if str(sm路径 or "").strip() else ""
+    if (not 路径) or (not os.path.isfile(路径)):
+        return dict(空结果)
+    if os.path.splitext(路径)[1].lower() not in {".sm", ".ssc", ".sma"}:
+        return dict(空结果)
+
+    缓存键 = (路径, _取文件修改时间秒(路径))
+    缓存命中 = _读取懒解析模式标记缓存(缓存键)
+    if isinstance(缓存命中, dict):
+        return dict(缓存命中)
+
+    global _懒解析模式标记日志已输出
+    if (not bool(_懒解析模式标记日志已输出)) and bool(_启用懒解析模式标记()):
+        try:
+            _记录信息日志(
+                _日志器,
+                "已启用懒解析模式标记：仅在绘制角标时按需解析SM谱面类型",
+            )
+        except Exception:
+            pass
+        _懒解析模式标记日志已输出 = True
+
+    结果 = dict(空结果)
+    需要关闭GC = bool(_启用稳定谱面解析模式())
+    曾关闭GC = _进入稳定GC区间(需要关闭GC)
+    try:
+        sm文本 = 安全读取文本(
+            路径,
+            最大字符数=600000 if 需要关闭GC else 0,
+        )
+        if sm文本:
+            谱面候选列表 = _收集SM谱面候选信息(sm文本)
+            if 谱面候选列表:
+                复合谱条目 = _提取10位复合谱模式条目(谱面候选列表)
+                if 复合谱条目:
+                    结果["复合谱模式条目"] = [
+                        条目
+                        for 条目 in 复合谱条目
+                        if isinstance(条目, dict)
+                    ]
+
+                首选谱面 = _选取首选谱面候选(谱面候选列表)
+                if isinstance(首选谱面, dict):
+                    谱面类型 = str(首选谱面.get("charttype", "") or "").strip().lower()
+                    if 谱面类型:
+                        结果["首选charttype"] = 谱面类型
+                        结果["首选模式标记"] = _推断谱面类型模式标记(
+                            谱面类型,
+                            description_text=str(
+                                首选谱面.get("description_text", "") or ""
+                            ),
+                            difficulty_text=str(
+                                首选谱面.get("difficulty_text", "") or ""
+                            ),
+                        )
+    except Exception:
+        pass
+    finally:
+        _离开稳定GC区间(曾关闭GC)
+
+    _写入懒解析模式标记缓存(缓存键, 结果)
+    return dict(结果)
+
+
+def _按需补全歌曲模式标记字段(歌: Optional["歌曲信息"]) -> None:
+    if 歌 is None:
+        return
+    if not bool(_启用懒解析模式标记()):
+        return
+
+    try:
+        现有模式标记 = str(getattr(歌, "谱面模式标记", "") or "").strip()
+    except Exception:
+        现有模式标记 = ""
+    if 现有模式标记:
+        return
+
+    try:
+        现有谱面类型 = str(getattr(歌, "谱面charttype", "") or "").strip().lower()
+    except Exception:
+        现有谱面类型 = ""
+    try:
+        sm路径 = str(getattr(歌, "sm路径", "") or "").strip()
+    except Exception:
+        sm路径 = ""
+    if (not sm路径) or (not os.path.isfile(sm路径)):
+        return
+
+    def _标记已尝试() -> None:
+        try:
+            setattr(歌, "_懒解析模式标记已尝试", True)
+        except Exception:
+            pass
+
+    # 已有charttype时直接补记录键，避免重复读盘。
+    if 现有谱面类型:
+        try:
+            现有记录键 = str(getattr(歌, "记录键sm路径", "") or "").strip()
+        except Exception:
+            现有记录键 = ""
+        if (not 现有记录键) or ("::charttype=" not in 现有记录键.lower()):
+            try:
+                setattr(歌, "记录键sm路径", _构建谱面记录键路径(sm路径, 现有谱面类型))
+            except Exception:
+                pass
+        _标记已尝试()
+        return
+
+    try:
+        if bool(getattr(歌, "_懒解析模式标记已尝试", False)):
+            return
+    except Exception:
+        pass
+
+    _标记已尝试()
+
+    if os.path.splitext(sm路径)[1].lower() not in {".sm", ".ssc", ".sma"}:
+        return
+
+    解析结果 = _解析SM模式标记候选信息(sm路径)
+    if not isinstance(解析结果, dict):
+        return
+
+    目标条目 = _按模式键选取复合谱条目(
+        解析结果.get("复合谱模式条目", []),
+        str(getattr(歌, "模式", "") or ""),
+    )
+
+    解析谱面类型 = ""
+    解析模式标记 = ""
+    是否复合谱 = False
+    if isinstance(目标条目, dict):
+        解析谱面类型 = str(目标条目.get("charttype", "") or "").strip().lower()
+        解析模式标记 = str(目标条目.get("模式标记", "") or "").strip()
+        是否复合谱 = bool(解析谱面类型 and 解析模式标记)
+    else:
+        解析谱面类型 = str(解析结果.get("首选charttype", "") or "").strip().lower()
+        解析模式标记 = str(解析结果.get("首选模式标记", "") or "").strip()
+
+    if not 解析谱面类型 and not 解析模式标记:
+        return
+
+    try:
+        if 解析谱面类型:
+            setattr(歌, "谱面charttype", 解析谱面类型)
+    except Exception:
+        pass
+    try:
+        if 解析模式标记:
+            setattr(歌, "谱面模式标记", 解析模式标记)
+    except Exception:
+        pass
+    try:
+        if 解析谱面类型:
+            setattr(歌, "记录键sm路径", _构建谱面记录键路径(sm路径, 解析谱面类型))
+    except Exception:
+        pass
+    if 是否复合谱:
+        try:
+            setattr(歌, "是否10位复合谱", True)
+        except Exception:
+            pass
+
+
+def _构建谱面记录键路径(sm路径: str, charttype: str = "") -> str:
+    路径文本 = str(sm路径 or "").strip()
+    谱面类型 = str(charttype or "").strip().lower()
+    if (not 路径文本) or (not 谱面类型):
+        return 路径文本
+    return f"{路径文本}::charttype={谱面类型}"
+
+
+def _取歌曲记录路径源(歌: Optional["歌曲信息"]) -> str:
+    if 歌 is None:
+        return ""
+    try:
+        记录键路径 = str(getattr(歌, "记录键sm路径", "") or "").strip()
+    except Exception:
+        记录键路径 = ""
+    if 记录键路径:
+        return 记录键路径
+    try:
+        return str(getattr(歌, "sm路径", "") or "").strip()
+    except Exception:
+        return ""
 
 def 解析显示BPM(sm文本: str) -> Optional[int]:
     显示BPM原始 = _提取SM标签值(sm文本, "DISPLAYBPM")
@@ -3776,17 +4673,8 @@ def _解析SM谱面星级(sm文本: str) -> Optional[int]:
     候选列表: List[Tuple[int, int]] = []
     for 谱面信息 in _收集SM谱面候选信息(sm文本):
         谱面类型 = str(谱面信息.get("charttype", "") or "").strip().lower()
-        星级原始 = str(谱面信息.get("meter_text", "") or "").strip()
-        星级数值 = _解析文本里的首个正数(星级原始)
-        if 星级数值 is None:
-            continue
-
-        try:
-            星级 = int(round(float(星级数值)))
-        except Exception:
-            continue
-
-        if 星级 <= 0:
+        星级 = _解析谱面候选星级(谱面信息)
+        if 星级 is None:
             continue
 
         优先级 = 0
@@ -3794,8 +4682,14 @@ def _解析SM谱面星级(sm文本: str) -> Optional[int]:
             优先级 = 50
         elif "dance-single" in 谱面类型:
             优先级 = 45
+        elif 谱面类型 == "hard":
+            优先级 = 42
         elif "single" in 谱面类型:
             优先级 = 40
+        elif 谱面类型 == "remix":
+            优先级 = 35
+        elif 谱面类型 in {"lover1", "lover2"}:
+            优先级 = 18
         elif "pump-double" in 谱面类型:
             优先级 = 30
         elif "double" in 谱面类型:
@@ -3814,25 +4708,80 @@ def _解析SM谱面星级(sm文本: str) -> Optional[int]:
         return None
     return max(1, min(20, max(同优先级候选)))
 
-def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Optional["歌曲信息"]:
+def _构建歌曲信息对象(
+    *,
+    类型名: str,
+    模式名: str,
+    歌曲文件夹: str,
+    歌曲路径: str,
+    sm路径: str,
+    音频路径: Optional[str],
+    封面路径: Optional[str],
+    歌名: str,
+    星级: int,
+    bpm: Optional[int],
+    背景视频路径: str,
+    谱面charttype: str = "",
+    谱面模式标记: str = "",
+    是否10位复合谱: bool = False,
+) -> "歌曲信息":
+    谱面类型 = str(谱面charttype or "").strip().lower()
+    return 歌曲信息(
+        序号=0,
+        类型=str(类型名 or ""),
+        模式=str(模式名 or ""),
+        歌曲文件夹=歌曲文件夹,
+        歌曲路径=歌曲路径,
+        sm路径=sm路径,
+        mp3路径=音频路径,
+        封面路径=封面路径,
+        歌名=歌名,
+        星级=max(1, int(星级 or 1)),
+        bpm=bpm,
+        是否VIP=bool(int(星级 or 0) >= 5),
+        游玩次数=0,
+        是否带MV=bool(str(背景视频路径 or "").strip()),
+        谱面charttype=谱面类型,
+        谱面模式标记=str(谱面模式标记 or ""),
+        记录键sm路径=_构建谱面记录键路径(sm路径, 谱面类型),
+        是否10位复合谱=bool(是否10位复合谱),
+    )
+
+
+def 解析歌曲元数据列表(sm路径: str, 类型名: str, 模式名: str) -> List["歌曲信息"]:
+    global _稳定谱面解析模式日志已输出
     if (not sm路径) or (not os.path.isfile(sm路径)):
-        return None
+        return []
+    _记录扫描谱面路径(sm路径, 类型名, 模式名)
 
     歌曲路径 = os.path.dirname(sm路径)
     歌曲文件夹 = os.path.basename(歌曲路径)
     if str(歌曲文件夹 or "").strip().lower() in {"backup", "backups"}:
-        return None
+        return []
     扩展名 = os.path.splitext(sm路径)[1].lower()
     sm文本 = ""
     json数据 = None
+    稳定谱面解析模式 = bool((扩展名 != ".json") and _启用稳定谱面解析模式())
     if 扩展名 == ".json":
         json数据 = 安全读取json(sm路径)
         if (not isinstance(json数据, dict)) or (
             ("boards" not in json数据) and ("bpms" not in json数据)
         ):
-            return None
+            return []
     else:
-        sm文本 = 安全读取文本(sm路径)
+        sm文本 = 安全读取文本(
+            sm路径,
+            最大字符数=600000 if 稳定谱面解析模式 else 0,
+        )
+        if 稳定谱面解析模式 and (not bool(_稳定谱面解析模式日志已输出)):
+            try:
+                _记录信息日志(
+                    _日志器,
+                    "已启用稳定谱面解析模式：打包环境跳过SM深度解析（列数/复合谱拆分）",
+                )
+            except Exception:
+                pass
+            _稳定谱面解析模式日志已输出 = True
 
     音频路径 = 找文件(歌曲路径, (".ogg", ".mp3", ".wav"))
     封面路径 = 找封面(歌曲路径)
@@ -3849,18 +4798,29 @@ def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Opti
     else:
         bpm = 解析显示BPM(sm文本)
     歌名, 星级 = 从文件夹名解析歌名星级(歌曲文件夹)
+    复合谱模式条目: List[dict] = []
     if 扩展名 != ".json":
-        首选谱面 = _选取首选谱面候选(_收集SM谱面候选信息(sm文本))
-        if 首选谱面 is not None:
-            谱面BPMS文本 = str(首选谱面.get("bpms_text", "") or "").strip()
-            if 谱面BPMS文本:
-                谱面BPM = _解析BPMS标签首个BPM(谱面BPMS文本)
-                if 谱面BPM is not None:
-                    bpm = int(round(float(谱面BPM)))
+        if not 稳定谱面解析模式:
+            try:
+                谱面候选列表 = _收集SM谱面候选信息(sm文本)
+                首选谱面 = _选取首选谱面候选(谱面候选列表)
+                if 首选谱面 is not None:
+                    谱面BPMS文本 = str(首选谱面.get("bpms_text", "") or "").strip()
+                    if 谱面BPMS文本:
+                        谱面BPM = _解析BPMS标签首个BPM(谱面BPMS文本)
+                        if 谱面BPM is not None:
+                            bpm = int(round(float(谱面BPM)))
 
-        谱面星级 = _解析SM谱面星级(sm文本)
-        if 谱面星级 is not None:
-            星级 = int(谱面星级)
+                谱面星级 = _解析SM谱面星级(sm文本)
+                if 谱面星级 is not None:
+                    星级 = int(谱面星级)
+                复合谱模式条目 = _提取10位复合谱模式条目(谱面候选列表)
+            except Exception as 异常:
+                _记录异常日志(
+                    _日志器,
+                    f"SM深度解析失败，已回退轻量解析 sm路径={sm路径}",
+                    异常,
+                )
 
     if "#" not in str(歌曲文件夹 or ""):
         if 扩展名 == ".json":
@@ -3872,22 +4832,55 @@ def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Opti
             if sm标题:
                 歌名 = sm标题
 
-    return 歌曲信息(
-        序号=0,
-        类型=str(类型名 or ""),
-        模式=str(模式名 or ""),
-        歌曲文件夹=歌曲文件夹,
-        歌曲路径=歌曲路径,
-        sm路径=sm路径,
-        mp3路径=音频路径,
-        封面路径=封面路径,
-        歌名=歌名,
-        星级=max(1, int(星级 or 1)),
-        bpm=bpm,
-        是否VIP=bool(int(星级 or 0) >= 5),
-        游玩次数=0,
-        是否带MV=bool(str(背景视频路径 or "").strip()),
-    )
+    if 复合谱模式条目:
+        结果列表: List[歌曲信息] = []
+        for 条目 in 复合谱模式条目:
+            try:
+                条目星级 = int(条目.get("星级", 星级) or 星级)
+            except Exception:
+                条目星级 = int(星级)
+            结果列表.append(
+                _构建歌曲信息对象(
+                    类型名=类型名,
+                    模式名=模式名,
+                    歌曲文件夹=歌曲文件夹,
+                    歌曲路径=歌曲路径,
+                    sm路径=sm路径,
+                    音频路径=音频路径,
+                    封面路径=封面路径,
+                    歌名=歌名,
+                    星级=条目星级,
+                    bpm=bpm,
+                    背景视频路径=str(背景视频路径 or ""),
+                    谱面charttype=str(条目.get("charttype", "") or ""),
+                    谱面模式标记=str(条目.get("模式标记", "") or ""),
+                    是否10位复合谱=True,
+                )
+            )
+        return 结果列表
+
+    return [
+        _构建歌曲信息对象(
+            类型名=类型名,
+            模式名=模式名,
+            歌曲文件夹=歌曲文件夹,
+            歌曲路径=歌曲路径,
+            sm路径=sm路径,
+            音频路径=音频路径,
+            封面路径=封面路径,
+            歌名=歌名,
+            星级=max(1, int(星级 or 1)),
+            bpm=bpm,
+            背景视频路径=str(背景视频路径 or ""),
+        )
+    ]
+
+
+def 解析歌曲元数据(sm路径: str, 类型名: str, 模式名: str) -> Optional["歌曲信息"]:
+    结果列表 = 解析歌曲元数据列表(sm路径, 类型名, 模式名)
+    if not 结果列表:
+        return None
+    return 结果列表[0]
 
 def 找文件(目录: str, 扩展名集合: Tuple[str, ...]) -> Optional[str]:
     if not os.path.isdir(目录):
@@ -3949,19 +4942,89 @@ def _收集候选谱面文件(根目录: str) -> List[str]:
 
     return [每目录最佳文件[k] for k in sorted(每目录最佳文件.keys(), key=str.casefold)]
 
+@_串行化歌曲扫描
 def 扫描songs目录(songs根目录: str) -> Dict[str, Dict[str, List[歌曲信息]]]:
     结果: Dict[str, Dict[str, List[歌曲信息]]] = {}
     根目录 = os.path.abspath(str(songs根目录 or "").strip())
     if not os.path.isdir(根目录):
         return 结果
 
+    try:
+        _记录信息日志(
+            _日志器,
+            (
+                "开始全量扫描songs目录 "
+                f"渲染后端={str(os.environ.get('E5CM_RENDER_BACKEND', '') or '-')} "
+                f"根目录={根目录}"
+            ),
+        )
+    except Exception:
+        pass
+
     缓存键 = _构建全量扫描缓存键(根目录)
     缓存命中 = _读取歌曲扫描缓存(缓存键)
     if 缓存命中 is not None:
-        return 缓存命中
+        命中歌曲数 = _统计数据树歌曲总数(缓存命中)
+        if 命中歌曲数 > 0:
+            try:
+                _记录信息日志(
+                    _日志器,
+                    f"命中全量扫描缓存 songs根目录={根目录} 歌曲数={命中歌曲数}",
+                )
+            except Exception:
+                pass
+            return 缓存命中
+        if not _目录含候选谱面文件(根目录, 最大命中数=1):
+            try:
+                _记录信息日志(
+                    _日志器,
+                    f"命中空扫描缓存且目录无谱面 songs根目录={根目录}",
+                )
+            except Exception:
+                pass
+            return 缓存命中
+        try:
+            _记录警告日志(
+                _日志器,
+                f"命中空扫描缓存但目录存在谱面，已忽略缓存并重新扫描 songs根目录={根目录}",
+            )
+        except Exception:
+            pass
+
     缓存命中 = _按前缀读取歌曲扫描缓存(("all", 根目录))
     if 缓存命中 is not None:
-        return 缓存命中
+        命中歌曲数 = _统计数据树歌曲总数(缓存命中)
+        if 命中歌曲数 > 0:
+            try:
+                _记录信息日志(
+                    _日志器,
+                    (
+                        "命中全量前缀缓存 "
+                        f"songs根目录={根目录} 歌曲数={命中歌曲数}"
+                    ),
+                )
+            except Exception:
+                pass
+            return 缓存命中
+        if not _目录含候选谱面文件(根目录, 最大命中数=1):
+            try:
+                _记录信息日志(
+                    _日志器,
+                    f"命中全量前缀空缓存且目录无谱面 songs根目录={根目录}",
+                )
+            except Exception:
+                pass
+            return 缓存命中
+        try:
+            _记录警告日志(
+                _日志器,
+                (
+                    "命中全量前缀空缓存但目录存在谱面，已忽略缓存并重新扫描 "
+                    f"songs根目录={根目录}"
+                ),
+            )
+        except Exception:
+            pass
 
     临时收集: Dict[Tuple[str, str], List[歌曲信息]] = {}
 
@@ -3973,15 +5036,23 @@ def 扫描songs目录(songs根目录: str) -> Dict[str, Dict[str, List[歌曲信
 
         类型名 = parts[0]
         模式名 = parts[1]
-        歌 = 解析歌曲元数据(sm路径, 类型名, 模式名)
-        if 歌 is None:
+        try:
+            歌曲列表 = 解析歌曲元数据列表(sm路径, 类型名, 模式名)
+        except Exception as 异常:
+            _记录异常日志(
+                _日志器,
+                f"解析歌曲元数据失败，已跳过文件 sm路径={sm路径}",
+                异常,
+            )
+            continue
+        if not 歌曲列表:
             continue
 
         键 = (类型名, 模式名)
         if 键 not in 临时收集:
             临时收集[键] = []
 
-        临时收集[键].append(歌)
+        临时收集[键].extend(歌曲列表)
 
     def _排序键(歌: 歌曲信息):
         try:
@@ -4007,9 +5078,32 @@ def 扫描songs目录(songs根目录: str) -> Dict[str, Dict[str, List[歌曲信
             结果[类型名] = {}
         结果[类型名][模式名] = 列表
 
-    _写入歌曲扫描缓存(缓存键, 结果)
+    扫描歌曲数 = _统计数据树歌曲总数(结果)
+    存在候选谱面 = _目录含候选谱面文件(根目录, 最大命中数=1)
+    if 扫描歌曲数 > 0 or (not 存在候选谱面):
+        _写入歌曲扫描缓存(缓存键, 结果)
+    else:
+        try:
+            _记录警告日志(
+                _日志器,
+                (
+                    "全量扫描结果为空但目录存在谱面，跳过写入空缓存以避免后续误命中 "
+                    f"songs根目录={根目录}"
+                ),
+            )
+        except Exception:
+            pass
+
+    try:
+        _记录信息日志(
+            _日志器,
+            f"完成全量扫描songs目录 根目录={根目录} 歌曲数={扫描歌曲数}",
+        )
+    except Exception:
+        pass
     return 结果
 
+@_串行化歌曲扫描
 def 扫描songs_指定路径(
     songs根目录: str, 类型名: str, 模式名: str
 ) -> Dict[str, Dict[str, List[歌曲信息]]]:
@@ -4056,6 +5150,18 @@ def 扫描songs_指定路径(
     if not os.path.isdir(模式目录):
         return 结果
 
+    try:
+        _记录信息日志(
+            _日志器,
+            (
+                "开始指定路径扫描 "
+                f"渲染后端={str(os.environ.get('E5CM_RENDER_BACKEND', '') or '-')} "
+                f"根目录={根目录} 类型={目标类型} 模式={目标模式}"
+            ),
+        )
+    except Exception:
+        pass
+
     缓存键 = _构建指定扫描缓存键(
         songs根目录=根目录,
         类型目录=类型目录,
@@ -4065,12 +5171,61 @@ def 扫描songs_指定路径(
     )
     缓存命中 = _读取歌曲扫描缓存(缓存键)
     if 缓存命中 is not None:
-        return 缓存命中
+        命中歌曲数 = _统计数据树歌曲总数(缓存命中)
+        if 命中歌曲数 > 0:
+            try:
+                _记录信息日志(
+                    _日志器,
+                    (
+                        "命中指定扫描缓存 "
+                        f"类型={目标类型} 模式={目标模式} 歌曲数={命中歌曲数}"
+                    ),
+                )
+            except Exception:
+                pass
+            return 缓存命中
+        if not _目录含候选谱面文件(模式目录, 最大命中数=1):
+            return 缓存命中
+        try:
+            _记录警告日志(
+                _日志器,
+                (
+                    "命中指定扫描空缓存但目录存在谱面，已忽略缓存并重新扫描 "
+                    f"类型={目标类型} 模式={目标模式}"
+                ),
+            )
+        except Exception:
+            pass
+
     缓存命中 = _按前缀读取歌曲扫描缓存(
         ("specified", 根目录, _归一化目录名(目标类型), _归一化目录名(目标模式))
     )
     if 缓存命中 is not None:
-        return 缓存命中
+        命中歌曲数 = _统计数据树歌曲总数(缓存命中)
+        if 命中歌曲数 > 0:
+            try:
+                _记录信息日志(
+                    _日志器,
+                    (
+                        "命中指定前缀缓存 "
+                        f"类型={目标类型} 模式={目标模式} 歌曲数={命中歌曲数}"
+                    ),
+                )
+            except Exception:
+                pass
+            return 缓存命中
+        if not _目录含候选谱面文件(模式目录, 最大命中数=1):
+            return 缓存命中
+        try:
+            _记录警告日志(
+                _日志器,
+                (
+                    "命中指定前缀空缓存但目录存在谱面，已忽略缓存并重新扫描 "
+                    f"类型={目标类型} 模式={目标模式}"
+                ),
+            )
+        except Exception:
+            pass
 
     收集: List[歌曲信息] = []
 
@@ -4086,9 +5241,17 @@ def 扫描songs_指定路径(
 
         类型名_实际 = parts[0]
         模式名_实际 = parts[1]
-        歌 = 解析歌曲元数据(sm路径, 类型名_实际, 模式名_实际)
-        if 歌 is not None:
-            收集.append(歌)
+        try:
+            歌曲列表 = 解析歌曲元数据列表(sm路径, 类型名_实际, 模式名_实际)
+        except Exception as 异常:
+            _记录异常日志(
+                _日志器,
+                f"解析歌曲元数据失败（指定路径扫描），已跳过文件 sm路径={sm路径}",
+                异常,
+            )
+            continue
+        if 歌曲列表:
+            收集.extend(歌曲列表)
 
     def _排序键(歌: 歌曲信息):
         try:
@@ -4111,7 +5274,32 @@ def 扫描songs_指定路径(
     else:
         结果 = {}
 
-    _写入歌曲扫描缓存(缓存键, 结果)
+    扫描歌曲数 = _统计数据树歌曲总数(结果)
+    存在候选谱面 = _目录含候选谱面文件(模式目录, 最大命中数=1)
+    if 扫描歌曲数 > 0 or (not 存在候选谱面):
+        _写入歌曲扫描缓存(缓存键, 结果)
+    else:
+        try:
+            _记录警告日志(
+                _日志器,
+                (
+                    "指定扫描结果为空但目录存在谱面，跳过写入空缓存以避免后续误命中 "
+                    f"类型={目标类型} 模式={目标模式} 模式目录={模式目录}"
+                ),
+            )
+        except Exception:
+            pass
+
+    try:
+        _记录信息日志(
+            _日志器,
+            (
+                "完成指定路径扫描 "
+                f"根目录={根目录} 类型={目标类型} 模式={目标模式} 歌曲数={扫描歌曲数}"
+            ),
+        )
+    except Exception:
+        pass
     return 结果
 
 class 图像缓存(_本地图片缓存):
@@ -4987,6 +6175,16 @@ class 歌曲卡片:
                 框矩形,
                 pedal_highlight=bool(self.踏板高亮),
             )
+        try:
+            _绘制歌曲模式标记(
+                屏幕,
+                self.封面矩形,
+                self.歌曲,
+                是否大图=False,
+                透明度=255,
+            )
+        except Exception:
+            pass
 
 class 选歌游戏:
 
@@ -4999,14 +6197,8 @@ class 选歌游戏:
         玩家数: int = 1,
         是否继承已有窗口: Optional[bool] = None,
     ):
-        pygame.init()
-
-        self.音频可用 = True
-        try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-        except Exception:
-            self.音频可用 = False
+        _确保pygame基础模块已初始化()
+        self.音频可用 = bool(_确保混音器已初始化())
 
         pygame.display.set_caption("e舞成名 选歌界面（Pygame）")
 
@@ -5082,6 +6274,7 @@ class 选歌游戏:
         self.是否详情页 = False
         self.当前选择原始索引 = 0
         self.详情大框矩形 = pygame.Rect(0, 0, 0, 0)
+        self.详情封面矩形 = pygame.Rect(0, 0, 0, 0)
         self.是否星级筛选页 = False
         self.当前筛选星级: Optional[int] = None
         self.星级按钮列表: List[Tuple[int, 按钮]] = []
@@ -5119,17 +6312,67 @@ class 选歌游戏:
                 self.数据树 = 扫描songs_指定路径(
                     self.songs根目录, self.指定类型名, self.指定模式名
                 )
-            except Exception:
+            except Exception as 异常:
+                _记录异常日志(
+                    _日志器,
+                    (
+                        "扫描songs_指定路径失败，已回退全量扫描 "
+                        f"songs根目录={self.songs根目录} "
+                        f"类型={self.指定类型名} 模式={self.指定模式名}"
+                    ),
+                    异常,
+                )
                 self.数据树 = {}
 
         if not self.数据树:
             try:
                 self.数据树 = 扫描songs目录(self.songs根目录)
-            except Exception:
+            except Exception as 异常:
+                _记录异常日志(
+                    _日志器,
+                    f"扫描songs目录失败 songs根目录={self.songs根目录}",
+                    异常,
+                )
                 self.数据树 = {}
 
+        try:
+            歌曲总数 = int(
+                sum(
+                    len(列表)
+                    for 模式映射 in self.数据树.values()
+                    if isinstance(模式映射, dict)
+                    for 列表 in 模式映射.values()
+                    if isinstance(列表, list)
+                )
+            )
+            _记录信息日志(
+                _日志器,
+                (
+                    "选歌扫描完成 "
+                    f"songs根目录={self.songs根目录} "
+                    f"类型数={len(self.数据树)} 歌曲数={歌曲总数} "
+                    f"指定类型={self.指定类型名 or '-'} 指定模式={self.指定模式名 or '-'}"
+                ),
+            )
+        except Exception:
+            pass
+
         self._同步歌曲游玩记录()
-        self._同步全部NEW标记()
+        self._禁用NEW标记计算 = bool(_启用稳定NEW标记模式())
+        if bool(self._禁用NEW标记计算):
+            self._重置全部NEW标记()
+            global _稳定NEW标记模式日志已输出
+            if not bool(_稳定NEW标记模式日志已输出):
+                try:
+                    _记录信息日志(
+                        _日志器,
+                        "已启用稳定NEW标记模式：打包环境跳过NEW深度计算（全部按非NEW显示）",
+                    )
+                except Exception:
+                    pass
+                _稳定NEW标记模式日志已输出 = True
+        else:
+            self._同步全部NEW标记()
         self.是否收藏夹模式 = False
         self._全部歌曲缓存: Optional[List[歌曲信息]] = None
         self._收藏歌曲键集合: Set[str] = set()
@@ -5395,6 +6638,7 @@ class 选歌游戏:
         self._详情浮层_alpha = 255
         self._详情浮层_最后缩放 = 1.0
         self.详情大框矩形 = pygame.Rect(0, 0, 0, 0)
+        self.详情封面矩形 = pygame.Rect(0, 0, 0, 0)
         self._详情浮层面板缓存图 = None
         self._详情浮层面板缓存尺寸 = (0, 0)
 
@@ -5443,10 +6687,10 @@ class 选歌游戏:
     def _取歌曲收藏键(self, 歌: 歌曲信息) -> str:
         try:
             return 取歌曲记录键(
-                str(getattr(歌, "sm路径", "") or ""), self._取歌曲数据根目录()
+                _取歌曲记录路径源(歌), self._取歌曲数据根目录()
             )
         except Exception:
-            return str(getattr(歌, "sm路径", "") or "")
+            return _取歌曲记录路径源(歌)
 
     def _同步歌曲收藏状态(self):
         收藏键集合 = set(getattr(self, "_收藏歌曲键集合", set()) or set())
@@ -5507,7 +6751,23 @@ class 选歌游戏:
         self._失效歌曲视图缓存()
         self._失效详情浮层缓存()
 
+    def _重置全部NEW标记(self):
+        for 类型映射 in self.数据树.values():
+            if not isinstance(类型映射, dict):
+                continue
+            for 列表 in 类型映射.values():
+                if not isinstance(列表, list):
+                    continue
+                for 歌 in 列表:
+                    try:
+                        setattr(歌, "是否NEW", False)
+                    except Exception:
+                        pass
+
     def _同步全部NEW标记(self):
+        if bool(getattr(self, "_禁用NEW标记计算", False)):
+            self._NEW标记_缓存键 = ("__DISABLED__",)
+            return
         for 类型映射 in self.数据树.values():
             if not isinstance(类型映射, dict):
                 continue
@@ -5826,7 +7086,7 @@ class 选歌游戏:
                     continue
                 for 歌 in 列表:
                     try:
-                        键 = 取歌曲记录键(str(getattr(歌, "sm路径", "") or ""), 根目录)
+                        键 = 取歌曲记录键(_取歌曲记录路径源(歌), 根目录)
                     except Exception:
                         键 = ""
                     项 = self._歌曲记录索引.get(键, {})
@@ -5841,6 +7101,9 @@ class 选歌游戏:
                         pass
 
     def _确保NEW标记(self, 原始列表: Optional[List[歌曲信息]] = None):
+        if bool(getattr(self, "_禁用NEW标记计算", False)):
+            self._NEW标记_缓存键 = ("__DISABLED__",)
+            return
         if 原始列表 is None:
             try:
                 原始列表 = self.数据树[self.当前类型名()][self.当前模式名()]
@@ -5859,12 +7122,14 @@ class 选歌游戏:
         self._更新当前模式NEW标记(原始列表)
 
     def _更新当前模式NEW标记(self, 原始列表: List[歌曲信息]):
+        if bool(getattr(self, "_禁用NEW标记计算", False)):
+            return
         """
         规则：
         - 同“歌名”(解析后的 歌.歌名) 出现多个版本时
         - 最高星级的版本标记为 是否NEW=True（其余 False）
         """
-        名称计数: Dict[str, int] = {}
+        名称来源数: Dict[str, Set[str]] = {}
         名称最大星: Dict[str, int] = {}
 
         for 歌 in 原始列表:
@@ -5873,6 +7138,9 @@ class 选歌游戏:
                 名键 = re.sub(
                     r"\s+", "", str(getattr(歌, "歌曲文件夹", "") or "")
                 ).lower()
+            来源键 = str(getattr(歌, "sm路径", "") or "").strip()
+            if not 来源键:
+                来源键 = str(getattr(歌, "歌曲路径", "") or "").strip()
 
             星 = 0
             try:
@@ -5880,7 +7148,10 @@ class 选歌游戏:
             except Exception:
                 星 = 0
 
-            名称计数[名键] = 名称计数.get(名键, 0) + 1
+            if 名键 not in 名称来源数:
+                名称来源数[名键] = set()
+            if 来源键:
+                名称来源数[名键].add(来源键)
             名称最大星[名键] = max(名称最大星.get(名键, 0), 星)
 
         for 歌 in 原始列表:
@@ -5896,7 +7167,7 @@ class 选歌游戏:
             except Exception:
                 星 = 0
 
-            是否多版本 = 名称计数.get(名键, 0) >= 2
+            是否多版本 = len(名称来源数.get(名键, set())) >= 2
             是否最高星 = 星 == 名称最大星.get(名键, 星)
 
             try:
@@ -5948,6 +7219,19 @@ class 选歌游戏:
             get_layout_pixel=self._取布局像素,
             needs_hot=_需要HOT标记,
         )
+        try:
+            锚点矩形 = getattr(self, "详情封面矩形", None)
+            if not isinstance(锚点矩形, pygame.Rect) or 锚点矩形.w <= 8:
+                锚点矩形 = 大框
+            _绘制歌曲模式标记(
+                self.屏幕,
+                锚点矩形,
+                歌,
+                是否大图=True,
+                透明度=int(alpha),
+            )
+        except Exception:
+            pass
 
     def 当前歌曲列表与映射(self) -> Tuple[List[歌曲信息], List[int]]:
         """
@@ -6095,8 +7379,15 @@ class 选歌游戏:
         模式 = ""
         歌曲文件夹 = ""
         原始歌曲文件夹 = ""
+        谱面charttype = ""
+        谱面模式标记 = ""
+        记录键sm路径 = ""
 
         if 歌 is not None:
+            try:
+                _按需补全歌曲模式标记字段(歌)
+            except Exception:
+                pass
             try:
                 sm路径 = str(getattr(歌, "sm路径", "") or "未知")
             except Exception:
@@ -6136,6 +7427,18 @@ class 选歌游戏:
                 歌曲文件夹 = str(getattr(歌, "歌曲文件夹", "") or "")
             except Exception:
                 歌曲文件夹 = ""
+            try:
+                谱面charttype = str(getattr(歌, "谱面charttype", "") or "").strip().lower()
+            except Exception:
+                谱面charttype = ""
+            try:
+                谱面模式标记 = str(getattr(歌, "谱面模式标记", "") or "").strip()
+            except Exception:
+                谱面模式标记 = ""
+            try:
+                记录键sm路径 = str(getattr(歌, "记录键sm路径", "") or "").strip()
+            except Exception:
+                记录键sm路径 = ""
 
             # ✅ 原始歌曲文件夹：直接取 sm 所在目录（里面有 .sm）
             try:
@@ -6212,6 +7515,9 @@ class 选歌游戏:
             # ✅ 给 StepMania 用
             "类型": 类型,
             "模式": 模式,
+            "谱面charttype": str(谱面charttype),
+            "谱面模式标记": str(谱面模式标记),
+            "记录键sm路径": str(记录键sm路径 or sm路径),
             "歌曲文件夹": 歌曲文件夹,
             "原始歌曲文件夹": 原始歌曲文件夹,
             "选歌原始索引": int(当前索引 if 歌 is not None else -1),
@@ -7714,7 +9020,7 @@ class 选歌游戏:
             return "疯狂"
         if "混音" in s or "mix" in 低:
             return "混音"
-        if "情侣" in s:
+        if "情侣" in s or "lover" in 低:
             return "情侣"
         if "club" in 低 or "双踏板" in s:
             return "club"
@@ -9283,6 +10589,12 @@ class 选歌游戏:
         当前大框 = 局部画布.get_rect(center=内容基础矩形.center)
         当前大框.y += int(入场y偏移)
         self.详情大框矩形 = 当前大框
+        self.详情封面矩形 = pygame.Rect(
+            int(当前大框.x + 内容偏移x + 局部封面框.x),
+            int(当前大框.y + 内容偏移y + 局部封面框.y),
+            int(局部封面框.w),
+            int(局部封面框.h),
+        )
         self.屏幕.blit(局部画布, 当前大框.topleft)
         try:
             self._绘制详情浮层星星光泽(

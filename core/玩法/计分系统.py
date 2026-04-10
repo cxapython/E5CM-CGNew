@@ -11,6 +11,8 @@ class 判定回报:
     时间差毫秒: float  # 正=提前按，负=延后按
     加分: int
     连击增量: int  # tap/hold_head:1; hold_tick:4; miss:0
+    开始秒: float = 0.0
+    结束秒: float = 0.0
 
 
 class 计分系统:

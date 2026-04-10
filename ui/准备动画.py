@@ -163,12 +163,36 @@ class 全屏透明叠加层:
         纹理 = self._同步GPU纹理(渲染器)
         if 纹理 is None:
             return False
+        目标宽 = int(max(1, 画布.get_width()))
+        目标高 = int(max(1, 画布.get_height()))
         try:
-            纹理.draw(dstrect=(0, 0, int(画布.get_width()), int(画布.get_height())))
+            使用逻辑坐标映射 = bool(
+                getattr(显示后端, "使用逻辑坐标映射", lambda: False)()
+            )
+        except Exception:
+            使用逻辑坐标映射 = False
+        try:
+            if bool(使用逻辑坐标映射):
+                逻辑尺寸 = tuple(int(v) for v in 显示后端.取窗口尺寸())
+                if len(逻辑尺寸) >= 2 and int(逻辑尺寸[0]) > 0 and int(逻辑尺寸[1]) > 0:
+                    目标宽 = int(逻辑尺寸[0])
+                    目标高 = int(逻辑尺寸[1])
+            else:
+                输出尺寸 = tuple(int(v) for v in 显示后端.取输出尺寸())
+                if len(输出尺寸) >= 2 and int(输出尺寸[0]) > 0 and int(输出尺寸[1]) > 0:
+                    目标宽 = int(输出尺寸[0])
+                    目标高 = int(输出尺寸[1])
+        except Exception:
+            pass
+        try:
+            纹理.draw(dstrect=(0, 0, int(目标宽), int(目标高)))
             return True
         except Exception:
             try:
-                渲染器.blit(纹理)
+                渲染器.blit(
+                    纹理,
+                    pygame.Rect(0, 0, int(目标宽), int(目标高)),
+                )
                 return True
             except Exception:
                 return False

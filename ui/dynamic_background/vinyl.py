@@ -21,6 +21,13 @@ class VinylDynamicBackground(DynamicBackgroundBase):
     _STATE_ENTER_DURATION = 3.0
     _STATE_LEAVE_DURATION = 0.9
     _STATE4_ASTRONAUT_BURST_COMBO_STEP = 50
+    _FRAME_CENTER_OFFSET_X = 0
+    _FRAME_CENTER_OFFSET_Y = -3.43
+    _RECORD_SIZE_RATIO_X = 0.235
+    _RECORD_SIZE_RATIO_Y = 0.42
+    _RECORD_SIZE_MIN = 220
+    _RECORD_SIZE_MAX = 460
+    _RECORD_ROTATION_SPEED = 56.0
 
     _SIDE_LINE_CONFIGS = (
         {"asset": "矩形长.png", "offset": -0.21, "travel": 0.24, "duration": 6.8, "delay": -3.8, "width_scale": 0.31},
@@ -203,59 +210,68 @@ class VinylDynamicBackground(DynamicBackgroundBase):
             particle["x"] += particle["vx"] * float(delta_time)
             particle["y"] += particle["vy"] * float(delta_time)
 
-    def _emit_state4_astronaut_burst(
+    def _emit_astronaut_highlight_burst(
         self,
         profile: Dict[str, float],
-        width: int,
-        center_x: float,
-        center_y: float,
+        screen_size: Tuple[int, int],
         record_half: float,
+        *,
+        strength: float = 1.0,
     ):
-        left_width = clamp_int(width * 0.125, 132, 228)
-        right_width = clamp_int(width * 0.120, 126, 216)
-        left_center_x = center_x - record_half - left_width * 0.5 + min(width * 0.018, 26.0)
-        right_center_x = center_x + record_half + right_width * 0.5 - min(width * 0.016, 24.0)
-        left_outer_x = left_center_x - left_width * 0.10
-        right_outer_x = right_center_x + right_width * 0.10
-        for origin_x in (left_outer_x, right_outer_x):
+        metrics = self._get_astronaut_metrics(screen_size, record_half)
+        center_y = float(metrics["center_y"])
+        left_center_x = float(metrics["left_center_x"])
+        right_center_x = float(metrics["right_center_x"])
+        left_inner_x = float(metrics["left_inner_x"])
+        right_inner_x = float(metrics["right_inner_x"])
+        left_outer_x = float(metrics["left_outer_x"])
+        right_outer_x = float(metrics["right_outer_x"])
+        burst_strength = max(0.65, float(strength))
+        for origin_x, origin_y in (
+            (left_outer_x, center_y),
+            (left_inner_x, center_y - 8.0),
+            (right_inner_x, center_y - 8.0),
+            (right_outer_x, center_y),
+        ):
             self._emit_burst(
-                18,
+                int(round(10 * burst_strength)),
                 origin_x,
-                center_y,
+                origin_y,
                 profile,
-                spread=12.0,
-                scale=0.96,
-                color=(255, 248, 248),
-                halo_color=(255, 132, 132),
+                spread=14.0 + 4.0 * burst_strength,
+                scale=1.04 + 0.10 * burst_strength,
+                color=(255, 255, 255),
+                halo_color=(255, 188, 188),
                 layer="astronaut",
-                life_scale=0.86,
-                size_scale=0.92,
+                life_scale=1.00,
+                size_scale=1.18 * burst_strength,
             )
             self._emit_burst(
-                22,
+                int(round(14 * burst_strength)),
                 origin_x,
-                center_y,
+                origin_y,
                 profile,
-                spread=22.0,
-                scale=1.12,
-                color=(255, 216, 216),
-                halo_color=(255, 72, 72),
+                spread=28.0 + 6.0 * burst_strength,
+                scale=1.28 + 0.14 * burst_strength,
+                color=(255, 244, 244),
+                halo_color=(255, 92, 92),
                 layer="astronaut",
-                life_scale=1.08,
-                size_scale=1.12,
+                life_scale=1.28,
+                size_scale=1.56 * burst_strength,
             )
+        for origin_x in (left_center_x, right_center_x):
             self._emit_burst(
-                12,
+                int(round(6 * burst_strength)),
                 origin_x,
                 center_y,
                 profile,
-                spread=30.0,
-                scale=1.26,
-                color=(255, 192, 192),
-                halo_color=(255, 48, 48),
+                spread=44.0 + 8.0 * burst_strength,
+                scale=1.46 + 0.14 * burst_strength,
+                color=(255, 252, 252),
+                halo_color=(255, 68, 68),
                 layer="astronaut",
-                life_scale=1.22,
-                size_scale=1.24,
+                life_scale=1.52,
+                size_scale=2.05 * burst_strength,
             )
 
     def _tick_state4_astronaut_bursts(
@@ -263,26 +279,50 @@ class VinylDynamicBackground(DynamicBackgroundBase):
         combo: int,
         combo_state: int,
         profile: Dict[str, float],
-        width: int,
-        center_x: float,
-        center_y: float,
+        screen_size: Tuple[int, int],
         record_half: float,
     ):
         if combo_state < 4:
             self._state4_next_burst_combo = 200
-            self._astronaut_reentry = 1.0
             return
         current_combo = int(max(0, combo))
         while current_combo >= int(self._state4_next_burst_combo):
-            self._emit_state4_astronaut_burst(
+            self._emit_astronaut_highlight_burst(
                 profile,
-                width,
-                center_x,
-                center_y,
+                screen_size,
                 record_half,
+                strength=1.25,
             )
             self._astronaut_reentry = 0.0
             self._state4_next_burst_combo += int(self._STATE4_ASTRONAUT_BURST_COMBO_STEP)
+
+    def _get_record_size(
+        self,
+        size: Tuple[int, int],
+        *,
+        minimum: Optional[int] = None,
+        maximum: Optional[int] = None,
+    ) -> int:
+        width, height = size
+        target = min(
+            float(width) * float(self._RECORD_SIZE_RATIO_X),
+            float(height) * float(self._RECORD_SIZE_RATIO_Y),
+        )
+        minimum = int(self._RECORD_SIZE_MIN if minimum is None else minimum)
+        maximum = int(self._RECORD_SIZE_MAX if maximum is None else maximum)
+        return clamp_int(target, minimum, max(minimum, maximum))
+
+    def _get_record_rotation_phase(self, now: float) -> float:
+        phase = math.fmod(float(now) * float(self._RECORD_ROTATION_SPEED), 360.0)
+        if phase < 0.0:
+            phase += 360.0
+        return phase
+
+    def _get_record_renderer_angle(self, now: float) -> float:
+        return self._get_record_rotation_phase(now)
+
+    def _get_record_surface_angle(self, now: float) -> float:
+        return -self._get_record_rotation_phase(now)
 
     def update(self, context: DynamicBackgroundContext):
         delta_time = clamp(float(context.delta_time or 0.0), 0.0, 0.05)
@@ -291,7 +331,7 @@ class VinylDynamicBackground(DynamicBackgroundBase):
         width, height = context.screen_size
         center_x = float(width) * 0.5
         center_y = float(height) * 0.5
-        record_size = clamp_int(width * 0.218, 220, 420)
+        record_size = self._get_record_size((width, height))
         record_half = float(record_size) * 0.5
 
         if combo_state != int(self._combo_state):
@@ -304,19 +344,19 @@ class VinylDynamicBackground(DynamicBackgroundBase):
                 scale=1.04,
             )
             if combo_state >= 3 and int(self._combo_state) < 3:
-                left_width = clamp_int(width * 0.125, 132, 228)
-                right_width = clamp_int(width * 0.120, 126, 216)
-                left_center_x = center_x - record_half - left_width * 0.5 + min(width * 0.018, 26.0)
-                right_center_x = center_x + record_half + right_width * 0.5 - min(width * 0.016, 24.0)
-                self._emit_burst(14, left_center_x, center_y, profile, spread=16.0, scale=0.90)
-                self._emit_burst(14, right_center_x, center_y, profile, spread=16.0, scale=0.90)
-            if combo_state >= 4 and int(self._combo_state) < 4:
-                self._emit_state4_astronaut_burst(
+                self._emit_astronaut_highlight_burst(
                     profile,
-                    width,
-                    center_x,
-                    center_y,
+                    (width, height),
                     record_half,
+                    strength=1.0,
+                )
+                self._astronaut_reentry = 0.0
+            if combo_state >= 4 and int(self._combo_state) < 4:
+                self._emit_astronaut_highlight_burst(
+                    profile,
+                    (width, height),
+                    record_half,
+                    strength=1.25,
                 )
                 self._astronaut_reentry = 0.0
                 current_combo = int(max(0, context.combo))
@@ -333,8 +373,8 @@ class VinylDynamicBackground(DynamicBackgroundBase):
             1.0 if combo_state >= 3 else 0.0,
             delta_time,
         )
-        if combo_state >= 4:
-            self._astronaut_reentry = min(1.0, float(self._astronaut_reentry) + float(delta_time) / 0.72)
+        if combo_state >= 3:
+            self._astronaut_reentry = min(1.0, float(self._astronaut_reentry) + float(delta_time) / 0.86)
         else:
             self._astronaut_reentry = 1.0
         self._frame_reveal = self._step_reveal(
@@ -349,27 +389,35 @@ class VinylDynamicBackground(DynamicBackgroundBase):
             int(context.combo or 0),
             combo_state,
             profile,
-            width,
-            center_x,
-            center_y,
+            (width, height),
             record_half,
         )
 
     def _draw_particles(self, renderer, layer: Optional[str] = None):
         for particle in self._particles:
-            if layer is not None and str(particle.get("layer", "base")) != str(layer):
+            particle_layer = str(particle.get("layer", "base"))
+            if layer is not None and particle_layer != str(layer):
                 continue
             progress = clamp(float(particle["life"]) / max(0.001, float(particle["max_life"])), 0.0, 1.0)
-            wave = 0.84 + math.sin(float(particle["life"]) * 10.0 * float(particle["flicker"])) * 0.16
+            is_astronaut_layer = particle_layer == "astronaut"
+            wave = 0.90 + math.sin(float(particle["life"]) * 10.0 * float(particle["flicker"])) * (0.10 if is_astronaut_layer else 0.16)
             alpha = clamp((1.0 - progress) * wave, 0.0, 1.0)
-            halo_alpha = clamp_int(alpha * 64.0, 0, 255)
+            outer_alpha = clamp_int(alpha * (54.0 if is_astronaut_layer else 0.0), 0, 255)
+            halo_alpha = clamp_int(alpha * (132.0 if is_astronaut_layer else 64.0), 0, 255)
             core_alpha = clamp_int(alpha * 255.0, 0, 255)
-            core_size = clamp_int(float(particle["size"]) + progress * 1.4, 1, 5)
-            halo_size = clamp_int(float(particle["size"]) + progress * 5.2, 2, 10)
+            core_size = clamp_int(float(particle["size"]) + progress * (2.2 if is_astronaut_layer else 1.4), 1, 7 if is_astronaut_layer else 5)
+            halo_size = clamp_int(float(particle["size"]) + progress * (8.6 if is_astronaut_layer else 5.2), 3 if is_astronaut_layer else 2, 18 if is_astronaut_layer else 10)
+            outer_size = clamp_int(halo_size + (6 if is_astronaut_layer else 0) + progress * (4.0 if is_astronaut_layer else 0.0), halo_size, 24 if is_astronaut_layer else halo_size)
             x = int(round(float(particle["x"])))
             y = int(round(float(particle["y"])))
             halo_color = tuple(int(max(0, min(255, v))) for v in particle.get("halo_color", (255, 255, 255)))
             core_color = tuple(int(max(0, min(255, v))) for v in particle.get("color", (255, 255, 255)))
+            if is_astronaut_layer and outer_alpha > 2:
+                self._set_draw_color(renderer, halo_color, outer_alpha)
+                try:
+                    renderer.fill_rect(pygame.Rect(int(x - outer_size // 2), int(y - outer_size // 2), int(outer_size), int(outer_size)))
+                except Exception:
+                    pass
             self._set_draw_color(renderer, halo_color, halo_alpha)
             try:
                 renderer.fill_rect(pygame.Rect(int(x - halo_size // 2), int(y - halo_size // 2), int(halo_size), int(halo_size)))
@@ -614,7 +662,7 @@ class VinylDynamicBackground(DynamicBackgroundBase):
         width, height = screen_size
         center_x = int(width * 0.5)
         center_y = int(height * 0.5)
-        record_size = clamp_int(width * 0.218, 220, 420)
+        record_size = self._get_record_size(screen_size)
         record_half = float(record_size) * 0.5
         machine_progress = ease_out_cubic(self._machine_reveal)
 
@@ -656,7 +704,7 @@ class VinylDynamicBackground(DynamicBackgroundBase):
                 record_texture,
                 (float(center_x - record_size * 0.5), float(center_y - record_size * 0.5), float(record_size), float(record_size)),
                 alpha=255,
-                angle=-(float(now) * 56.0),
+                angle=self._get_record_renderer_angle(now),
             )
 
         return {"center_x": center_x, "center_y": center_y, "record_half": record_half}
@@ -679,55 +727,92 @@ class VinylDynamicBackground(DynamicBackgroundBase):
         texture = self._get_texture(renderer, texture_key, surface)
         if texture is None or reveal <= 0.01:
             return
-        phase = float(now) * 0.72 + (0.0 if direction < 0 else 1.6)
-        bob = math.sin(phase) * 8.5 * reveal
-        reentry = ease_out_cubic(clamp(float(getattr(self, "_astronaut_reentry", 1.0)), 0.0, 1.0)) if with_outline else 1.0
-        slide_x = (1.0 - reveal) * 22.0 * float(direction)
-        if with_outline:
-            slide_x += (1.0 - reentry) * 34.0 * float(direction)
-        scale = 0.92 + reveal * 0.08
-        draw_width = clamp_int(width * scale, 8, max(8, width))
-        draw_height = clamp_int(height * scale, 8, max(8, height))
+        settle = ease_out_cubic(clamp(float(getattr(self, "_astronaut_reentry", 1.0)), 0.0, 1.0))
+        flash = 1.0 - settle
+        breathe_scale = 1.0 + math.sin(float(now) * 1.18 + (0.0 if direction < 0 else 1.05)) * 0.010 * reveal
+        scale = (0.94 + reveal * 0.06) * breathe_scale * lerp(0.96, 1.0, settle)
+        draw_width = clamp_int(width * scale, 8, max(8, int(round(width * 1.08))))
+        draw_height = clamp_int(height * scale, 8, max(8, int(round(height * 1.08))))
         dst = (
-            float(center_x + slide_x - draw_width * 0.5),
-            float(center_y + bob - draw_height * 0.5),
+            float(center_x - draw_width * 0.5),
+            float(center_y - draw_height * 0.5),
             float(draw_width),
             float(draw_height),
         )
-        alpha = clamp_int(255.0 * reveal * (0.72 + 0.28 * reentry), 0, 255)
-        if with_outline:
-            outline_alpha = clamp_int((96.0 + 72.0 * (0.5 + 0.5 * math.sin(float(now) * 1.7))) * reveal, 0, 255)
-            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
-                self._draw_texture(texture, (float(dst[0] + dx), float(dst[1] + dy), float(dst[2]), float(dst[3])), alpha=outline_alpha, color=(255, 84, 84))
-            glow_alpha = clamp_int((58.0 + 62.0 * (0.5 + 0.5 * math.sin(float(now) * 1.7))) * reveal, 0, 255)
+        alpha = clamp_int(255.0 * reveal * (0.62 + 0.38 * settle), 0, 255)
+        if flash > 0.01:
+            aura_pad = 10.0 + flash * 18.0
+            aura_alpha = clamp_int((18.0 + 78.0 * flash) * reveal, 0, 255)
             self._draw_texture(
                 texture,
-                (float(dst[0] - 6.0), float(dst[1] - 6.0), float(dst[2] + 12.0), float(dst[3] + 12.0)),
+                (float(dst[0] - aura_pad), float(dst[1] - aura_pad), float(dst[2] + aura_pad * 2.0), float(dst[3] + aura_pad * 2.0)),
+                alpha=aura_alpha,
+                color=(255, 76, 76),
+            )
+        if with_outline:
+            outline_alpha = clamp_int((92.0 + 70.0 * (0.5 + 0.5 * math.sin(float(now) * 1.7)) + 86.0 * flash) * reveal, 0, 255)
+            outline_offset = 2.0 + flash * 2.2
+            for dx, dy in ((-outline_offset, 0.0), (outline_offset, 0.0), (0.0, -outline_offset), (0.0, outline_offset)):
+                self._draw_texture(
+                    texture,
+                    (float(dst[0] + dx), float(dst[1] + dy), float(dst[2]), float(dst[3])),
+                    alpha=outline_alpha,
+                    color=(255, 84, 84),
+                )
+            glow_alpha = clamp_int((56.0 + 64.0 * (0.5 + 0.5 * math.sin(float(now) * 1.7)) + 108.0 * flash) * reveal, 0, 255)
+            glow_pad = 7.0 + flash * 12.0
+            self._draw_texture(
+                texture,
+                (float(dst[0] - glow_pad), float(dst[1] - glow_pad), float(dst[2] + glow_pad * 2.0), float(dst[3] + glow_pad * 2.0)),
                 alpha=glow_alpha,
                 color=(255, 72, 72),
             )
         self._draw_texture(texture, dst, alpha=alpha)
 
+    def _get_astronaut_metrics(self, screen_size: Tuple[int, int], record_half: float) -> Dict[str, float]:
+        width, height = screen_size
+        center_x = float(width) * 0.5
+        center_y = float(height) * 0.5
+        stage4_boost = ease_out_cubic(clamp(float(getattr(self, "_frame_reveal", 0.0)), 0.0, 1.0))
+        astronaut_scale = lerp(1.08, 1.32, stage4_boost)
+        record_overlap = lerp(record_half * 0.18, record_half * 0.25, stage4_boost)
+        left_width = clamp_int(width * 0.170 * astronaut_scale, 176, 420)
+        right_width = clamp_int(width * 0.170 * astronaut_scale, 176, 420)
+        left_center_x = center_x - record_half - left_width * 0.5 + min(width * 0.018, 26.0) + record_overlap
+        right_center_x = center_x + record_half + right_width * 0.5 - min(width * 0.016, 24.0) - record_overlap
+        return {
+            "center_y": center_y,
+            "left_width": float(left_width),
+            "right_width": float(right_width),
+            "left_center_x": left_center_x,
+            "right_center_x": right_center_x,
+            "left_inner_x": left_center_x + left_width * 0.18,
+            "right_inner_x": right_center_x - right_width * 0.18,
+            "left_outer_x": left_center_x - left_width * 0.10,
+            "right_outer_x": right_center_x + right_width * 0.10,
+        }
+
     def _draw_astronauts(self, renderer, screen_size: Tuple[int, int], record_half: float, now: float):
         reveal = ease_out_cubic(self._astronaut_reveal)
         if reveal <= 0.01:
             return
-        width, height = screen_size
-        center_x = float(width) * 0.5
-        center_y = float(height) * 0.5
-        left_width = clamp_int(width * 0.125, 132, 228)
-        right_width = clamp_int(width * 0.120, 126, 216)
-        left_surface = self._load_image("asset:astronaut-left", "UI-img", "动态背景", "唱片", "素材", "宇航员左侧.png")
-        right_surface = self._load_image("asset:astronaut-right", "UI-img", "动态背景", "唱片", "素材", "宇航员右侧.png")
-        left_height = clamp_int(left_width * (left_surface.get_height() / max(1, left_surface.get_width())) if left_surface else left_width, 40, 420)
-        right_height = clamp_int(right_width * (right_surface.get_height() / max(1, right_surface.get_width())) if right_surface else right_width, 40, 420)
+        metrics = self._get_astronaut_metrics(screen_size, record_half)
+        stage4_active = self._frame_reveal > 0.01
+        left_texture_key = "asset:astronaut-left-outline" if stage4_active else "asset:astronaut-left"
+        right_texture_key = "asset:astronaut-right-outline" if stage4_active else "asset:astronaut-right"
+        left_filename = "宇航员左侧-带描边.png" if stage4_active else "宇航员左侧.png"
+        right_filename = "宇航员右侧-带描边.png" if stage4_active else "宇航员右侧.png"
+        left_width = int(metrics["left_width"])
+        right_width = int(metrics["right_width"])
+        left_surface = self._load_image(left_texture_key, "UI-img", "动态背景", "唱片", "素材", left_filename)
+        right_surface = self._load_image(right_texture_key, "UI-img", "动态背景", "唱片", "素材", right_filename)
+        left_height = clamp_int(left_width * (left_surface.get_height() / max(1, left_surface.get_width())) if left_surface else left_width, 40, 520)
+        right_height = clamp_int(right_width * (right_surface.get_height() / max(1, right_surface.get_width())) if right_surface else right_width, 40, 520)
+        center_y = float(metrics["center_y"])
+        self._draw_actor(renderer, left_texture_key, left_filename, float(metrics["left_center_x"]), center_y, left_width, left_height, reveal, -1, now, stage4_active)
+        self._draw_actor(renderer, right_texture_key, right_filename, float(metrics["right_center_x"]), center_y, right_width, right_height, reveal, 1, now + 1.6, stage4_active)
 
-        left_center_x = center_x - record_half - left_width * 0.5 + min(width * 0.018, 26.0)
-        right_center_x = center_x + record_half + right_width * 0.5 - min(width * 0.016, 24.0)
-        self._draw_actor(renderer, "asset:astronaut-left", "宇航员左侧.png", left_center_x, center_y, left_width, left_height, reveal, -1, now, self._frame_reveal > 0.01)
-        self._draw_actor(renderer, "asset:astronaut-right", "宇航员右侧.png", right_center_x, center_y, right_width, right_height, reveal, 1, now + 1.6, self._frame_reveal > 0.01)
-
-    def _draw_frame(self, renderer, screen_size: Tuple[int, int], now: float):
+    def _draw_frame(self, renderer, screen_size: Tuple[int, int], center_x: float, center_y: float, now: float):
         reveal = ease_out_cubic(self._frame_reveal)
         if reveal <= 0.01:
             return
@@ -738,15 +823,20 @@ class VinylDynamicBackground(DynamicBackgroundBase):
             return
         source_width = max(1, int(surface.get_width()))
         source_height = max(1, int(surface.get_height()))
-        cover_scale = max(float(width) / float(source_width), float(height) / float(source_height))
-        target_width = clamp_int(float(source_width) * cover_scale, width, max(width, source_width * 4))
-        target_height = clamp_int(float(source_height) * cover_scale, height, max(height, source_height * 4))
+# 框线大小
+        frame_scale = 0.6
+        cover_scale = max(float(width) / float(source_width), float(height) / float(source_height)) * frame_scale
+        target_width = clamp_int(float(source_width) * cover_scale, 1, max(width, source_width * 4))
+        target_height = clamp_int(float(source_height) * cover_scale, 1, max(height, source_height * 4))
+        frame_offset_x = float(self._FRAME_CENTER_OFFSET_X) * (float(target_width) / float(source_width))
+        frame_offset_y = float(self._FRAME_CENTER_OFFSET_Y) * (float(target_height) / float(source_height))
+
         pulse = 0.58 + 0.36 * (0.5 + 0.5 * math.sin(float(now) * 1.53))
         self._draw_texture(
             texture,
             (
-                int(width * 0.5 - target_width * 0.5),
-                int(height * 0.5 - target_height * 0.5),
+                int(center_x - target_width * 0.5 + frame_offset_x),
+                int(center_y - target_height * 0.5 + frame_offset_y),
                 int(target_width),
                 int(target_height),
             ),
@@ -769,7 +859,7 @@ class VinylDynamicBackground(DynamicBackgroundBase):
             return
         width, height = context.screen_size
         combo_state = self._resolve_combo_state(context.combo)
-        record_size = clamp_int(width * 0.218, 220, 420)
+        record_size = self._get_record_size((width, height))
         record_half = float(record_size) * 0.5
 
         self._draw_background_layer(renderer, context.screen_size)
@@ -778,7 +868,7 @@ class VinylDynamicBackground(DynamicBackgroundBase):
         self._draw_particles(renderer, "base")
         self._draw_side_lines(renderer, context.screen_size, context.now, record_half)
         rig_info = self._draw_machine_and_record(renderer, context.screen_size, context.now)
-        self._draw_frame(renderer, context.screen_size, context.now)
+        self._draw_frame(renderer, context.screen_size, float(rig_info["center_x"]), float(rig_info["center_y"]), context.now)
         self._draw_particles(renderer, "astronaut")
         self._draw_astronauts(renderer, context.screen_size, rig_info["record_half"], context.now)
         self._draw_foot(renderer, context.screen_size)
@@ -943,10 +1033,23 @@ class VinylDynamicBackground(DynamicBackgroundBase):
 
         record_surface = self._load_image("asset:record", "UI-img", "动态背景", "唱片", "素材", "唱片.png")
         if isinstance(record_surface, pygame.Surface):
-            record_size = clamp_int(min(rect.w, rect.h) * 0.46, 72, max(72, min(rect.w, rect.h)))
-            scale = float(record_size) / float(max(1, record_surface.get_width()))
+            record_size = self._get_record_size(
+                rect.size,
+                minimum=72,
+                maximum=max(72, min(rect.w, rect.h)),
+            )
+            scaled_record = self._get_preview_scaled_surface(
+                f"asset:record:preview:{record_size}",
+                record_surface,
+                (record_size, record_size),
+                cover=False,
+            )
             try:
-                rotated = pygame.transform.rotozoom(record_surface, -(float(now) * 56.0), scale).convert_alpha()
+                rotated = pygame.transform.rotozoom(
+                    scaled_record if isinstance(scaled_record, pygame.Surface) else record_surface,
+                    self._get_record_surface_angle(now),
+                    1.0 if isinstance(scaled_record, pygame.Surface) else float(record_size) / float(max(1, record_surface.get_width())),
+                ).convert_alpha()
             except Exception:
                 rotated = None
             if isinstance(rotated, pygame.Surface):

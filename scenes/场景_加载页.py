@@ -112,6 +112,7 @@ class 场景_加载页(场景基类):
 
     _设计宽 = 2048
     _设计高 = 1152
+    _自动跳转最短停留秒 = 0.35
 
     _封面区域 = (68, 380, 874, 939)
     _右侧信息区 = (967, 553, 1782, 862)
@@ -227,7 +228,12 @@ class 场景_加载页(场景基类):
                 根目录 = _取项目根目录()
                 记录 = 取歌曲记录(
                     根目录,
-                    str(self._载荷.get("sm路径", "") or ""),
+                    str(
+                        self._载荷.get(
+                            "记录键sm路径", self._载荷.get("sm路径", "")
+                        )
+                        or ""
+                    ),
                     str(self._载荷.get("歌名", "") or ""),
                 )
                 最高分 = int((记录 or {}).get("最高分", 0) or 0)
@@ -256,7 +262,9 @@ class 场景_加载页(场景基类):
 
     def 更新(self):
         try:
-            if (time.time() - float(getattr(self, "_入场开始", 0.0) or 0.0)) >= 3.0:
+            if (
+                time.time() - float(getattr(self, "_入场开始", 0.0) or 0.0)
+            ) >= float(getattr(self, "_自动跳转最短停留秒", 0.35) or 0.35):
                 return {"切换到": "谱面播放器", "禁用黑屏过渡": True}
         except Exception:
             pass

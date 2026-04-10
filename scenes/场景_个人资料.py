@@ -102,6 +102,10 @@ class 场景_个人资料:
         资源 = 上下文.get("资源", {}) or {}
 
         self._背景视频 = 上下文.get("背景视频")
+        self._共享背景回退原图 = self._安全加载图片(
+            str(上下文.get("共享背景回退图路径", "") or ""),
+            透明=False,
+        )
 
         self._资源根 = self._取资源根目录()
         self._运行根 = self._取数据根目录()
@@ -862,6 +866,39 @@ class 场景_个人资料:
             return 图.convert_alpha() if 透明 else 图.convert()
         except Exception:
             return None
+
+    def _停用背景视频(self):
+        背景视频 = getattr(self, "_背景视频", None)
+        if 背景视频 is not None:
+            try:
+                if hasattr(背景视频, "关闭"):
+                    背景视频.关闭()
+            except Exception:
+                pass
+        self._背景视频 = None
+        try:
+            self.上下文["背景视频"] = None
+        except Exception:
+            pass
+
+    def _取共享背景回退面(self, 宽: int, 高: int) -> Optional[pygame.Surface]:
+        原图 = getattr(self, "_共享背景回退原图", None)
+        if not isinstance(原图, pygame.Surface):
+            return None
+        宽 = max(1, int(宽))
+        高 = max(1, int(高))
+        if not hasattr(self, "_缩放缓存"):
+            self._缩放缓存 = {}
+        键 = ("共享背景回退_cover", 宽, 高)
+        已有 = self._缩放缓存.get(键)
+        if isinstance(已有, pygame.Surface):
+            return 已有
+        try:
+            图 = self._cover缩放(原图, 宽, 高).convert()
+        except Exception:
+            return None
+        self._缩放缓存[键] = 图
+        return 图
 
     def _cover缩放(
         self, 图片: pygame.Surface, 目标宽: int, 目标高: int
@@ -1919,16 +1956,24 @@ class 场景_个人资料:
         pygame.time.set_timer(self._事件_延迟切场景, 320, loops=1)
 
     def 绘制(self):
-        from core.工具 import 绘制底部联网与信用, 获取字体
+        from core.工具 import cover缩放, 绘制底部联网与信用, 获取字体
 
         屏幕 = self.上下文["屏幕"]
         self._确保缓存()
         w, h = 屏幕.get_size()
 
         屏幕.fill((0, 0, 0))
-        背景面 = self._背景视频.读取覆盖帧(w, h) if self._背景视频 else None
-        if 背景面 is not None:
-            屏幕.blit(背景面, (0, 0))
+        try:
+            帧 = self._背景视频.读取帧() if self._背景视频 else None
+        except Exception:
+            self._停用背景视频()
+            帧 = None
+        if 帧 is not None:
+            屏幕.blit(cover缩放(帧, w, h), (0, 0))
+        else:
+            回退背景 = self._取共享背景回退面(w, h)
+            if isinstance(回退背景, pygame.Surface):
+                屏幕.blit(回退背景, (0, 0))
 
         t = (time.time() - float(self._入场开始)) / max(0.001, float(self._入场时长))
         t = self._缓出(t)

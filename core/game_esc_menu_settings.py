@@ -142,6 +142,9 @@ class VideoBackgroundOption:
     path: str
 
 
+_扫描选项缓存: Dict[str, Tuple[Tuple[Tuple[object, ...], ...], Tuple[object, ...]]] = {}
+
+
 def _is_stepmania_arrow_skin_dir(path: str) -> bool:
     root = os.path.abspath(str(path or "").strip())
     if not root or (not os.path.isdir(root)):
@@ -534,6 +537,93 @@ def assign_profile_key(
     return updated
 
 
+def _取文件条目签名(路径: str) -> Tuple[str, float, int]:
+    名称 = os.path.basename(str(路径 or ""))
+    try:
+        修改时间 = float(os.path.getmtime(路径))
+    except Exception:
+        修改时间 = 0.0
+    try:
+        文件大小 = int(os.path.getsize(路径))
+    except Exception:
+        文件大小 = 0
+    return (str(名称), float(修改时间), int(文件大小))
+
+
+def _读取扫描选项缓存(缓存键: str, 签名: Tuple[Tuple[object, ...], ...]) -> Optional[list]:
+    命中 = _扫描选项缓存.get(str(缓存键))
+    if not isinstance(命中, tuple) or len(命中) != 2:
+        return None
+    旧签名, 旧结果 = 命中
+    if tuple(旧签名) != tuple(签名):
+        return None
+    return list(旧结果 or [])
+
+
+def _写入扫描选项缓存(缓存键: str, 签名: Tuple[Tuple[object, ...], ...], 结果列表: List[object]) -> None:
+    _扫描选项缓存[str(缓存键)] = (
+        tuple(签名 or ()),
+        tuple(结果列表 or ()),
+    )
+
+
+def _构建背景目录签名(目录路径: str, 扩展名列表: Tuple[str, ...]) -> Tuple[Tuple[object, ...], ...]:
+    if not os.path.isdir(目录路径):
+        return ()
+    条目列表: List[Tuple[object, ...]] = []
+    try:
+        for 名称 in sorted(os.listdir(目录路径)):
+            路径 = os.path.join(目录路径, str(名称))
+            if (not os.path.isfile(路径)) or (not str(名称).lower().endswith(扩展名列表)):
+                continue
+            条目列表.append(tuple(_取文件条目签名(路径)))
+    except Exception:
+        return ()
+    return tuple(条目列表)
+
+
+def _构建箭头皮肤目录签名(project_root: str) -> Tuple[Tuple[object, ...], ...]:
+    root = os.path.join(str(project_root or ""), "UI-img", "游戏界面", "箭头")
+    preview_root = os.path.join(
+        str(project_root or ""),
+        "UI-img",
+        "选歌界面资源",
+        "设置",
+        "设置-箭头候选",
+    )
+    if not os.path.isdir(root):
+        return ()
+
+    条目列表: List[Tuple[object, ...]] = []
+    try:
+        for name in sorted(os.listdir(root)):
+            skin_dir = os.path.join(root, str(name))
+            if not os.path.isdir(skin_dir):
+                continue
+
+            try:
+                目录修改时间 = float(os.path.getmtime(skin_dir))
+            except Exception:
+                目录修改时间 = 0.0
+
+            preview_candidate = os.path.join(preview_root, f"{str(name).strip()}.png")
+            preview签名 = (
+                tuple(_取文件条目签名(preview_candidate))
+                if os.path.isfile(preview_candidate)
+                else ("", 0.0, 0)
+            )
+            条目列表.append(
+                (
+                    str(name),
+                    float(目录修改时间),
+                    tuple(preview签名),
+                )
+            )
+    except Exception:
+        return ()
+    return tuple(条目列表)
+
+
 def build_track_key_maps(
     *,
     is_double: bool,
@@ -591,13 +681,23 @@ def scan_arrow_skin_options(project_root: str) -> List[ArrowSkinOption]:
     options: List[ArrowSkinOption] = []
     if not os.path.isdir(root):
         return options
+    缓存签名 = _构建箭头皮肤目录签名(project_root)
+    缓存键 = f"arrow_skin_options::{os.path.abspath(str(project_root or ''))}"
+    缓存命中 = _读取扫描选项缓存(缓存键, 缓存签名)
+    if 缓存命中 is not None:
+        return [option for option in 缓存命中 if isinstance(option, ArrowSkinOption)]
     for name in sorted(os.listdir(root)):
         skin_dir = os.path.join(root, str(name))
         if not os.path.isdir(skin_dir):
             continue
         arrow_json = os.path.join(skin_dir, "arrow", "skin.json")
         key_json = os.path.join(skin_dir, "key", "skin.json")
-        is_native = os.path.isfile(arrow_json) and os.path.isfile(key_json)
+        key_1p_json = os.path.join(skin_dir, "key", "1p", "skin.json")
+        key_2p_json = os.path.join(skin_dir, "key", "2p", "skin.json")
+        is_native = os.path.isfile(arrow_json) and (
+            os.path.isfile(key_json)
+            or (os.path.isfile(key_1p_json) and os.path.isfile(key_2p_json))
+        )
         is_stepmania = _is_stepmania_arrow_skin_dir(skin_dir)
         if not (is_native or is_stepmania):
             continue
@@ -617,6 +717,7 @@ def scan_arrow_skin_options(project_root: str) -> List[ArrowSkinOption]:
                 preview_path=preview_path,
             )
         )
+    _写入扫描选项缓存(缓存键, 缓存签名, options)
     return options
 
 
@@ -626,6 +727,11 @@ def scan_background_options(project_root: str) -> List[BackgroundOption]:
     options: List[BackgroundOption] = []
     if not os.path.isdir(root):
         return options
+    缓存签名 = _构建背景目录签名(root, supported)
+    缓存键 = f"background_options::{os.path.abspath(str(project_root or ''))}"
+    缓存命中 = _读取扫描选项缓存(缓存键, 缓存签名)
+    if 缓存命中 is not None:
+        return [option for option in 缓存命中 if isinstance(option, BackgroundOption)]
     for name in sorted(os.listdir(root)):
         path = os.path.join(root, str(name))
         if not os.path.isfile(path):
@@ -640,6 +746,7 @@ def scan_background_options(project_root: str) -> List[BackgroundOption]:
                 path=path,
             )
         )
+    _写入扫描选项缓存(缓存键, 缓存签名, options)
     return options
 
 
@@ -649,6 +756,11 @@ def scan_video_background_options(project_root: str) -> List[VideoBackgroundOpti
     options: List[VideoBackgroundOption] = []
     if not os.path.isdir(root):
         return options
+    缓存签名 = _构建背景目录签名(root, supported)
+    缓存键 = f"video_background_options::{os.path.abspath(str(project_root or ''))}"
+    缓存命中 = _读取扫描选项缓存(缓存键, 缓存签名)
+    if 缓存命中 is not None:
+        return [option for option in 缓存命中 if isinstance(option, VideoBackgroundOption)]
     for name in sorted(os.listdir(root)):
         path = os.path.join(root, str(name))
         if (not os.path.isfile(path)) or (not str(name).lower().endswith(supported)):
@@ -661,6 +773,7 @@ def scan_video_background_options(project_root: str) -> List[VideoBackgroundOpti
                 path=path,
             )
         )
+    _写入扫描选项缓存(缓存键, 缓存签名, options)
     return options
 
 

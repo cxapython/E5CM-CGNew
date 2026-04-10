@@ -1,4 +1,5 @@
 import time
+import os
 import pygame
 from core.工具 import 绘制文本, contain缩放, 画圆角面, 安全加载图片
 
@@ -101,8 +102,23 @@ class 公用按钮音效:
 
     def __init__(self, 音效路径: str):
         self._音效 = None
+        路径 = str(音效路径 or "").strip()
+        if 路径:
+            后缀 = str(os.path.splitext(路径)[1] or "").strip().lower()
+            if 后缀 == ".mp3":
+                根路径, _ = os.path.splitext(路径)
+                替代路径 = ""
+                for 候选后缀 in (".wav", ".ogg"):
+                    候选路径 = f"{根路径}{候选后缀}"
+                    if os.path.isfile(候选路径):
+                        替代路径 = 候选路径
+                        break
+                # 兼容性保护：不直接使用 mp3 作为短音效，避免部分环境硬崩。
+                路径 = str(替代路径)
+        if (not 路径) or (not os.path.isfile(路径)):
+            return
         try:
-            self._音效 = pygame.mixer.Sound(音效路径)
+            self._音效 = pygame.mixer.Sound(路径)
         except Exception:
             self._音效 = None
 

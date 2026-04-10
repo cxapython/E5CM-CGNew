@@ -747,7 +747,12 @@ class 圆环频谱舞台装饰:
         self._上次计算系统秒: float = 0.0
         self._上次计算播放秒: float = -999.0
         self._上次幅度: Optional[np.ndarray] = None
-        self._最小计算间隔秒: float = 1.0 / 60.0  # 约60fps更新频谱
+        self._最小计算间隔秒: float = 1.0 / 30.0  # 装饰层降到约30fps即可，明显减轻 CPU 压力
+        self._绘制数据版本: int = 0
+        self._样式版本: int = 0
+        self._绘制数据缓存键: Optional[Tuple[object, ...]] = None
+        self._绘制数据缓存值: Optional[Dict[str, object]] = None
+        self._上次缓存形状旋转偏移弧度: float = 0.0
 
     def 绑定音频(self, 音频路径: str):
         音频路径 = str(音频路径 or "").strip()
@@ -763,6 +768,9 @@ class 圆环频谱舞台装饰:
         self._已加载路径 = 绝对路径
         self._已载入样本 = False
         self._上次幅度 = None
+        self._绘制数据版本 += 1
+        self._绘制数据缓存键 = None
+        self._绘制数据缓存值 = None
 
         # 这里会依赖 SDL_mixer 对 mp3/ogg/wav 的支持；失败就抛异常给上层处理
         self.提取器.载入音频路径(绝对路径)
@@ -774,38 +782,12 @@ class 圆环频谱舞台装饰:
         目标矩形: pygame.Rect,
         当前播放秒: float,
     ):
-        if not self.是否启用:
-            return
         if 屏幕 is None or 目标矩形 is None:
             return
-
-        当前播放秒 = float(max(0.0, 当前播放秒))
-        self._按矩形重算样式(目标矩形)
-
-        当前系统秒 = time.perf_counter()
-
-        # 降频：不必每帧 FFT
-        if (当前系统秒 - float(self._上次计算系统秒)) < float(self._最小计算间隔秒):
-            幅度 = self._上次幅度
-        else:
-            if self._已载入样本:
-                幅度 = self.提取器.取当前幅度(当前播放秒)
-            else:
-                幅度 = self._生成假频谱(当前播放秒)
-
-            self._上次计算系统秒 = float(当前系统秒)
-            self._上次计算播放秒 = float(当前播放秒)
-            self._上次幅度 = 幅度
-
-        if 幅度 is None:
-            幅度 = self._生成假频谱(当前播放秒)
-
-        self.控件.更新(幅度)
-        self.控件.设置形状旋转偏移(self._形状旋转偏移弧度)
-
-        cx = int(目标矩形.centerx)
-        cy = int(目标矩形.centery)
-        self.控件.绘制(屏幕, (cx, cy), 当前播放秒)
+        绘制数据 = self.更新并取绘制数据(目标矩形, 当前播放秒)
+        if not isinstance(绘制数据, dict):
+            return
+        self.控件.按绘制数据绘制(屏幕, 绘制数据)
 
     def 更新并取绘制数据(
         self,
@@ -823,6 +805,7 @@ class 圆环频谱舞台装饰:
         self._按矩形重算样式(目标矩形)
 
         当前系统秒 = time.perf_counter()
+        幅度已更新 = False
         if (当前系统秒 - float(self._上次计算系统秒)) < float(self._最小计算间隔秒):
             幅度 = self._上次幅度
         else:
@@ -833,22 +816,61 @@ class 圆环频谱舞台装饰:
             self._上次计算系统秒 = float(当前系统秒)
             self._上次计算播放秒 = float(当前播放秒)
             self._上次幅度 = 幅度
+            幅度已更新 = True
 
         if 幅度 is None:
             幅度 = self._生成假频谱(当前播放秒)
+            self._上次幅度 = 幅度
+            幅度已更新 = True
 
-        self.控件.更新(幅度)
-        self.控件.设置形状旋转偏移(self._形状旋转偏移弧度)
-        return self.控件.取绘制数据(
+        if 幅度已更新:
+            self._绘制数据版本 += 1
+            self.控件.更新(幅度)
+
+        形状旋转偏移 = float(self._形状旋转偏移弧度)
+        形状旋转已变化 = abs(
+            float(形状旋转偏移) - float(self._上次缓存形状旋转偏移弧度)
+        ) >= 1e-4
+        if 幅度已更新 or 形状旋转已变化:
+            self.控件.设置形状旋转偏移(形状旋转偏移)
+
+        旋转速度 = float(getattr(self.样式, "旋转速度", 0.0) or 0.0)
+        缓存时间键 = round(float(当前播放秒), 3) if abs(旋转速度) > 1e-6 else 0.0
+        缓存键 = (
+            int(目标矩形.centerx),
+            int(目标矩形.centery),
+            int(目标矩形.w),
+            int(目标矩形.h),
+            int(self._样式版本),
+            int(self._绘制数据版本),
+            round(float(形状旋转偏移), 4),
+            float(缓存时间键),
+        )
+        if (
+            self._绘制数据缓存键 == 缓存键
+            and isinstance(self._绘制数据缓存值, dict)
+        ):
+            return self._绘制数据缓存值
+
+        绘制数据 = self.控件.取绘制数据(
             (int(目标矩形.centerx), int(目标矩形.centery)),
             当前播放秒,
         )
+        if not isinstance(绘制数据, dict):
+            return None
+        self._绘制数据缓存键 = 缓存键
+        self._绘制数据缓存值 = 绘制数据
+        self._上次缓存形状旋转偏移弧度 = float(形状旋转偏移)
+        return 绘制数据
 
     def _按矩形重算样式(self, 目标矩形: pygame.Rect):
         目标尺寸 = (int(max(1, 目标矩形.w)), int(max(1, 目标矩形.h)))
         if 目标尺寸 == self._上次目标尺寸:
             return
         self._上次目标尺寸 = 目标尺寸
+        self._样式版本 += 1
+        self._绘制数据缓存键 = None
+        self._绘制数据缓存值 = None
 
         边 = int(max(1, min(目标尺寸[0], 目标尺寸[1])))
 

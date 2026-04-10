@@ -1,11 +1,12 @@
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pygame
 
 from core.常量与路径 import 取项目根目录 as _公共取项目根目录
+from core.工具 import cover缩放 as _cover缩放
 from core.踏板控制 import 踏板动作_左, 踏板动作_右, 踏板动作_确认
 from ui.按钮特效 import 公用按钮点击特效, 公用按钮音效
 from ui.场景过渡 import 公用放大过渡器
@@ -43,16 +44,16 @@ class 缓存资源组:
 
 @dataclass
 class 布局框组:
-    top栏框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    个人中心框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    场景1游客框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    场景1vip框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    场景2游客框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    刷卡背景框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    刷卡内容框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    贵宾装饰框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    磁卡目标框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
-    磁卡当前框: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 1, 1))
+    top栏框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    个人中心框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    场景1游客框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    场景1vip框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    场景2游客框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    刷卡背景框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    刷卡内容框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    贵宾装饰框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    磁卡目标框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
+    磁卡当前框: pygame.Rect = pygame.Rect(0, 0, 1, 1)
 
 
 @dataclass
@@ -110,6 +111,12 @@ class 场景_登陆磁卡:
 
         self._背景视频 = 上下文.get("背景视频")
         self._缓存尺寸 = (0, 0)
+        self._共享背景回退原图 = self._安全加载图片(
+            str(上下文.get("共享背景回退图路径", "") or ""),
+            False,
+        )
+        self._共享背景回退缓存图: pygame.Surface | None = None
+        self._共享背景回退缓存尺寸 = (0, 0)
 
         self._图片资源 = 图片资源组(
             联网图标=self._安全加载图片(资源.get("投币_联网图标", ""), True),
@@ -201,6 +208,38 @@ class 场景_登陆磁卡:
         if 图片 is None:
             return None
         return pygame.transform.smoothscale(图片, 尺寸).convert_alpha()
+
+    def _停用背景视频(self):
+        背景视频 = getattr(self, "_背景视频", None)
+        if 背景视频 is not None:
+            try:
+                if hasattr(背景视频, "关闭"):
+                    背景视频.关闭()
+            except Exception:
+                pass
+        self._背景视频 = None
+        try:
+            self.上下文["背景视频"] = None
+        except Exception:
+            pass
+
+    def _取共享背景回退面(self, 宽: int, 高: int) -> pygame.Surface | None:
+        原图 = getattr(self, "_共享背景回退原图", None)
+        if not isinstance(原图, pygame.Surface):
+            return None
+        目标尺寸 = (max(1, int(宽)), max(1, int(高)))
+        if (
+            tuple(getattr(self, "_共享背景回退缓存尺寸", (0, 0))) == tuple(目标尺寸)
+            and isinstance(getattr(self, "_共享背景回退缓存图", None), pygame.Surface)
+        ):
+            return self._共享背景回退缓存图
+        try:
+            图 = _cover缩放(原图, int(目标尺寸[0]), int(目标尺寸[1])).convert()
+        except Exception:
+            return None
+        self._共享背景回退缓存图 = 图
+        self._共享背景回退缓存尺寸 = tuple(目标尺寸)
+        return 图
 
     def _绘制_按中心缩放(
         self,
@@ -445,16 +484,24 @@ class 场景_登陆磁卡:
         return None
 
     def 绘制(self):
-        from core.工具 import 绘制底部联网与信用
+        from core.工具 import cover缩放, 绘制底部联网与信用
 
         屏幕 = self.上下文["屏幕"]
         self._确保缓存()
         宽, 高 = 屏幕.get_size()
 
         屏幕.fill((0, 0, 0))
-        背景面 = self._背景视频.读取覆盖帧(宽, 高) if self._背景视频 else None
-        if 背景面 is not None:
-            屏幕.blit(背景面, (0, 0))
+        try:
+            帧 = self._背景视频.读取帧() if self._背景视频 else None
+        except Exception:
+            self._停用背景视频()
+            帧 = None
+        if 帧 is not None:
+            屏幕.blit(cover缩放(帧, 宽, 高), (0, 0))
+        else:
+            回退背景 = self._取共享背景回退面(宽, 高)
+            if isinstance(回退背景, pygame.Surface):
+                屏幕.blit(回退背景, (0, 0))
 
         if self._缓存资源.遮罩图:
             屏幕.blit(self._缓存资源.遮罩图, (0, 0))

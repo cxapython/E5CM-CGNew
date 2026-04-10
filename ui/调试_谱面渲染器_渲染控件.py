@@ -191,10 +191,16 @@ class 谱面渲染器布局管理器:
             Tuple[str, str, int, bool, Tuple[int, int, int]], pygame.Surface
         ] = {}
         self._缩放图缓存: Dict[Tuple[str, int, int], pygame.Surface] = {}
+        self._去黑底缓存: Dict[Tuple[int, int, int, int], pygame.Surface] = {}
+        self._图像预处理缓存: Dict[
+            Tuple[str, int, int, int, int, int, int],
+            pygame.Surface,
+        ] = {}
         self._暴走血条缓存: Dict[Tuple[Any, ...], Any] = {}
-        self._皮肤帧处理缓存: Dict[Tuple[str, str], Optional[pygame.Surface]] = {}
         self._渲染清单缓存: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
         self._布局依赖键: set[str] = set()
+        self._禁用热重载: bool = False
+        self._禁用资源热检查: bool = False
 
         self._默认字体路径 = os.path.join(
             self.项目根, "冷资源", "字体", "方正黑体简体.TTF"
@@ -350,8 +356,9 @@ class 谱面渲染器布局管理器:
     def _清空运行时缓存(self):
         self._渲染清单缓存.clear()
         self._缩放图缓存.clear()
+        self._去黑底缓存.clear()
+        self._图像预处理缓存.clear()
         self._暴走血条缓存.clear()
-        self._皮肤帧处理缓存.clear()
 
     def _重建布局依赖键(self):
         依赖键: set[str] = {"_调试强制显示", "_调试隐藏控件ids"}
@@ -401,6 +408,8 @@ class 谱面渲染器布局管理器:
         _安全写json(self.布局json路径, self._布局数据)
 
     def 热重载(self):
+        if bool(getattr(self, "_禁用热重载", False)):
+            return
         self._载入(强制=False)
 
     def 导出快照(self) -> Dict[str, Any]:
@@ -1036,6 +1045,21 @@ class 谱面渲染器布局管理器:
             return None
         绝对路径 = os.path.abspath(os.path.join(self.项目根, 相对路径))
 
+        if bool(getattr(self, "_禁用资源热检查", False)):
+            旧 = self._文件图缓存.get(绝对路径)
+            if 旧 is not None:
+                return 旧[1]
+            if not os.path.isfile(绝对路径):
+                self._文件图缓存[绝对路径] = (-1.0, None)
+                return None
+            try:
+                图 = pygame.image.load(绝对路径).convert_alpha()
+                self._文件图缓存[绝对路径] = (-1.0, 图)
+                return 图
+            except Exception:
+                self._文件图缓存[绝对路径] = (-1.0, None)
+                return None
+
         try:
             修改时间 = (
                 float(os.path.getmtime(绝对路径)) if os.path.isfile(绝对路径) else -1.0
@@ -1131,6 +1155,24 @@ class 谱面渲染器布局管理器:
         json路径 = os.path.join(绝对目录, "skin.json")
         png路径 = os.path.join(绝对目录, "skin.png")
 
+        if bool(getattr(self, "_禁用资源热检查", False)):
+            旧 = self._外部图集缓存.get(绝对目录)
+            if 旧 is not None:
+                帧表 = 旧[2]
+                return 帧表.get(帧名) if isinstance(帧表, dict) else None
+            if (not os.path.isfile(json路径)) or (not os.path.isfile(png路径)):
+                self._外部图集缓存[绝对目录] = (-1.0, -1.0, None)
+                return None
+            try:
+                图集图 = pygame.image.load(png路径).convert_alpha()
+                json数据 = _安全读json(json路径)
+                帧表 = self._构建外部图集帧表(图集图, json数据)
+                self._外部图集缓存[绝对目录] = (-1.0, -1.0, 帧表)
+                return 帧表.get(帧名) if isinstance(帧表, dict) else None
+            except Exception:
+                self._外部图集缓存[绝对目录] = (-1.0, -1.0, None)
+                return None
+
         try:
             json_mtime = (
                 float(os.path.getmtime(json路径)) if os.path.isfile(json路径) else -1.0
@@ -1184,30 +1226,7 @@ class 谱面渲染器布局管理器:
             原图 = 取函数(帧名)
             if not isinstance(原图, pygame.Surface):
                 return None
-            if 分包名 != "key_effect":
-                return 原图
-
-            缓存键 = (str(分包名), str(帧名))
-            if 缓存键 in self._皮肤帧处理缓存:
-                return self._皮肤帧处理缓存[缓存键]
-
-            try:
-                图 = 原图.copy().convert_alpha()
-                w = int(图.get_width())
-                h = int(图.get_height())
-                if w > 0 and h > 0:
-                    for y in range(h):
-                        for x in range(w):
-                            r, g, b, a = 图.get_at((x, y))
-                            if a <= 0:
-                                continue
-                            if max(int(r), int(g), int(b)) <= 8:
-                                图.set_at((x, y), (0, 0, 0, 0))
-                self._皮肤帧处理缓存[缓存键] = 图
-                return 图
-            except Exception:
-                self._皮肤帧处理缓存[缓存键] = 原图
-                return 原图
+            return 原图
         except Exception:
             return None
 
@@ -1340,6 +1359,98 @@ class 谱面渲染器布局管理器:
             self._缩放图缓存.clear()
         self._缩放图缓存[key] = 图2
         return 图2
+
+    def _取去黑底图(
+        self,
+        图: Optional[pygame.Surface],
+        黑阈值: int = 12,
+    ) -> Optional[pygame.Surface]:
+        if 图 is None:
+            return None
+        try:
+            黑阈值 = int(max(0, min(255, int(黑阈值))))
+        except Exception:
+            黑阈值 = 12
+        try:
+            缓存键 = (int(id(图)), int(图.get_width()), int(图.get_height()), int(黑阈值))
+        except Exception:
+            return 图
+        命中图 = self._去黑底缓存.get(缓存键)
+        if isinstance(命中图, pygame.Surface):
+            return 命中图
+        try:
+            图2 = 图.copy().convert_alpha()
+            宽 = int(图2.get_width())
+            高 = int(图2.get_height())
+            if 宽 > 0 and 高 > 0:
+                for y in range(高):
+                    for x in range(宽):
+                        r, g, b, a = 图2.get_at((x, y))
+                        if a <= 0:
+                            continue
+                        if max(int(r), int(g), int(b)) <= int(黑阈值):
+                            图2.set_at((x, y), (0, 0, 0, 0))
+        except Exception:
+            图2 = 图
+        self._去黑底缓存[缓存键] = 图2
+        if len(self._去黑底缓存) >= 1024:
+            self._去黑底缓存.clear()
+        return 图2
+
+    def _取预处理图(
+        self,
+        缓存键: str,
+        原图: Optional[pygame.Surface],
+        水平翻转: bool = False,
+        旋转角度: float = 0.0,
+        黑底透明: bool = False,
+        黑阈值: int = 12,
+    ) -> Optional[pygame.Surface]:
+        if 原图 is None:
+            return None
+        if (not bool(水平翻转)) and abs(float(旋转角度)) <= 0.001 and (not bool(黑底透明)):
+            return 原图
+        角度标记 = int(round(float(旋转角度) * 10.0))
+        try:
+            键 = (
+                str(缓存键),
+                int(id(原图)),
+                int(原图.get_width()),
+                int(原图.get_height()),
+                1 if bool(水平翻转) else 0,
+                int(角度标记),
+                int(黑阈值 if bool(黑底透明) else -1),
+            )
+        except Exception:
+            键 = (
+                str(缓存键),
+                int(id(原图)),
+                0,
+                0,
+                1 if bool(水平翻转) else 0,
+                int(角度标记),
+                int(黑阈值 if bool(黑底透明) else -1),
+            )
+        命中图 = self._图像预处理缓存.get(键)
+        if isinstance(命中图, pygame.Surface):
+            return 命中图
+        图 = 原图
+        if bool(水平翻转):
+            try:
+                图 = pygame.transform.flip(图, True, False).convert_alpha()
+            except Exception:
+                pass
+        if abs(float(旋转角度)) > 0.001:
+            try:
+                图 = pygame.transform.rotozoom(图, float(旋转角度), 1.0).convert_alpha()
+            except Exception:
+                pass
+        if bool(黑底透明):
+            图 = self._取去黑底图(图, 黑阈值=int(黑阈值)) or 图
+        self._图像预处理缓存[键] = 图
+        if len(self._图像预处理缓存) >= 2048:
+            self._图像预处理缓存.clear()
+        return 图
 
     @staticmethod
     def _平滑步进(t: float) -> float:
@@ -2066,7 +2177,7 @@ class 谱面渲染器布局管理器:
             return
 
         # =========================
-        # ✅ 序列帧（用于特效层/调试循环）
+        # ✅ 序列帧
         # =========================
         if 类型 == "序列帧":
             if bool(上下文.get("性能模式", False)) and bool(
@@ -2074,7 +2185,7 @@ class 谱面渲染器布局管理器:
             ):
                 return
 
-            分包 = str(控件定义.get("分包") or "key_effect").strip()
+            分包 = str(控件定义.get("分包") or "").strip()
             图集目录 = str(控件定义.get("图集目录") or "").strip()
             前缀 = str(控件定义.get("前缀") or "").strip()
             帧数 = int(_取数(控件定义.get("帧数"), 18))
@@ -2108,7 +2219,7 @@ class 谱面渲染器布局管理器:
                 except Exception:
                     时间秒 = 0.0
 
-            if (not 前缀) or 帧数 <= 0 or 帧率 <= 0:
+            if (not 前缀) or (not 图集目录 and not 分包) or 帧数 <= 0 or 帧率 <= 0:
                 return
 
             if 播放周期秒 > 0.0:
@@ -2135,11 +2246,16 @@ class 谱面渲染器布局管理器:
             if 原图 is None:
                 return
 
-            try:
-                if 是否翻转:
-                    原图 = pygame.transform.flip(原图, True, False)
-            except Exception:
-                pass
+            原图 = self._取预处理图(
+                f"序列帧:{图集目录 or 分包}:{文件名}",
+                原图,
+                水平翻转=bool(是否翻转),
+                旋转角度=0.0,
+                黑底透明=bool(控件定义.get("黑底透明", False)),
+                黑阈值=12,
+            )
+            if 原图 is None:
+                return
 
             目标w = int(max(2, 目标矩形.w))
             目标h = int(max(2, 目标矩形.h))
@@ -2286,13 +2402,16 @@ class 谱面渲染器布局管理器:
         # ✅ 图片（混合add + 水平翻转键 + 圆形遮罩）
         # =========================
         if 类型 == "图片":
-            原图 = self._解析图源(控件定义.get("图源"), 上下文, 皮肤包)
+            图源定义 = 控件定义.get("图源")
+            原图 = self._解析图源(图源定义, 上下文, 皮肤包)
             if 原图 is None:
                 return
 
             等比 = str(控件定义.get("等比") or "stretch").lower()
             遮罩 = str(控件定义.get("遮罩") or "").lower()
             混合 = str(控件定义.get("混合") or "").lower()
+            需要稳定绘制 = bool(控件定义.get("像素稳定绘制", False))
+            需要去黑底 = bool(控件定义.get("黑底透明", False))
             旋转度数 = float(_取数(控件定义.get("旋转"), 0.0))
             旋转速度 = float(_取数(控件定义.get("旋转速度"), 0.0))
             旋转速度键 = str(控件定义.get("旋转速度键") or "").strip()
@@ -2316,15 +2435,37 @@ class 谱面渲染器布局管理器:
                 except Exception:
                     pass
 
-            图源 = 原图
-            try:
-                if 是否翻转:
-                    图源 = pygame.transform.flip(图源, True, False)
-            except Exception:
-                图源 = 原图
-
             目标w = int(max(2, 目标矩形.w))
             目标h = int(max(2, 目标矩形.h))
+
+            if abs(float(旋转速度)) > 0.001:
+                try:
+                    当前时间 = float(上下文.get(旋转时间键, 0.0) or 0.0)
+                except Exception:
+                    try:
+                        当前时间 = float(pygame.time.get_ticks()) / 1000.0
+                    except Exception:
+                        当前时间 = 0.0
+                旋转度数 += float(旋转速度) * float(当前时间)
+
+            if bool(需要稳定绘制):
+                图源 = self._取预处理图(
+                    f"图片:{str(控件定义.get('id') or '')}:{str(图源定义)}",
+                    原图,
+                    水平翻转=bool(是否翻转),
+                    旋转角度=-float(旋转度数),
+                    黑底透明=bool(需要去黑底),
+                    黑阈值=12,
+                )
+                if 图源 is None:
+                    return
+            else:
+                图源 = 原图
+                try:
+                    if 是否翻转:
+                        图源 = pygame.transform.flip(图源, True, False)
+                except Exception:
+                    图源 = 原图
 
             if 等比 == "contain":
                 原宽, 原高 = int(图源.get_width()), int(图源.get_height())
@@ -2334,12 +2475,12 @@ class 谱面渲染器布局管理器:
                 新宽 = int(max(2, 原宽 * 比例))
                 新高 = int(max(2, 原高 * 比例))
                 图2 = self._取缩放图(f"图片:contain:{id(图源)}", 图源, 新宽, 新高)
-                x = 目标矩形.centerx - 新宽 // 2
-                y = 目标矩形.centery - 新高 // 2
+                x = int(目标矩形.centerx - 新宽 // 2)
+                y = int(目标矩形.centery - 新高 // 2)
             else:
                 图2 = self._取缩放图(f"图片:stretch:{id(图源)}", 图源, 目标w, 目标h)
-                x = 目标矩形.x
-                y = 目标矩形.y
+                x = int(目标矩形.x)
+                y = int(目标矩形.y)
 
             if 遮罩 == "circle":
                 罩 = self._取圆形遮罩(图2.get_width(), 图2.get_height())
@@ -2352,17 +2493,7 @@ class 谱面渲染器布局管理器:
                 except Exception:
                     pass
 
-            if abs(float(旋转速度)) > 0.001:
-                try:
-                    当前时间 = float(上下文.get(旋转时间键, 0.0) or 0.0)
-                except Exception:
-                    try:
-                        当前时间 = float(pygame.time.get_ticks()) / 1000.0
-                    except Exception:
-                        当前时间 = 0.0
-                旋转度数 += float(旋转速度) * float(当前时间)
-
-            if abs(float(旋转度数)) > 0.001:
+            if (not bool(需要稳定绘制)) and abs(float(旋转度数)) > 0.001:
                 try:
                     图2 = pygame.transform.rotozoom(
                         图2, -float(旋转度数), 1.0

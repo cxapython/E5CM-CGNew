@@ -1,9 +1,16 @@
 import math
 import os
+import sys
+import threading
 
 import pygame
 
 from core.常量与路径 import 拼资源路径, 取songs根目录
+from core.日志 import (
+    取日志器 as _取日志器,
+    记录异常 as _记录异常日志,
+    记录信息 as _记录信息日志,
+)
 from core.工具 import cover缩放, 安全加载图片, 获取字体, 绘制文本
 from core.踏板控制 import (
     踏板动作_左,
@@ -16,6 +23,9 @@ from ui.按钮特效 import 图片按钮
 from ui.top栏 import 生成top栏
 from ui.场景过渡 import 公用放大过渡器
 from ui.按钮特效 import 公用按钮音效
+
+
+_日志器 = _取日志器("scene.子模式")
 
 
 class 场景_子模式(场景基类):
@@ -86,6 +96,10 @@ class 场景_子模式(场景基类):
         self._DIY起始x = 0
         self._DIY可视基准宽 = 0
         self._DIY内容总宽 = 0
+        self._选歌预热线程: threading.Thread | None = None
+        self._选歌预热停止事件 = threading.Event()
+        self._选歌预热任务签名: tuple[str, str, tuple[str, ...]] | None = None
+        self._已提示打包禁用预热 = False
 
     def _夹紧(self, 值: float, 最小值: float, 最大值: float) -> float:
         return max(最小值, min(最大值, 值))
@@ -381,9 +395,10 @@ class 场景_子模式(场景基类):
 
         self._预加载固定UI()
         self.重算布局()
+        self._安排选歌预热()
 
     def 退出(self):
-        pass
+        self._停止选歌预热()
 
     def _预加载固定UI(self):
         self._top栏背景原图 = 安全加载图片(
@@ -663,6 +678,7 @@ class 场景_子模式(场景基类):
             return
 
         self._更新当前页布局(重置入场=True, 重置水平偏移=True)
+        self._安排选歌预热()
 
     def _切换到页(
         self,
@@ -690,6 +706,7 @@ class 场景_子模式(场景基类):
 
         if 播放音效:
             self._按钮音效.播放()
+        self._安排选歌预热()
         return True
 
     def _应用模式选中(self, 模式名: str):
@@ -700,7 +717,139 @@ class 场景_子模式(场景基类):
         self._隐藏按钮模式名 = 模式名
         self._大图标表面 = None
         self._大图标路径缓存 = None
+        self._安排选歌预热()
         return None
+
+    def _取选歌预热任务(self) -> tuple[str, str, list[str]]:
+        状态 = self.上下文.get("状态", {})
+        if not isinstance(状态, dict):
+            状态 = {}
+
+        songs根目录 = 取songs根目录(资源=self._资源, 状态=状态)
+        类型名 = str(
+            状态.get("songs子文件夹", "")
+            or 状态.get("选歌_类型", "")
+            or 状态.get("大模式", "")
+            or ""
+        ).strip()
+        if (not songs根目录) or (not 类型名):
+            return "", "", []
+
+        任务模式列表: list[str] = []
+
+        def _加入模式(模式名: object):
+            文本 = str(模式名 or "").strip()
+            if (not 文本) or (文本 in 任务模式列表):
+                return
+            任务模式列表.append(文本)
+
+        当前页按钮项 = self._取当前页按钮项()
+        if self._当前是否DIY模式():
+            _加入模式(self._当前选中模式名)
+            if not 任务模式列表:
+                for _按钮, 模式名, _小图, _大图 in 当前页按钮项[:2]:
+                    _加入模式(模式名)
+        else:
+            for _按钮, 模式名, _小图, _大图 in 当前页按钮项:
+                _加入模式(模式名)
+
+        return str(songs根目录), str(类型名), 任务模式列表
+
+    def _停止选歌预热(self, 等待秒: float = 0.08) -> bool:
+        try:
+            self._选歌预热停止事件.set()
+        except Exception:
+            pass
+
+        线程 = getattr(self, "_选歌预热线程", None)
+        仍存活 = False
+        if (
+            isinstance(线程, threading.Thread)
+            and 线程.is_alive()
+            and 线程 is not threading.current_thread()
+        ):
+            try:
+                线程.join(timeout=max(0.0, float(等待秒)))
+            except Exception:
+                pass
+            仍存活 = bool(线程.is_alive())
+
+        if bool(仍存活):
+            return False
+        self._选歌预热线程 = None
+        self._选歌预热任务签名 = None
+        return True
+
+    def _选歌预热线程主函数(
+        self,
+        songs根目录: str,
+        类型名: str,
+        模式列表: list[str],
+        停止事件: threading.Event,
+    ):
+        try:
+            from scenes.场景_选歌 import 扫描songs_指定路径
+        except Exception as 异常:
+            _记录异常日志(_日志器, "子模式预热导入选歌扫描函数失败", 异常)
+            return
+
+        for 模式名 in list(模式列表 or []):
+            if bool(停止事件.is_set()):
+                return
+            try:
+                扫描songs_指定路径(str(songs根目录), str(类型名), str(模式名))
+            except Exception as 异常:
+                _记录异常日志(
+                    _日志器,
+                    f"子模式预热扫描失败 类型={类型名} 模式={模式名}",
+                    异常,
+                )
+                continue
+
+    def _安排选歌预热(self):
+        if bool(getattr(sys, "frozen", False)):
+            self._停止选歌预热(等待秒=0.02)
+            if not bool(getattr(self, "_已提示打包禁用预热", False)):
+                _记录信息日志(_日志器, "打包环境已禁用子模式选歌预热线程")
+                self._已提示打包禁用预热 = True
+            return
+
+        songs根目录, 类型名, 模式列表 = self._取选歌预热任务()
+        if (not songs根目录) or (not 类型名) or (not 模式列表):
+            self._停止选歌预热(等待秒=0.02)
+            return
+
+        任务签名 = (
+            str(songs根目录),
+            str(类型名),
+            tuple(str(模式名) for 模式名 in 模式列表),
+        )
+        if 任务签名 == getattr(self, "_选歌预热任务签名", None):
+            线程 = getattr(self, "_选歌预热线程", None)
+            if isinstance(线程, threading.Thread) and 线程.is_alive():
+                return
+
+        if not bool(self._停止选歌预热(等待秒=0.02)):
+            return
+        self._选歌预热任务签名 = 任务签名
+        self._选歌预热停止事件 = threading.Event()
+        self._选歌预热线程 = threading.Thread(
+            target=self._选歌预热线程主函数,
+            args=(
+                str(songs根目录),
+                str(类型名),
+                list(模式列表),
+                self._选歌预热停止事件,
+            ),
+            name="submode-select-prewarm",
+            daemon=True,
+        )
+        try:
+            self._选歌预热线程.start()
+        except Exception as 异常:
+            _记录异常日志(_日志器, "启动子模式选歌预热线程失败", 异常)
+            self._选歌预热线程 = None
+            self._选歌预热任务签名 = None
 
     def _取当前选中索引(self) -> int | None:
         if not self.子模式按钮列表 or (not self._当前选中模式名):
@@ -1200,6 +1349,9 @@ class 场景_子模式(场景基类):
         if 音乐管理 is not None:
             停止方法 = getattr(音乐管理, "停止", None)
             if callable(停止方法):
-                停止方法()
+                try:
+                    停止方法()
+                except Exception as 异常:
+                    _记录异常日志(_日志器, "子模式切换选歌前停止背景音乐失败", 异常)
 
         return {"切换到": "选歌", "禁用黑屏过渡": False}

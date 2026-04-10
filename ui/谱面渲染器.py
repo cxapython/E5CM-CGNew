@@ -10,8 +10,18 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.game_esc_menu_settings import is_binding_pressed
+from core.日志 import 取日志器 as _取日志器, 记录信息 as _记录信息日志
 from core.常量与路径 import 取布局配置路径, 取运行根目录
 import pygame
+from ui.击中特效序列帧 import 绘制击中特效序列帧
+
+# 打包场景下仅靠函数内动态导入可能被打包器漏收，先做静态导入兜底。
+try:
+    from ui.调试_谱面渲染器_渲染控件 import (
+        谱面渲染器布局管理器 as _谱面渲染器布局管理器类,
+    )
+except Exception:
+    _谱面渲染器布局管理器类 = None
 
 
 def _取数(值: Any, 默认值: float = 0.0) -> float:
@@ -21,6 +31,45 @@ def _取数(值: Any, 默认值: float = 0.0) -> float:
         return float(值)
     except Exception:
         return float(默认值)
+
+
+_日志器 = _取日志器("ui.谱面渲染器")
+_GPU诊断节流表: Dict[str, float] = {}
+
+
+def _GPU诊断记录(键: str, 消息: str, 最小间隔秒: float = 0.8) -> None:
+    try:
+        当前秒 = float(time.perf_counter())
+    except Exception:
+        当前秒 = 0.0
+    上次秒 = float(_GPU诊断节流表.get(str(键), -999.0) or -999.0)
+    if float(当前秒 - 上次秒) < float(max(0.05, 最小间隔秒)):
+        return
+    _GPU诊断节流表[str(键)] = float(当前秒)
+    _记录信息日志(_日志器, f"[GPU-PRODUCER] {str(消息 or '')}")
+
+
+def _GPU诊断矩形文本(矩形: Any) -> str:
+    if not isinstance(矩形, pygame.Rect):
+        return "-"
+    return f"{int(矩形.x)},{int(矩形.y)},{int(矩形.w)}x{int(矩形.h)}"
+
+
+def _GPU诊断图层内容文本(图层: Any) -> str:
+    if not isinstance(图层, pygame.Surface):
+        return "-"
+    try:
+        矩形 = 图层.get_bounding_rect(min_alpha=1)
+    except TypeError:
+        try:
+            矩形 = 图层.get_bounding_rect()
+        except Exception:
+            return "err"
+    except Exception:
+        return "err"
+    if not isinstance(矩形, pygame.Rect) or 矩形.w <= 0 or 矩形.h <= 0:
+        return "blank"
+    return _GPU诊断矩形文本(矩形)
 
 
 @dataclass
@@ -79,6 +128,8 @@ class 渲染输入:
     GPU接管Stage绘制: bool = False
     隐藏顶部HUD绘制: bool = False
     隐藏判定区绘制: bool = False
+    GPU音符布局快照: Optional[Dict[str, Any]] = None
+    GPU附加HUD图层: Optional[List[Dict[str, Any]]] = None
 
     # ✅ 新增：圆环频谱对象（场景里创建并绑定音频，布局里只负责“画”）
     圆环频谱对象: Optional[Any] = None
@@ -92,6 +143,17 @@ class _贴图集:
         return self.帧表.get(str(名), None)
 
 
+class _皮肤包绘制代理:
+    def __init__(self, 基础皮肤包: Any, 覆写字段: Optional[Dict[str, Any]] = None):
+        self._基础皮肤包 = 基础皮肤包
+        覆写 = dict(覆写字段 or {})
+        for 字段名, 值 in 覆写.items():
+            setattr(self, str(字段名), 值)
+
+    def __getattr__(self, 名称: str):
+        return getattr(self._基础皮肤包, 名称)
+
+
 class _皮肤包:
     """
     支持：目录 or zip
@@ -100,7 +162,11 @@ class _皮肤包:
       blood_bar/skin.json + skin.png
       judge/skin.json + skin.png
       key/skin.json + skin.png
+      key/1p/skin.json + skin.png
+      key/2p/skin.json + skin.png
       key_effect/skin.json + skin.png
+      key_effect/1p/skin.json + skin.png
+      key_effect/2p/skin.json + skin.png
       number/skin.json + skin.png
     """
 
@@ -111,10 +177,16 @@ class _皮肤包:
         self.压缩包前缀: str = ""
 
         self.arrow: Optional[_贴图集] = None
+        self.arrow_1p: Optional[_贴图集] = None
+        self.arrow_2p: Optional[_贴图集] = None
         self.blood_bar: Optional[_贴图集] = None
         self.judge: Optional[_贴图集] = None
         self.key: Optional[_贴图集] = None
+        self.key_1p: Optional[_贴图集] = None
+        self.key_2p: Optional[_贴图集] = None
         self.key_effect: Optional[_贴图集] = None
+        self.key_effect_1p: Optional[_贴图集] = None
+        self.key_effect_2p: Optional[_贴图集] = None
         self.number: Optional[_贴图集] = None
         self.arrow_hold设置: Dict[str, Any] = {}
 
@@ -127,10 +199,16 @@ class _皮肤包:
             raise RuntimeError("皮肤根路径为空")
 
         self.arrow = None
+        self.arrow_1p = None
+        self.arrow_2p = None
         self.blood_bar = None
         self.judge = None
         self.key = None
+        self.key_1p = None
+        self.key_2p = None
         self.key_effect = None
+        self.key_effect_1p = None
+        self.key_effect_2p = None
         self.number = None
         self.arrow_hold设置 = {}
         self.缺失分包 = []
@@ -143,17 +221,22 @@ class _皮肤包:
 
         if self.源类型 == "sm_dir":
             self.arrow = self._尝试读stepmania箭头_目录(self.根路径)
+            self._初始化分玩家箭头图集()
             self.arrow_hold设置 = {"body_mode": "stretch"}
             self.key = self._合并贴图集(
                 self._尝试读stepmania判定区_目录(self.根路径),
                 self._尝试读贴图集_目录(self.根路径, "key"),
                 self._尝试读默认箭头贴图集("key"),
             )
+            self.key_1p = self.key
+            self.key_2p = self.key
             self.key_effect = (
                 self._尝试读stepmania击中特效_目录(self.根路径)
                 or self._尝试读贴图集_目录(self.根路径, "key_effect")
                 or self._尝试读默认箭头贴图集("key_effect")
             )
+            self.key_effect_1p = self.key_effect
+            self.key_effect_2p = self.key_effect
             self.blood_bar = self._尝试读固定贴图集("blood_bar")
             self.judge = self._尝试读固定贴图集("judge")
             self.number = self._尝试读固定贴图集("number")
@@ -161,12 +244,47 @@ class _皮肤包:
 
         if self.源类型 == "dir":
             self.arrow = self._尝试读贴图集_目录(self.根路径, "arrow")
+            self._初始化分玩家箭头图集()
             self.arrow_hold设置 = self._尝试读可选json_路径(
                 os.path.join(self.根路径, "arrow", "hold.json"),
                 "arrow/hold.json",
             )
             self.key = self._尝试读贴图集_目录(self.根路径, "key")
+            self.key_1p = self._尝试读贴图集_路径(
+                os.path.join(self.根路径, "key", "1p"),
+                "key/1p",
+                记录缺失=False,
+            )
+            self.key_2p = self._尝试读贴图集_路径(
+                os.path.join(self.根路径, "key", "2p"),
+                "key/2p",
+                记录缺失=False,
+            )
+            if self.key is None:
+                self.key = self._合并贴图集(self.key_1p, self.key_2p)
+            if self.key_1p is None:
+                self.key_1p = self.key
+            if self.key_2p is None:
+                self.key_2p = self.key
             self.key_effect = self._尝试读贴图集_目录(self.根路径, "key_effect")
+            self.key_effect_1p = self._尝试读贴图集_路径(
+                os.path.join(self.根路径, "key_effect", "1p"),
+                "key_effect/1p",
+                记录缺失=False,
+            )
+            self.key_effect_2p = self._尝试读贴图集_路径(
+                os.path.join(self.根路径, "key_effect", "2p"),
+                "key_effect/2p",
+                记录缺失=False,
+            )
+            if self.key_effect is None:
+                self.key_effect = self._合并贴图集(
+                    self.key_effect_1p, self.key_effect_2p
+                )
+            if self.key_effect_1p is None:
+                self.key_effect_1p = self.key_effect
+            if self.key_effect_2p is None:
+                self.key_effect_2p = self.key_effect
             self.blood_bar = self._尝试读固定贴图集(
                 "blood_bar"
             ) or self._尝试读贴图集_目录(self.根路径, "blood_bar")
@@ -189,15 +307,42 @@ class _皮肤包:
         with zipfile.ZipFile(self.压缩包路径, "r") as 压缩包:
             名单 = set(压缩包.namelist())
             self.arrow = self._尝试读贴图集_zip(压缩包, self.压缩包前缀, "arrow")
+            self._初始化分玩家箭头图集()
             self.arrow_hold设置 = self._尝试读可选json_zip(
                 压缩包,
                 f"{self.压缩包前缀}arrow/hold.json",
                 "arrow/hold.json",
             )
             self.key = self._尝试读贴图集_zip(压缩包, self.压缩包前缀, "key")
+            self.key_1p = self._尝试读贴图集_zip(
+                压缩包, self.压缩包前缀, "key/1p", 记录缺失=False
+            )
+            self.key_2p = self._尝试读贴图集_zip(
+                压缩包, self.压缩包前缀, "key/2p", 记录缺失=False
+            )
+            if self.key is None:
+                self.key = self._合并贴图集(self.key_1p, self.key_2p)
+            if self.key_1p is None:
+                self.key_1p = self.key
+            if self.key_2p is None:
+                self.key_2p = self.key
             self.key_effect = self._尝试读贴图集_zip(
                 压缩包, self.压缩包前缀, "key_effect"
             )
+            self.key_effect_1p = self._尝试读贴图集_zip(
+                压缩包, self.压缩包前缀, "key_effect/1p", 记录缺失=False
+            )
+            self.key_effect_2p = self._尝试读贴图集_zip(
+                压缩包, self.压缩包前缀, "key_effect/2p", 记录缺失=False
+            )
+            if self.key_effect is None:
+                self.key_effect = self._合并贴图集(
+                    self.key_effect_1p, self.key_effect_2p
+                )
+            if self.key_effect_1p is None:
+                self.key_effect_1p = self.key_effect
+            if self.key_effect_2p is None:
+                self.key_effect_2p = self.key_effect
             self.blood_bar = self._尝试读固定贴图集(
                 "blood_bar"
             ) or self._尝试读贴图集_zip(压缩包, self.压缩包前缀, "blood_bar")
@@ -213,6 +358,78 @@ class _皮肤包:
                 and f"{self.压缩包前缀}number/skin.png" in 名单
                 else None
             ) or self._尝试读固定贴图集("number")
+
+    def 取key图集(self, 玩家序号: int = 1) -> Optional[_贴图集]:
+        try:
+            玩家 = int(玩家序号)
+        except Exception:
+            玩家 = 1
+        if 玩家 == 2:
+            return self.key_2p or self.key or self.key_1p
+        return self.key_1p or self.key or self.key_2p
+
+    def 取key_effect图集(self, 玩家序号: int = 1) -> Optional[_贴图集]:
+        try:
+            玩家 = int(玩家序号)
+        except Exception:
+            玩家 = 1
+        if 玩家 == 2:
+            return self.key_effect_2p or self.key_effect or self.key_effect_1p
+        return self.key_effect_1p or self.key_effect or self.key_effect_2p
+
+    def 取arrow图集(self, 玩家序号: int = 1) -> Optional[_贴图集]:
+        try:
+            玩家 = int(玩家序号)
+        except Exception:
+            玩家 = 1
+        if 玩家 == 2:
+            return self.arrow_2p or self.arrow or self.arrow_1p
+        return self.arrow_1p or self.arrow or self.arrow_2p
+
+    @staticmethod
+    def _构建箭头分玩家别名图集(
+        基础图集: Optional[_贴图集],
+        前缀: str,
+    ) -> Optional[_贴图集]:
+        if not isinstance(基础图集, _贴图集):
+            return None
+        帧表 = dict(getattr(基础图集, "帧表", {}) or {})
+        if not 帧表:
+            return None
+        前缀 = str(前缀 or "").strip().lower()
+        if not 前缀:
+            return None
+        目标帧表: Dict[str, pygame.Surface] = {
+            str(名): 图
+            for 名, 图 in 帧表.items()
+            if isinstance(图, pygame.Surface)
+        }
+        前缀文本 = f"{前缀}_"
+        命中数 = 0
+        for 名, 图 in 帧表.items():
+            文件名 = str(名 or "")
+            if (not 文件名.startswith(前缀文本)) or (not isinstance(图, pygame.Surface)):
+                continue
+            标准名 = f"arrow_{文件名[len(前缀文本):]}"
+            目标帧表[str(标准名)] = 图
+            命中数 += 1
+        if 命中数 <= 0:
+            return None
+        return _贴图集(目标帧表)
+
+    def _初始化分玩家箭头图集(self):
+        self.arrow_1p = self.arrow
+        self.arrow_2p = self.arrow
+        左图集 = self._构建箭头分玩家别名图集(self.arrow, "larrow")
+        右图集 = self._构建箭头分玩家别名图集(self.arrow, "rarrow")
+        if 左图集 is not None:
+            self.arrow_1p = 左图集
+        if 右图集 is not None:
+            self.arrow_2p = 右图集
+        if (self.arrow_1p is None) and (self.arrow_2p is not None):
+            self.arrow_1p = self.arrow_2p
+        if (self.arrow_2p is None) and (self.arrow_1p is not None):
+            self.arrow_2p = self.arrow_1p
 
     @staticmethod
     def _解析皮肤源(皮肤根路径: str) -> Tuple[str, str, str]:
@@ -319,6 +536,104 @@ class _皮肤包:
             return int(节点[0]), int(节点[1])
         return 0, 0
 
+    @staticmethod
+    def _预处理击中特效单帧(
+        原图: Optional[pygame.Surface],
+    ) -> Optional[pygame.Surface]:
+        if 原图 is None:
+            return None
+        try:
+            图 = 原图.copy().convert_alpha()
+        except Exception:
+            图 = 原图
+        try:
+            import numpy as _np  # type: ignore
+
+            rgb = pygame.surfarray.pixels3d(图)
+            alpha = pygame.surfarray.pixels_alpha(图)
+            最大通道 = _np.maximum(
+                _np.maximum(rgb[:, :, 0], rgb[:, :, 1]),
+                rgb[:, :, 2],
+            ).astype(_np.uint16)
+            新alpha = ((最大通道 * 最大通道 + 254) // 255).astype(_np.uint8)
+            alpha[:, :] = 新alpha
+            alpha[最大通道 <= 0] = 0
+
+            del rgb
+            del alpha
+        except Exception:
+            try:
+                图.set_colorkey((0, 0, 0))
+            except Exception:
+                pass
+        return 图
+
+    def _预处理击中特效图集图(
+        self, 图集图: Optional[pygame.Surface]
+    ) -> Optional[pygame.Surface]:
+        return self._预处理击中特效单帧(图集图)
+
+    def _预处理击中特效帧表(
+        self,
+        帧表: Optional[Dict[str, pygame.Surface]],
+    ) -> Dict[str, pygame.Surface]:
+        if not isinstance(帧表, dict) or (not 帧表):
+            return {}
+        结果: Dict[str, pygame.Surface] = {}
+        for 文件名, 原图 in 帧表.items():
+            结果[str(文件名)] = (
+                self._预处理击中特效单帧(原图) if isinstance(原图, pygame.Surface) else 原图
+            )
+        return 结果
+
+    @staticmethod
+    def _补全常用帧别名(
+        帧表: Optional[Dict[str, pygame.Surface]],
+        分包名: str,
+    ) -> Dict[str, pygame.Surface]:
+        if not isinstance(帧表, dict) or (not 帧表):
+            return {}
+        分包 = str(分包名 or "").strip().lower()
+        结果: Dict[str, pygame.Surface] = {
+            str(名): 图
+            for 名, 图 in 帧表.items()
+            if isinstance(图, pygame.Surface)
+        }
+        if not 结果:
+            return {}
+
+        def _补双向别名(源名: str, 目标名: str):
+            源 = str(源名 or "").strip()
+            目标 = str(目标名 or "").strip()
+            if (not 源) or (not 目标):
+                return
+            if (目标 not in 结果) and (源 in 结果):
+                结果[目标] = 结果[源]
+            if (源 not in 结果) and (目标 in 结果):
+                结果[源] = 结果[目标]
+
+        if 分包 == "judge":
+            for 源名, 目标名 in (
+                ("judge_perfect.png", "text_pf1_perfect.png"),
+                ("judge_cool.png", "text_pf1_cool.png"),
+                ("judge_good.png", "text_pf1_good.png"),
+                ("judge_miss.png", "text_pf1_miss.png"),
+                ("judge_combo.png", "text_pf1_combo.png"),
+            ):
+                _补双向别名(源名, 目标名)
+        elif 分包 == "number":
+            for ch in list("0123456789x"):
+                _补双向别名(f"judge_number_{ch}.png", f"text_pf1_{ch}.png")
+
+        return 结果
+
+    @staticmethod
+    def _是否击中特效分包(分包名: str) -> bool:
+        标识 = str(分包名 or "").strip().lower().replace("\\", "/")
+        if not 标识:
+            return False
+        return bool(标识 == "key_effect" or 标识.startswith("key_effect/"))
+
     def _构建帧表(
         self, 图集图: pygame.Surface, json数据: dict
     ) -> Dict[str, pygame.Surface]:
@@ -369,25 +684,45 @@ class _皮肤包:
 
         return 帧表
 
-    def _尝试读贴图集_路径(self, 目录路径: str, 标识: str) -> Optional[_贴图集]:
+    def _尝试读贴图集_路径(
+        self,
+        目录路径: str,
+        标识: str,
+        记录缺失: bool = True,
+    ) -> Optional[_贴图集]:
         json路径 = os.path.join(目录路径, "skin.json")
         png路径 = os.path.join(目录路径, "skin.png")
         if not os.path.isfile(json路径) or not os.path.isfile(png路径):
-            self.缺失分包.append(标识)
+            if bool(记录缺失):
+                self.缺失分包.append(标识)
             return None
 
         try:
             with open(json路径, "rb") as f:
                 json数据 = self._安全读json(f.read())
             图集图 = pygame.image.load(png路径)
+            分包名 = str(os.path.basename(os.path.normpath(目录路径)) or "").strip().lower()
+            分包标识 = str(标识 or 分包名 or "").strip().lower()
+            if self._是否击中特效分包(分包标识):
+                图集图 = self._预处理击中特效图集图(图集图) or 图集图
             帧表 = self._构建帧表(图集图, json数据)
+            if self._是否击中特效分包(分包标识):
+                帧表 = self._预处理击中特效帧表(帧表)
+            帧表 = self._补全常用帧别名(帧表, 分包名)
             return _贴图集(帧表=帧表)
         except Exception as 异常:
             self.加载告警.append(f"{标识}加载失败：{type(异常).__name__} {异常}")
             return None
 
-    def _尝试读贴图集_目录(self, 根: str, 子夹: str) -> Optional[_贴图集]:
-        return self._尝试读贴图集_路径(os.path.join(根, 子夹), 子夹)
+    def _尝试读贴图集_目录(
+        self,
+        根: str,
+        子夹: str,
+        记录缺失: bool = True,
+    ) -> Optional[_贴图集]:
+        return self._尝试读贴图集_路径(
+            os.path.join(根, 子夹), 子夹, 记录缺失=bool(记录缺失)
+        )
 
     def _尝试读可选json_路径(self, 文件路径: str, 标识: str) -> Dict[str, Any]:
         if not os.path.isfile(文件路径):
@@ -766,24 +1101,36 @@ class _皮肤包:
             帧表[f"image_085_{索引:04d}.png"] = tap序列[索引]
         for 索引 in range(min(18, len(center序列))):
             帧表[f"image_086_{索引:04d}.png"] = center序列[索引]
+        帧表 = self._预处理击中特效帧表(帧表)
         return _贴图集(帧表) if 帧表 else None
 
     def _尝试读贴图集_zip(
-        self, 压缩包: zipfile.ZipFile, 前缀: str, 子夹: str
+        self,
+        压缩包: zipfile.ZipFile,
+        前缀: str,
+        子夹: str,
+        记录缺失: bool = True,
     ) -> Optional[_贴图集]:
         json名 = f"{前缀}{子夹}/skin.json"
         png名 = f"{前缀}{子夹}/skin.png"
 
         名单 = set(压缩包.namelist())
         if json名 not in 名单 or png名 not in 名单:
-            self.缺失分包.append(子夹)
+            if bool(记录缺失):
+                self.缺失分包.append(子夹)
             return None
 
         try:
             json数据 = self._安全读json(压缩包.read(json名))
             png数据 = 压缩包.read(png名)
             图集图 = pygame.image.load(io.BytesIO(png数据))
+            分包名 = str(子夹 or "").strip().lower()
+            if self._是否击中特效分包(分包名):
+                图集图 = self._预处理击中特效图集图(图集图) or 图集图
             帧表 = self._构建帧表(图集图, json数据)
+            if self._是否击中特效分包(分包名):
+                帧表 = self._预处理击中特效帧表(帧表)
+            帧表 = self._补全常用帧别名(帧表, 分包名)
             return _贴图集(帧表=帧表)
         except Exception as 异常:
             self.加载告警.append(f"{子夹}加载失败：{type(异常).__name__} {异常}")
@@ -890,6 +1237,12 @@ class 谱面渲染器:
         self._头像灰度缓存图: Optional[pygame.Surface] = None
         self._最近软件分项统计: Dict[str, float] = self._新建软件分项统计()
         self._手键黑底透明缓存: Dict[Tuple[int, int, int], pygame.Surface] = {}
+        self._图像变换缓存: Dict[
+            Tuple[str, int, int, int, int, int, int],
+            pygame.Surface,
+        ] = {}
+        self._运行时性能模式: bool = False
+        self._运行时游戏区参数快照: Optional[Dict[str, float]] = None
         # 旧版 F8 手键锚点拖拽/偏移调试链路已下线；9轨播放统一使用布局判定区锚点。
 
     @staticmethod
@@ -937,6 +1290,11 @@ class 谱面渲染器:
         return 结果
 
     def _取游戏区参数(self) -> Dict[str, float]:
+        if bool(getattr(self, "_运行时性能模式", False)) and isinstance(
+            getattr(self, "_运行时游戏区参数快照", None), dict
+        ):
+            return dict(self._运行时游戏区参数快照)
+
         def _取浮点(值: Any, 默认: float) -> float:
             try:
                 return float(值)
@@ -1121,6 +1479,30 @@ class 谱面渲染器:
                 continue
             if isinstance(矩形, pygame.Rect):
                 结果[轨道] = 矩形.copy()
+        return 结果
+
+    @staticmethod
+    def _复制GPU图元列表(值: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        结果: List[Dict[str, Any]] = []
+        if not isinstance(值, list):
+            return 结果
+        for 项 in 值:
+            if not isinstance(项, dict):
+                continue
+            新项 = dict(项)
+            if isinstance(新项.get("rect"), pygame.Rect):
+                新项["rect"] = 新项["rect"].copy()
+            结果.append(新项)
+        return 结果
+
+    @staticmethod
+    def _复制手键播放锚点表(值: Optional[Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+        结果: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(值, dict):
+            return 结果
+        for 键, 项 in 值.items():
+            if isinstance(项, dict):
+                结果[str(键)] = dict(项)
         return 结果
 
     @staticmethod
@@ -1577,6 +1959,61 @@ class 谱面渲染器:
         self._手键黑底透明缓存[键] = 图2
         return 图2
 
+    def _取预处理图(
+        self,
+        缓存键: str,
+        原图: Optional[pygame.Surface],
+        水平翻转: bool = False,
+        旋转角度: float = 0.0,
+        黑底透明: bool = False,
+        黑阈值: int = 12,
+    ) -> Optional[pygame.Surface]:
+        if 原图 is None:
+            return None
+        if (not bool(水平翻转)) and abs(float(旋转角度)) <= 0.001 and (not bool(黑底透明)):
+            return 原图
+        角度标记 = int(round(float(旋转角度) * 10.0))
+        try:
+            缓存项 = (
+                str(缓存键),
+                int(id(原图)),
+                int(原图.get_width()),
+                int(原图.get_height()),
+                1 if bool(水平翻转) else 0,
+                int(角度标记),
+                int(黑阈值 if bool(黑底透明) else -1),
+            )
+        except Exception:
+            缓存项 = (
+                str(缓存键),
+                int(id(原图)),
+                0,
+                0,
+                1 if bool(水平翻转) else 0,
+                int(角度标记),
+                int(黑阈值 if bool(黑底透明) else -1),
+            )
+        命中图 = self._图像变换缓存.get(缓存项)
+        if isinstance(命中图, pygame.Surface):
+            return 命中图
+        图 = 原图
+        if bool(水平翻转):
+            try:
+                图 = pygame.transform.flip(图, True, False).convert_alpha()
+            except Exception:
+                pass
+        if abs(float(旋转角度)) > 0.001:
+            try:
+                图 = pygame.transform.rotate(图, float(旋转角度)).convert_alpha()
+            except Exception:
+                pass
+        if bool(黑底透明):
+            图 = self._取去黑底图(图, 黑阈值=int(黑阈值)) or 图
+        self._图像变换缓存[缓存项] = 图
+        if len(self._图像变换缓存) >= 2048:
+            self._图像变换缓存.clear()
+        return 图
+
     def _布局版本值(self) -> float:
         布局 = self._确保布局管理器()
         if 布局 is None:
@@ -1596,10 +2033,6 @@ class 谱面渲染器:
             int(getattr(输入, "判定线y", 0) or 0),
             int(getattr(输入, "底部y", 0) or 0),
             int(getattr(输入, "箭头目标宽", 0) or 0),
-            tuple(
-                round(float(v), 4)
-                for v in list(getattr(self, "_按键反馈缩放", []) or [])[:5]
-            ),
             round(float(参数.get("y偏移", 0.0)), 4),
             round(float(参数.get("缩放", 1.0)), 4),
             round(float(参数.get("判定区宽度系数", 1.0)), 4),
@@ -1641,7 +2074,7 @@ class 谱面渲染器:
         ):
             return dict(self._事件渲染缓存值)
 
-        条目列表: List[Tuple[float, float, float, float, int, str, int]] = []
+        条目列表: List[Tuple[float, float, float, float, int, str, int, int]] = []
         最大持续秒 = 0.0
         最大持续beat = 0.0
         for 事件 in 事件列表:
@@ -1652,12 +2085,25 @@ class 谱面渲染器:
                 ed_beat = float(getattr(事件, "结束beat"))
                 轨道 = int(getattr(事件, "轨道序号"))
                 类型 = str(getattr(事件, "类型"))
+                玩家 = int(
+                    getattr(事件, "玩家", getattr(事件, "玩家序号", 1)) or 1
+                )
             except Exception:
                 continue
             if not (0 <= int(轨道) < 5):
                 continue
+            玩家 = 2 if int(玩家) == 2 else 1
             条目列表.append(
-                (st, ed, st_beat, ed_beat, 轨道, 类型, int(round(st * 1000.0)))
+                (
+                    st,
+                    ed,
+                    st_beat,
+                    ed_beat,
+                    轨道,
+                    类型,
+                    玩家,
+                    int(round(st * 1000.0)),
+                )
             )
             try:
                 最大持续秒 = max(最大持续秒, float(max(0.0, ed - st)))
@@ -1699,7 +2145,7 @@ class 谱面渲染器:
         ):
             return dict(self._手键事件渲染缓存值)
 
-        条目列表: List[Tuple[float, float, float, float, str, str]] = []
+        条目列表: List[Tuple[float, float, float, float, str, str, int]] = []
         最大持续秒 = 0.0
         最大持续beat = 0.0
         for 事件 in 事件列表:
@@ -1710,6 +2156,14 @@ class 谱面渲染器:
                 ed_beat = float(getattr(事件, "结束beat"))
                 方向 = str(getattr(事件, "方向") or "").strip().lower()
                 类型 = str(getattr(事件, "类型") or "tap").strip().lower()
+                玩家 = int(
+                    getattr(
+                        事件,
+                        "颜色玩家",
+                        getattr(事件, "玩家", getattr(事件, "玩家序号", 1)),
+                    )
+                    or 1
+                )
             except Exception:
                 continue
             if 方向 not in ("ll", "tt", "bb", "rr"):
@@ -1723,7 +2177,8 @@ class 谱面渲染器:
                 类型 = "tap"
                 ed = float(st)
                 ed_beat = float(st_beat)
-            条目列表.append((st, ed, st_beat, ed_beat, 方向, 类型))
+            玩家 = 2 if int(玩家) == 2 else 1
+            条目列表.append((st, ed, st_beat, ed_beat, 方向, 类型, 玩家))
             try:
                 最大持续秒 = max(最大持续秒, float(max(0.0, ed - st)))
             except Exception:
@@ -1759,6 +2214,7 @@ class 谱面渲染器:
         self._当前皮肤路径 = 皮肤根路径
         self._缩放缓存.clear()
         self._手键黑底透明缓存.clear()
+        self._图像变换缓存.clear()
         self._顶部HUD静态层缓存 = None
         self._顶部HUD静态层签名 = None
         self._顶部HUD静态层矩形 = None
@@ -1792,6 +2248,7 @@ class 谱面渲染器:
     def 绑定布局管理器(self, 布局管理器: Any):
         self._布局管理器_谱面渲染器 = 布局管理器
         self._手键黑底透明缓存.clear()
+        self._图像变换缓存.clear()
         self._顶部HUD静态层缓存 = None
         self._顶部HUD静态层签名 = None
         self._顶部HUD静态层矩形 = None
@@ -1809,6 +2266,26 @@ class 谱面渲染器:
         self._判定区实际锚点缓存值 = None
         self._击中特效布局缓存签名 = None
         self._击中特效布局缓存值 = None
+
+    def 设置运行时性能模式(self, 启用: bool = True):
+        self._运行时性能模式 = bool(启用)
+        if not bool(启用):
+            self._运行时游戏区参数快照 = None
+        布局 = self._确保布局管理器()
+        if 布局 is not None:
+            try:
+                布局._禁用热重载 = bool(启用)
+            except Exception:
+                pass
+            try:
+                布局._禁用资源热检查 = bool(启用)
+            except Exception:
+                pass
+        if bool(启用):
+            try:
+                self._运行时游戏区参数快照 = dict(self._取游戏区参数())
+            except Exception:
+                self._运行时游戏区参数快照 = None
 
     def 设置调试击中特效预览(
         self, 启用: bool, 当前谱面秒: float = 0.0, 轨道序号: int = 2
@@ -1883,7 +2360,11 @@ class 谱面渲染器:
         self._判定提示剩余秒 = 0.45
 
     def 触发击中特效(
-        self, 轨道序号: int, 判定: str, 发生谱面秒: Optional[float] = None
+        self,
+        轨道序号: int,
+        判定: str,
+        发生谱面秒: Optional[float] = None,
+        仅登记命中: bool = False,
     ):
         判定 = str(判定 or "").strip().lower()
 
@@ -1917,10 +2398,117 @@ class 谱面渲染器:
         except Exception:
             self._待选择命中谱面秒[轨道序号] = float(self._最近渲染谱面秒)
 
+        if bool(仅登记命中):
+            return
+
         # 原逻辑：击中特效播放
         self._击中特效开始谱面秒[轨道序号] = float(发生谱面秒)
         self._击中特效循环到谱面秒[轨道序号] = -999.0
         self._击中特效进行秒[轨道序号] = 0.0
+
+    def 登记判定命中回报(
+        self,
+        回报: Any,
+        当前谱面秒: Optional[float] = None,
+        仅登记命中: bool = False,
+    ):
+        if 回报 is None:
+            return
+        判定 = str(getattr(回报, "判定", "") or "").strip().lower()
+        if (not 判定) or 判定 == "miss":
+            return
+        类型 = str(getattr(回报, "类型", "") or "").strip().lower()
+        try:
+            轨道序号 = int(getattr(回报, "轨道序号", -1))
+        except Exception:
+            return
+        轨道总数 = int(max(5, self._击中特效轨道总数()))
+        if not (0 <= 轨道序号 < int(轨道总数)):
+            return
+        try:
+            开始秒 = float(
+                getattr(回报, "开始秒", getattr(self, "_最近渲染谱面秒", 0.0)) or 0.0
+            )
+        except Exception:
+            开始秒 = float(getattr(self, "_最近渲染谱面秒", 0.0) or 0.0)
+        try:
+            结束秒 = float(getattr(回报, "结束秒", 开始秒) or 开始秒)
+        except Exception:
+            结束秒 = float(开始秒)
+        if float(结束秒) < float(开始秒):
+            结束秒 = float(开始秒)
+        if 当前谱面秒 is None:
+            try:
+                当前谱面秒 = float(getattr(self, "_最近渲染谱面秒", 开始秒) or 开始秒)
+            except Exception:
+                当前谱面秒 = float(开始秒)
+
+        self._确保命中映射缓存()
+        try:
+            当前毫秒 = int(round(float(当前谱面秒) * 1000.0))
+        except Exception:
+            当前毫秒 = int(round(float(开始秒) * 1000.0))
+        开始毫秒 = int(round(float(开始秒) * 1000.0))
+        命中窗毫秒 = int(
+            round(float(getattr(self, "_命中匹配窗秒", 0.12) or 0.12) * 1000.0)
+        )
+        命中窗毫秒 = int(max(40, min(260, 命中窗毫秒)))
+
+        try:
+            队列 = self._待命中队列毫秒[轨道序号]
+        except Exception:
+            队列 = None
+        if isinstance(队列, list) and 队列:
+            左界 = int(开始毫秒 - 命中窗毫秒)
+            右界 = int(开始毫秒 + 命中窗毫秒)
+            队列[:] = [
+                int(毫秒)
+                for 毫秒 in list(队列)
+                if not (int(左界) <= int(毫秒) <= int(右界))
+            ]
+
+        if 类型 == "tap":
+            try:
+                已命中表 = self._已命中tap过期表毫秒[轨道序号]
+            except Exception:
+                已命中表 = None
+            if isinstance(已命中表, dict):
+                已命中表[int(开始毫秒)] = int(
+                    max(int(开始毫秒) + 1000, int(当前毫秒) + 650)
+                )
+        elif 类型 in ("hold_head", "hold_tick"):
+            try:
+                self._命中hold开始谱面秒[轨道序号] = float(开始秒)
+                self._命中hold结束谱面秒[轨道序号] = float(结束秒)
+            except Exception:
+                pass
+
+        try:
+            self._待选择命中谱面秒[轨道序号] = float(开始秒)
+        except Exception:
+            pass
+
+        if bool(仅登记命中):
+            return
+
+        命中触发秒 = float(当前谱面秒)
+        if 类型 in ("hold_head", "hold_tick") and float(结束秒) > float(开始秒):
+            命中触发秒 = float(
+                max(float(开始秒), min(float(结束秒), float(命中触发秒)))
+            )
+        else:
+            命中触发秒 = float(开始秒)
+        try:
+            self._击中特效开始谱面秒[轨道序号] = float(命中触发秒)
+            self._击中特效循环到谱面秒[轨道序号] = (
+                float(结束秒)
+                if 类型 in ("hold_head", "hold_tick")
+                and float(结束秒) > float(开始秒)
+                else -999.0
+            )
+            self._击中特效进行秒[轨道序号] = 0.0
+        except Exception:
+            pass
 
     def 触发手键装饰击中特效(
         self,
@@ -2741,6 +3329,9 @@ class 谱面渲染器:
         特效项列表 = self._取notes布局渲染项列表(屏幕, 输入, "特效层组")
         判定区状态表: Dict[str, Dict[str, Any]] = {}
         特效状态表: Dict[str, Dict[str, Any]] = {}
+        当前缩放表 = list(getattr(self, "_按键反馈缩放", []) or [])
+        while len(当前缩放表) < 5:
+            当前缩放表.append(1.0)
         for 项 in 判定区项列表:
             if not isinstance(项, dict):
                 continue
@@ -2769,10 +3360,29 @@ class 谱面渲染器:
             判定区高度列表 = []
             for 轨道 in range(5):
                 矩形 = 判定区矩形表[int(轨道)]
+                当前缩放 = float(
+                    max(0.7, min(1.15, float(当前缩放表[int(轨道)] or 1.0)))
+                )
+                if 当前缩放 <= 0.0:
+                    当前缩放 = 1.0
                 轨道中心列表.append(int(矩形.centerx))
                 判定线y列表.append(int(矩形.centery))
-                判定区宽度列表.append(int(max(8, 矩形.w)))
-                判定区高度列表.append(int(max(8, 矩形.h)))
+                判定区宽度列表.append(
+                    int(
+                        max(
+                            8,
+                            round(float(max(8, 矩形.w)) / float(max(0.01, 当前缩放))),
+                        )
+                    )
+                )
+                判定区高度列表.append(
+                    int(
+                        max(
+                            8,
+                            round(float(max(8, 矩形.h)) / float(max(0.01, 当前缩放))),
+                        )
+                    )
+                )
 
         手键锚点 = self._构建手键基准锚点(
             轨道中心列表,
@@ -2804,7 +3414,14 @@ class 谱面渲染器:
             if isinstance(中轨矩形, pygame.Rect):
                 手键锚点["手中x"] = int(中轨矩形.centerx)
                 手键锚点["手中y"] = int(中轨矩形.centery)
-                手键锚点["手中宽"] = int(max(16, 中轨矩形.w))
+                手键锚点["手中宽"] = int(
+                    max(
+                        16,
+                        判定区宽度列表[2]
+                        if len(判定区宽度列表) >= 3
+                        else int(max(16, 中轨矩形.w)),
+                    )
+                )
 
         击中特效矩形表: Dict[int, pygame.Rect] = {}
         轨道总数 = int(max(9, self._击中特效轨道总数()))
@@ -3027,6 +3644,16 @@ class 谱面渲染器:
         if 原图 is None:
             return None
 
+        图源定义 = 控件定义.get("图源") if isinstance(控件定义, dict) else None
+        是key_effect图片 = bool(
+            isinstance(图源定义, dict)
+            and str(图源定义.get("类型") or "").strip() == "皮肤帧"
+            and str(图源定义.get("分包") or "").strip() == "key_effect"
+        )
+        需要稳定绘制 = bool(
+            控件定义.get("像素稳定绘制", False) or 是key_effect图片
+        )
+        需要去黑底 = bool(控件定义.get("黑底透明", False))
         等比 = str(控件定义.get("等比") or "stretch").lower()
         遮罩 = str(控件定义.get("遮罩") or "").lower()
         混合 = str(控件定义.get("混合") or "").lower()
@@ -3058,14 +3685,85 @@ class 谱面渲染器:
                 是否翻转 = bool(上下文.get(翻转键, 是否翻转))
             except Exception:
                 pass
+
+        最终透明 = float(max(0.0, min(1.0, float(项.get("总透明", 1.0) or 1.0))))
+        if bool(需要稳定绘制):
+            取预处理图 = getattr(布局, "_取预处理图", None)
+            取缩放图 = getattr(布局, "_取缩放图", None)
+            图源 = 原图
+            if callable(取预处理图):
+                try:
+                    图源 = 取预处理图(
+                        f"gpu图片:{str(项.get('id') or '')}",
+                        原图,
+                        水平翻转=bool(是否翻转),
+                        旋转角度=float(旋转度数),
+                        黑底透明=bool(需要去黑底),
+                        黑阈值=12,
+                    ) or 原图
+                except Exception:
+                    图源 = 原图
+            elif bool(是否翻转):
+                try:
+                    图源 = pygame.transform.flip(原图, True, False)
+                except Exception:
+                    图源 = 原图
+
+            目标w = int(max(2, 目标矩形.w))
+            目标h = int(max(2, 目标矩形.h))
+            if 等比 == "contain":
+                原宽 = int(max(1, 图源.get_width()))
+                原高 = int(max(1, 图源.get_height()))
+                比例 = min(float(目标w) / float(原宽), float(目标h) / float(原高))
+                绘制宽 = int(max(2, round(float(原宽) * 比例)))
+                绘制高 = int(max(2, round(float(原高) * 比例)))
+                绘制x = int(目标矩形.centerx - 绘制宽 // 2)
+                绘制y = int(目标矩形.centery - 绘制高 // 2)
+            else:
+                绘制宽 = int(max(2, 目标w))
+                绘制高 = int(max(2, 目标h))
+                绘制x = int(目标矩形.x)
+                绘制y = int(目标矩形.y)
+            if callable(取缩放图):
+                try:
+                    图源 = 取缩放图(
+                        f"gpu图片:{str(项.get('id') or '')}:scaled",
+                        图源,
+                        int(绘制宽),
+                        int(绘制高),
+                    )
+                except Exception:
+                    图源 = pygame.transform.smoothscale(
+                        图源,
+                        (int(绘制宽), int(绘制高)),
+                    ).convert_alpha()
+            else:
+                图源 = pygame.transform.smoothscale(
+                    图源,
+                    (int(绘制宽), int(绘制高)),
+                ).convert_alpha()
+            return {
+                "id": str(项.get("id") or ""),
+                "图": 图源,
+                "rect": pygame.Rect(
+                    int(绘制x),
+                    int(绘制y),
+                    int(图源.get_width()),
+                    int(图源.get_height()),
+                ),
+                "等比": "stretch",
+                "遮罩": 遮罩,
+                "混合": 混合,
+                "角度": 0.0,
+                "alpha": int(max(0, min(255, round(255.0 * 最终透明)))),
+            }
+
         图源 = 原图
         if 是否翻转:
             try:
                 图源 = pygame.transform.flip(原图, True, False)
             except Exception:
                 图源 = 原图
-
-        最终透明 = float(max(0.0, min(1.0, float(项.get("总透明", 1.0) or 1.0))))
         return {
             "id": str(项.get("id") or ""),
             "图": 图源,
@@ -3174,13 +3872,70 @@ class 谱面渲染器:
         # Stage 元素已经并入顶部 HUD 的 GPU 图元列表，避免跨组 z 顺序错误。
         return {}
 
+    def 取GPU游戏区静态图层(
+        self, 屏幕: pygame.Surface, 输入: 渲染输入
+    ) -> Tuple[Optional[pygame.Surface], Optional[pygame.Rect]]:
+        if not isinstance(屏幕, pygame.Surface):
+            return None, None
+
+        布局 = self._确保布局管理器()
+        布局版本 = float(
+            getattr(布局, "_上次mtime", -1.0) if 布局 is not None else -1.0
+        )
+        notes静态签名 = (
+            tuple(int(v) for v in 屏幕.get_size()),
+            tuple(int(v) for v in list(getattr(输入, "轨道中心列表", []) or [])[:5]),
+            int(getattr(输入, "判定线y", 0) or 0),
+            int(getattr(输入, "底部y", 0) or 0),
+            int(getattr(输入, "箭头目标宽", 0) or 0),
+            float(self._取游戏区参数().get("y偏移", 0.0)),
+            float(self._取游戏区参数().get("缩放", 1.0)),
+            布局版本,
+        )
+        if (
+            self._notes静态层缓存 is None
+            or self._notes静态层签名 != notes静态签名
+            or self._notes静态层缓存.get_size() != 屏幕.get_size()
+        ):
+            self._notes静态层缓存 = pygame.Surface(
+                屏幕.get_size(), pygame.SRCALPHA
+            )
+            self._notes静态层缓存.fill((0, 0, 0, 0))
+            self._绘制轨道背景(self._notes静态层缓存, 输入)
+            self._notes静态层签名 = notes静态签名
+
+        静态区域 = self._取音符静态层矩形(屏幕, 输入)
+        if isinstance(静态区域, pygame.Rect) and 静态区域.w > 0 and 静态区域.h > 0:
+            return self._notes静态层缓存, 静态区域.copy()
+        return self._notes静态层缓存, 屏幕.get_rect().copy()
+
     def 取GPU判定区数据(
         self, 屏幕: pygame.Surface, 输入: 渲染输入
     ) -> List[Dict[str, Any]]:
+        侧名 = "right" if int(getattr(输入, "玩家序号", 1) or 1) == 2 else "left"
         快照 = self._取notes布局快照(屏幕, 输入)
+        布局锚点 = self._复制锚点字典(快照.get("判定区锚点"))
+        手键锚点 = self._复制锚点字典(快照.get("手键锚点"))
         布局判定区有效 = bool(快照.get("布局判定区有效", False))
         判定区项列表 = list(快照.get("判定区项列表", []) or [])
+        缩放表 = list(getattr(self, "_按键反馈缩放", []) or [])
+        while len(缩放表) < 5:
+            缩放表.append(1.0)
         if bool(布局判定区有效) and 判定区项列表:
+            try:
+                基础宽度列表 = [
+                    int(v)
+                    for v in list(布局锚点.get("判定区宽度列表", []) or [])[:5]
+                ]
+            except Exception:
+                基础宽度列表 = []
+            try:
+                基础高度列表 = [
+                    int(v)
+                    for v in list(布局锚点.get("判定区高度列表", []) or [])[:5]
+                ]
+            except Exception:
+                基础高度列表 = []
             结果: List[Dict[str, Any]] = []
             判定区数量 = 0
             for 序号, 项 in enumerate(判定区项列表):
@@ -3213,17 +3968,59 @@ class 谱面渲染器:
                 if not 文件名:
                     continue
 
+                输出矩形 = 矩形.copy()
+                基础宽 = int(max(2, 矩形.w))
+                基础高 = int(max(2, 矩形.h))
+                if 0 <= int(轨道) < 5 and str(项id).startswith("判定区_"):
+                    当前缩放 = float(
+                        max(0.7, min(1.15, float(缩放表[int(轨道)] or 1.0)))
+                    )
+                    if 当前缩放 <= 0.0:
+                        当前缩放 = 1.0
+                    if int(轨道) < len(基础宽度列表):
+                        基础宽 = int(max(2, 基础宽度列表[int(轨道)]))
+                    else:
+                        基础宽 = int(
+                            max(
+                                2,
+                                round(
+                                    float(max(2, 矩形.w))
+                                    / float(max(0.01, 当前缩放))
+                                ),
+                            )
+                        )
+                    if int(轨道) < len(基础高度列表):
+                        基础高 = int(max(2, 基础高度列表[int(轨道)]))
+                    else:
+                        基础高 = int(
+                            max(
+                                2,
+                                round(
+                                    float(max(2, 矩形.h))
+                                    / float(max(0.01, 当前缩放))
+                                ),
+                            )
+                        )
+                    当前宽 = int(max(12, round(float(基础宽) * 当前缩放)))
+                    当前高 = int(max(10, round(float(基础高) * 当前缩放)))
+                    输出矩形 = pygame.Rect(
+                        int(矩形.centerx - 当前宽 // 2),
+                        int(矩形.centery - 当前高 // 2),
+                        int(当前宽),
+                        int(当前高),
+                    )
+
                 结果.append(
                     {
                         "id": str(项id),
                         "轨道": int(轨道),
-                        "rect": 矩形.copy(),
-                        "x": int(矩形.centerx),
-                        "y": int(矩形.centery),
-                        "w": int(max(2, 矩形.w)),
-                        "h": int(max(2, 矩形.h)),
-                        "基础宽": int(max(2, 矩形.w)),
-                        "基础高": int(max(2, 矩形.h)),
+                        "rect": 输出矩形.copy(),
+                        "x": int(输出矩形.centerx),
+                        "y": int(输出矩形.centery),
+                        "w": int(max(2, 输出矩形.w)),
+                        "h": int(max(2, 输出矩形.h)),
+                        "基础宽": int(max(2, 基础宽)),
+                        "基础高": int(max(2, 基础高)),
                         "文件名": str(文件名),
                         "按高缩放": bool(按高缩放),
                         "z": int(_取数(项.get("z"), 0)),
@@ -3238,8 +4035,6 @@ class 谱面渲染器:
         y偏移 = float(参数.get("y偏移", -12.0))
         判定区宽度系数 = float(参数.get("判定区宽度系数", 1.08))
 
-        布局锚点 = self._复制锚点字典(快照.get("判定区锚点"))
-        手键锚点 = self._复制锚点字典(快照.get("手键锚点"))
         try:
             轨道中心列表 = [int(v) for v in list(getattr(输入, "轨道中心列表", []) or [])[:5]]
         except Exception:
@@ -3281,9 +4076,6 @@ class 谱面渲染器:
             except Exception:
                 pass
 
-        缩放表 = list(getattr(self, "_按键反馈缩放", []) or [])
-        while len(缩放表) < 5:
-            缩放表.append(1.0)
         while len(轨道中心列表) < 5:
             轨道中心列表.append(0)
         while len(判定线y列表) < 5:
@@ -3446,6 +4238,89 @@ class 谱面渲染器:
             )
         return 结果
 
+    def 导出GPU音符布局快照(
+        self, 屏幕: pygame.Surface, 输入: 渲染输入
+    ) -> Dict[str, Any]:
+        快照 = self._取notes布局快照(屏幕, 输入)
+        游戏区参数 = dict(self._取游戏区参数() or {})
+        判定区锚点 = self._复制锚点字典(快照.get("判定区锚点"))
+        手键锚点 = self._复制锚点字典(快照.get("手键锚点")) or {}
+        判定区列表 = self._复制GPU图元列表(self.取GPU判定区数据(屏幕, 输入))
+        击中特效列表 = self._复制GPU图元列表(self.取GPU击中特效数据(屏幕, 输入))
+
+        轨道中心列表 = []
+        判定线y列表 = []
+        if isinstance(判定区锚点, dict):
+            try:
+                轨道中心列表 = [
+                    int(v)
+                    for v in list(判定区锚点.get("轨道中心列表", []) or [])[:5]
+                ]
+            except Exception:
+                轨道中心列表 = []
+            try:
+                判定线y列表 = [
+                    int(v)
+                    for v in list(判定区锚点.get("判定线y列表", []) or [])[:5]
+                ]
+            except Exception:
+                判定线y列表 = []
+        if len(轨道中心列表) < 5:
+            try:
+                轨道中心列表 = [
+                    int(v) for v in list(getattr(输入, "轨道中心列表", []) or [])[:5]
+                ]
+            except Exception:
+                轨道中心列表 = []
+        if len(判定线y列表) < 5:
+            try:
+                判定线y列表 = [int(getattr(输入, "判定线y", 0) or 0)] * 5
+            except Exception:
+                判定线y列表 = [0] * 5
+
+        手键播放锚点: Dict[str, Dict[str, Any]] = {}
+        for 方向 in ("ll", "tt", "bb", "rr"):
+            try:
+                信息 = dict(
+                    self._取手键方向9轨信息(
+                        str(方向),
+                        屏幕,
+                        输入,
+                        轨道中心列表=list(轨道中心列表),
+                        判定线y列表=list(判定线y列表),
+                        锚点数据=dict(手键锚点 or {}),
+                    )
+                    or {}
+                )
+            except Exception:
+                信息 = {}
+            if not 信息:
+                continue
+            try:
+                手键播放锚点[str(方向)] = {
+                    "x": int(信息.get("x", 0) or 0),
+                    "y": int(信息.get("y", 0) or 0),
+                    "w": int(max(1, int(信息.get("宽", 1) or 1))),
+                    "播放轨道": int(
+                        信息.get("播放轨道", self._手键方向到播放轨道索引(str(方向))) or 0
+                    ),
+                    "判定轨道": int(
+                        信息.get("判定轨道", self._手键方向到判定轨道索引(str(方向))) or 0
+                    ),
+                    "方向": str(信息.get("方向", str(方向)) or str(方向)),
+                }
+            except Exception:
+                continue
+
+        return {
+            "游戏区参数": 游戏区参数,
+            "判定区锚点": 判定区锚点,
+            "手键锚点": dict(手键锚点),
+            "手键播放锚点": self._复制手键播放锚点表(手键播放锚点),
+            "判定区列表": 判定区列表,
+            "击中特效列表": 击中特效列表,
+        }
+
     def _求布局清单并集矩形(
         self, 项列表: List[Dict[str, Any]]
     ) -> Optional[pygame.Rect]:
@@ -3592,6 +4467,14 @@ class 谱面渲染器:
         )
         结果 = self._准备动画局部图缓存.get(key)
         if isinstance(结果, pygame.Surface):
+            _GPU诊断记录(
+                f"producer-receptor:{侧名}",
+                (
+                    f"receptor side={侧名} layout_valid=1 count={len(结果)} "
+                    f"judge_y={list(布局锚点.get('判定线y列表', []) or [])[:5]} "
+                    f"sample={_GPU诊断矩形文本(结果[0].get('rect')) if 结果 else '-'}"
+                ),
+            )
             return 结果
         try:
             结果 = 图层.subsurface(区域).copy().convert_alpha()
@@ -3603,6 +4486,13 @@ class 谱面渲染器:
         if len(self._准备动画局部图缓存) >= 64:
             self._准备动画局部图缓存.clear()
         self._准备动画局部图缓存[key] = 结果
+        _GPU诊断记录(
+            f"producer-receptor:{侧名}",
+            (
+                f"receptor side={侧名} layout_valid={1 if bool(布局判定区有效) else 0} "
+                f"count={len(结果)} sample={_GPU诊断矩形文本(结果[0].get('rect')) if 结果 else '-'}"
+            ),
+        )
         return 结果
 
     def 取准备动画判定区图层(
@@ -3957,6 +4847,54 @@ class 谱面渲染器:
             return ["rt", "tr", "cc"]
         return [str(方向 or "cc"), "cc"]
 
+    @staticmethod
+    def _归一玩家序号(玩家序号: int) -> int:
+        try:
+            玩家 = int(玩家序号)
+        except Exception:
+            玩家 = 1
+        return 2 if 玩家 == 2 else 1
+
+    def _取箭头资源名前缀候选(self, 玩家序号: int = 1) -> List[str]:
+        玩家 = int(self._归一玩家序号(玩家序号))
+        候选 = (
+            ["rarrow", "arrow", "larrow"]
+            if 玩家 == 2
+            else ["larrow", "arrow", "rarrow"]
+        )
+        去重结果: List[str] = []
+        for 前缀 in 候选:
+            文本 = str(前缀 or "").strip().lower()
+            if 文本 and (文本 not in 去重结果):
+                去重结果.append(文本)
+        return 去重结果
+
+    def _取箭头资源候选名列表(
+        self,
+        标准前缀: str,
+        方位: str,
+        玩家序号: int = 1,
+    ) -> List[str]:
+        标准前缀 = str(标准前缀 or "").strip().lower()
+        方位 = str(方位 or "").strip().lower()
+        if (not 标准前缀) or (not 方位):
+            return []
+        if 标准前缀.startswith("arrow_"):
+            子类型 = str(标准前缀[len("arrow_") :]).strip()
+        else:
+            子类型 = str(标准前缀 or "").strip()
+        if not 子类型:
+            return []
+        候选名: List[str] = []
+        for 根前缀 in self._取箭头资源名前缀候选(玩家序号):
+            if 根前缀 == "arrow":
+                名 = f"arrow_{子类型}_{方位}.png"
+            else:
+                名 = f"{根前缀}_{子类型}_{方位}.png"
+            if 名 not in 候选名:
+                候选名.append(str(名))
+        return 候选名
+
     def _取缩放图(
         self, 分组键: str, 原图: pygame.Surface, 目标宽: int
     ) -> pygame.Surface:
@@ -4088,7 +5026,11 @@ class 谱面渲染器:
             return None
 
         目标宽 = int(max(2, 目标宽))
-        if not str(文件名).startswith(("arrow_repeat_", "arrow_mask_", "arrow_tail_")):
+        匹配 = re.match(
+            r"^(?P<根前缀>(?:l|r)?arrow)_(?P<分段>repeat|mask|tail)_(?P<后缀>.+)$",
+            str(文件名 or "").strip().lower(),
+        )
+        if 匹配 is None:
             return self._取缩放图(f"hold:{文件名}", 原图, 目标宽)
 
         缓存键 = (f"hold_seam_fix:v3:{文件名}", int(目标宽), 0)
@@ -4096,16 +5038,18 @@ class 谱面渲染器:
             return self._缩放缓存[缓存键]
 
         结果图 = self._取缩放图(f"hold:{文件名}", 原图, 目标宽).copy()
-        后缀 = str(文件名).split("_", 2)[-1]
-        repeat名 = f"arrow_repeat_{后缀}"
+        根前缀 = str(匹配.group("根前缀") or "arrow").strip().lower()
+        分段 = str(匹配.group("分段") or "").strip().lower()
+        后缀 = str(匹配.group("后缀") or "").strip()
+        repeat名 = f"{根前缀}_repeat_{后缀}"
 
-        if str(文件名).startswith("arrow_repeat_"):
+        if 分段 == "repeat":
             补丁高 = self._计算hold接缝补丁高(结果图, 结果图)
             self._覆盖图块行(结果图, 结果图, int(结果图.get_height()) - 补丁高, 0, 补丁高)
         else:
             repeat图 = self._取hold接缝优化图(图集, repeat名, 目标宽)
             if repeat图 is not None:
-                if str(文件名).startswith("arrow_mask_"):
+                if 分段 == "mask":
                     补丁高 = self._计算hold接缝补丁高(结果图, repeat图)
                     self._覆盖图块行(
                         结果图,
@@ -4114,7 +5058,7 @@ class 谱面渲染器:
                         0,
                         补丁高,
                     )
-                elif str(文件名).startswith("arrow_tail_"):
+                elif 分段 == "tail":
                     补丁高 = self._计算hold接缝补丁高(repeat图, 结果图)
                     self._覆盖图块行(
                         结果图,
@@ -4720,8 +5664,20 @@ class 谱面渲染器:
         except Exception:
             return
 
-        arrow图集 = getattr(self._皮肤包, "arrow", None)
-        if arrow图集 is not None and hasattr(arrow图集, "取"):
+        arrow图集候选 = []
+        取arrow图集 = getattr(self._皮肤包, "取arrow图集", None)
+        if callable(取arrow图集):
+            arrow图集候选.extend([取arrow图集(1), 取arrow图集(2)])
+        else:
+            arrow图集候选.append(getattr(self._皮肤包, "arrow", None))
+        已处理arrow图集: List[int] = []
+        for arrow图集 in arrow图集候选:
+            if arrow图集 is None or (not hasattr(arrow图集, "取")):
+                continue
+            标识 = id(arrow图集)
+            if 标识 in 已处理arrow图集:
+                continue
+            已处理arrow图集.append(标识)
             for 方位 in ("lb", "lt", "cc", "rt", "rb"):
                 for 前缀 in (
                     "arrow_body_",
@@ -4734,8 +5690,20 @@ class 谱面渲染器:
                     if 图 is not None:
                         self._取缩放图(f"arrow:{名}:{箭头目标宽}", 图, 箭头目标宽)
 
-        key图集 = getattr(self._皮肤包, "key", None)
-        if key图集 is not None and hasattr(key图集, "取"):
+        key图集候选 = []
+        取key图集 = getattr(self._皮肤包, "取key图集", None)
+        if callable(取key图集):
+            key图集候选.extend([取key图集(1), 取key图集(2)])
+        else:
+            key图集候选.append(getattr(self._皮肤包, "key", None))
+        已处理key图集: List[int] = []
+        for key图集 in key图集候选:
+            if key图集 is None or (not hasattr(key图集, "取")):
+                continue
+            标识 = id(key图集)
+            if 标识 in 已处理key图集:
+                continue
+            已处理key图集.append(标识)
             for 名 in (
                 "key_bl.png",
                 "key_tl.png",
@@ -4751,8 +5719,20 @@ class 谱面渲染器:
                 if 图 is not None:
                     self._取按高缩放图(f"key:{名}:{判定区宽}", 图, 判定区宽)
 
-        特效图集 = getattr(self._皮肤包, "key_effect", None)
-        if 特效图集 is not None and hasattr(特效图集, "取"):
+        特效图集候选 = []
+        取key特效图集 = getattr(self._皮肤包, "取key_effect图集", None)
+        if callable(取key特效图集):
+            特效图集候选.extend([取key特效图集(1), 取key特效图集(2)])
+        else:
+            特效图集候选.append(getattr(self._皮肤包, "key_effect", None))
+        已处理特效图集: List[int] = []
+        for 特效图集 in 特效图集候选:
+            if 特效图集 is None or (not hasattr(特效图集, "取")):
+                continue
+            标识 = id(特效图集)
+            if 标识 in 已处理特效图集:
+                continue
+            已处理特效图集.append(标识)
             for 轨道 in range(5):
                 名 = f"effect_bg_{轨道}"
                 图 = 特效图集.取(名)
@@ -4875,11 +5855,15 @@ class 谱面渲染器:
         if 布局 is not None:
             return 布局
 
-        try:
-            from ui.调试_谱面渲染器_渲染控件 import 谱面渲染器布局管理器
-        except Exception:
-            self._布局管理器_谱面渲染器 = None
-            return None
+        布局管理器类 = _谱面渲染器布局管理器类
+        if 布局管理器类 is None:
+            try:
+                from ui.调试_谱面渲染器_渲染控件 import (
+                    谱面渲染器布局管理器 as 布局管理器类,
+                )
+            except Exception:
+                self._布局管理器_谱面渲染器 = None
+                return None
 
         try:
             运行根目录 = os.path.abspath(取运行根目录())
@@ -4887,7 +5871,7 @@ class 谱面渲染器:
             运行根目录 = os.path.abspath(os.getcwd())
         布局路径 = 取布局配置路径("谱面渲染器_布局.json", 根目录=运行根目录)
         try:
-            self._布局管理器_谱面渲染器 = 谱面渲染器布局管理器(布局路径)
+            self._布局管理器_谱面渲染器 = 布局管理器类(布局路径)
         except Exception:
             self._布局管理器_谱面渲染器 = None
         return getattr(self, "_布局管理器_谱面渲染器", None)
@@ -5431,12 +6415,11 @@ class 谱面渲染器:
             else:
                 return None
 
-        判定帧 = {
-            "perfect": "text_pf1_perfect.png",
-            "cool": "text_pf1_cool.png",
-            "good": "text_pf1_good.png",
-            "miss": "text_pf1_miss.png",
-        }.get(判定, "")
+        判定帧候选 = self._取判定提示候选帧名(str(判定 or ""))
+        判定图集 = getattr(self._皮肤包, "judge", None)
+        判定帧 = self._取图集首个可用帧名(判定图集, 判定帧候选)
+        if (not 判定帧) and 判定帧候选:
+            判定帧 = str(判定帧候选[0])
 
         try:
             比例 = float(布局.取全局缩放(屏幕.get_size()))
@@ -5560,21 +6543,38 @@ class 谱面渲染器:
     def 取GPU计数动画图层(
         self, 屏幕: pygame.Surface, 输入: 渲染输入
     ) -> Tuple[Optional[pygame.Surface], Optional[pygame.Rect]]:
+        侧名 = "right" if int(getattr(输入, "玩家序号", 1) or 1) == 2 else "left"
         构建结果 = self._构建计数动画组上下文(屏幕, 输入)
         if not isinstance(构建结果, tuple) or len(构建结果) != 2:
+            _GPU诊断记录(
+                f"producer-judge:{侧名}",
+                f"judge side={侧名} context_invalid",
+            )
             return None, None
         布局, 上下文 = 构建结果
         渲染清单 = self._取计数动画组渲染清单(屏幕, 布局, 上下文)
         if not 渲染清单:
+            _GPU诊断记录(
+                f"producer-judge:{侧名}",
+                f"judge side={侧名} render_list_empty combo={int(getattr(self, '_计数动画combo', 0) or 0)} judge={str(getattr(self, '_计数动画判定', '') or '')}",
+            )
             return None, None
 
         计数动画矩形 = self._求布局清单并集矩形(渲染清单)
         if not isinstance(计数动画矩形, pygame.Rect) or 计数动画矩形.w <= 0 or 计数动画矩形.h <= 0:
+            _GPU诊断记录(
+                f"producer-judge:{侧名}",
+                f"judge side={侧名} invalid_rect={_GPU诊断矩形文本(计数动画矩形)} items={len(渲染清单)}",
+            )
             return None, None
 
         try:
             绘制单控件 = getattr(布局, "_绘制单控件", None)
             if not callable(绘制单控件):
+                _GPU诊断记录(
+                    f"producer-judge:{侧名}",
+                    f"judge side={侧名} missing_draw_single rect={_GPU诊断矩形文本(计数动画矩形)}",
+                )
                 return None, 计数动画矩形.copy()
 
             图层 = pygame.Surface((int(计数动画矩形.w), int(计数动画矩形.h)), pygame.SRCALPHA)
@@ -5598,21 +6598,33 @@ class 谱面渲染器:
             局部项列表.sort(key=lambda 项: int(项.get("z", 0)))
             for 项 in 局部项列表:
                 绘制单控件(图层, 项, 上下文, self._皮肤包)
+            _GPU诊断记录(
+                f"producer-judge:{侧名}",
+                (
+                    f"judge side={侧名} ok rect={_GPU诊断矩形文本(计数动画矩形)} "
+                    f"surface={tuple(图层.get_size())} content={_GPU诊断图层内容文本(图层)} items={len(局部项列表)} "
+                    f"combo={int(getattr(self, '_计数动画combo', 0) or 0)} judge={str(getattr(self, '_计数动画判定', '') or '')}"
+                ),
+            )
             return 图层, 计数动画矩形.copy()
         except Exception:
+            _GPU诊断记录(
+                f"producer-judge:{侧名}",
+                f"judge side={侧名} exception rect={_GPU诊断矩形文本(计数动画矩形)}",
+            )
             return None, 计数动画矩形.copy()
 
     def _取渲染平滑谱面秒(self, 目标谱面秒: float) -> float:
         if not bool(getattr(self, "_启用渲染平滑谱面秒", False)):
             try:
                 self._渲染平滑谱面秒 = float(目标谱面秒)
-                self._渲染平滑上次系统秒 = float(pygame.time.get_ticks()) / 1000.0
+                self._渲染平滑上次系统秒 = float(time.perf_counter())
             except Exception:
                 pass
             return float(目标谱面秒)
 
         try:
-            当前系统秒 = float(pygame.time.get_ticks()) / 1000.0
+            当前系统秒 = float(time.perf_counter())
         except Exception:
             return float(目标谱面秒)
 
@@ -5666,7 +6678,17 @@ class 谱面渲染器:
         if bool(getattr(输入, "GPU接管判定区绘制", False)):
             return
 
-        图集 = self._皮肤包.key
+        玩家序号 = 1
+        图集 = None
+        取key图集 = getattr(self._皮肤包, "取key图集", None)
+        if callable(取key图集):
+            try:
+                玩家序号 = int(getattr(输入, "玩家序号", 1) or 1)
+            except Exception:
+                玩家序号 = 1
+            图集 = 取key图集(int(玩家序号))
+        if 图集 is None:
+            图集 = self._皮肤包.key
         if 图集 is None or len(输入.轨道中心列表) < 5:
             return
 
@@ -5695,8 +6717,28 @@ class 谱面渲染器:
                             if 调试状态
                             else None
                         )
+                        皮肤包绘制对象: Any = self._皮肤包
+                        覆写字段: Dict[str, Any] = {}
+                        if 图集 is not None:
+                            覆写字段["key"] = 图集
+                        取key特效图集 = getattr(self._皮肤包, "取key_effect图集", None)
+                        if callable(取key特效图集):
+                            try:
+                                key特效图集 = 取key特效图集(int(玩家序号))
+                            except Exception:
+                                key特效图集 = None
+                            if key特效图集 is not None:
+                                覆写字段["key_effect"] = key特效图集
+                        if 覆写字段:
+                            皮肤包绘制对象 = _皮肤包绘制代理(
+                                self._皮肤包, 覆写字段=覆写字段
+                            )
                         布局.绘制(
-                            屏幕, 上下文, self._皮肤包, 调试=调试, 仅绘制根id="判定区组"
+                            屏幕,
+                            上下文,
+                            皮肤包绘制对象,
+                            调试=调试,
+                            仅绘制根id="判定区组",
                         )
                         return
             except Exception:
@@ -6516,6 +7558,7 @@ class 谱面渲染器:
                     旋转角度=0.0,
                     方位码=str(方向),
                     强制黑色透明=True,
+                    玩家序号=int(玩家序号),
                 )
                 continue
 
@@ -6557,12 +7600,43 @@ class 谱面渲染器:
                 是否绘制头=True,
                 方位码=str(方向),
                 强制黑色透明=True,
+                玩家序号=int(玩家序号),
             )
         self._绘制手键拖拽调试层(屏幕, 输入, dict(手键锚点数据 or {}))
 
     def _绘制音符(self, 屏幕: pygame.Surface, 输入: 渲染输入):
-        图集 = self._皮肤包.arrow
-        if 图集 is None:
+        try:
+            玩家序号 = int(getattr(输入, "玩家序号", 1) or 1)
+        except Exception:
+            玩家序号 = 1
+        取arrow图集 = getattr(self._皮肤包, "取arrow图集", None)
+        图集缓存: Dict[int, Optional[_贴图集]] = {}
+
+        def _归一事件玩家(玩家值: Any) -> int:
+            try:
+                玩家值 = int(玩家值)
+            except Exception:
+                玩家值 = 1
+            return 2 if int(玩家值) == 2 else 1
+
+        def _取玩家图集(玩家值: Any) -> Optional[_贴图集]:
+            归一玩家 = int(_归一事件玩家(玩家值))
+            if int(归一玩家) in 图集缓存:
+                return 图集缓存[int(归一玩家)]
+            图集候选 = None
+            if callable(取arrow图集):
+                try:
+                    图集候选 = 取arrow图集(int(归一玩家))
+                except Exception:
+                    图集候选 = None
+            if 图集候选 is None:
+                图集候选 = self._皮肤包.arrow
+            图集缓存[int(归一玩家)] = 图集候选
+            return 图集候选
+
+        默认玩家序号 = int(_归一事件玩家(玩家序号))
+        默认图集 = _取玩家图集(默认玩家序号)
+        if 默认图集 is None:
             for i in range(5):
                 self._hold当前按下中[i] = False
                 self._hold松手系统秒[i] = None
@@ -6757,9 +7831,20 @@ class 谱面渲染器:
             )
             起始索引 = int(max(0, bisect.bisect_left(开始秒列表, 查找起点秒)))
 
-        for st, ed, st_beat, ed_beat, 轨道, 类型, st毫秒 in 缓存事件列表[起始索引:]:
+        for (
+            st,
+            ed,
+            st_beat,
+            ed_beat,
+            轨道,
+            类型,
+            事件玩家序号,
+            st毫秒,
+        ) in 缓存事件列表[起始索引:]:
             显示开始秒 = float(st) + float(视觉偏移秒)
             显示结束秒 = float(ed) + float(视觉偏移秒)
+            事件玩家序号 = int(_归一事件玩家(事件玩家序号))
+            事件图集 = _取玩家图集(事件玩家序号) or 默认图集
 
             if BPM变速开启:
                 显示开始beat = float(_变速显示beat(float(st_beat)))
@@ -6851,12 +7936,13 @@ class 谱面渲染器:
 
                 self._画tap(
                     屏幕,
-                    图集,
+                    事件图集,
                     轨道,
                     int(round(x绘制)),
                     y开始,
                     int(箭头宽_tap),
                     旋转角度=旋转角度,
+                    玩家序号=int(事件玩家序号),
                 )
                 continue
 
@@ -6876,6 +7962,7 @@ class 谱面渲染器:
             是否命中hold = False
             命中开始 = float(self._命中hold开始谱面秒[轨道])
             命中结束 = float(self._命中hold结束谱面秒[轨道])
+            hold已结束 = bool(float(当前秒) >= float(显示结束秒) - 0.001)
 
             if 命中结束 > -1.0 and (当前秒 <= 命中结束 + 1.2):
                 if abs(st - 命中开始) <= max(0.08, float(self._命中匹配窗秒) * 2.0):
@@ -6892,6 +7979,9 @@ class 谱面渲染器:
                     if abs(hit_ms - st毫秒) <= 命中窗毫秒:
                         if float(ed - st) > 1e-6:
                             队列.pop(0)
+                            if bool(hold已结束):
+                                # 旧命中如果拖到 hold 可视结束后才被扫描到，只丢弃，不再点亮循环特效。
+                                continue
                             命中触发秒 = float(hit_ms) / 1000.0
                             if 命中触发秒 < float(st) - 0.20:
                                 命中触发秒 = float(st)
@@ -6928,7 +8018,7 @@ class 谱面渲染器:
 
             self._画hold(
                 屏幕,
-                图集,
+                事件图集,
                 轨道,
                 x中心,
                 y开始,
@@ -6941,6 +8031,7 @@ class 谱面渲染器:
                 上边界=int(上边界),
                 下边界=int(绘制下边界),
                 是否绘制头=bool(是否绘制头),
+                玩家序号=int(事件玩家序号),
             )
 
         # 手键装饰并入 9 轨播放体系（仅播放，不参与判定链）
@@ -7009,7 +8100,32 @@ class 谱面渲染器:
                     max(0, bisect.bisect_left(手键开始秒列表, 手键查找起点秒))
                 )
 
-            for st, ed, st_beat, ed_beat, 方向, 类型 in 手键事件列表[手键起始索引:]:
+            for 条目 in 手键事件列表[手键起始索引:]:
+                try:
+                    (
+                        st,
+                        ed,
+                        st_beat,
+                        ed_beat,
+                        方向,
+                        类型,
+                        手键玩家序号,
+                    ) = tuple(条目)
+                except Exception:
+                    try:
+                        (
+                            st,
+                            ed,
+                            st_beat,
+                            ed_beat,
+                            方向,
+                            类型,
+                        ) = tuple(条目)
+                        手键玩家序号 = int(玩家序号)
+                    except Exception:
+                        continue
+                手键玩家序号 = int(_归一事件玩家(手键玩家序号))
+                手键图集 = _取玩家图集(手键玩家序号) or 默认图集
                 显示开始秒 = float(st) + float(视觉偏移秒)
                 显示结束秒 = float(ed) + float(视觉偏移秒)
 
@@ -7062,7 +8178,7 @@ class 谱面渲染器:
                         continue
                     self._画tap(
                         屏幕,
-                        图集,
+                        手键图集,
                         int(判定轨道),
                         int(x中心),
                         float(y开始),
@@ -7070,6 +8186,7 @@ class 谱面渲染器:
                         旋转角度=0.0,
                         方位码=str(绘制方位),
                         强制黑色透明=True,
+                        玩家序号=int(手键玩家序号),
                     )
                     continue
 
@@ -7099,7 +8216,7 @@ class 谱面渲染器:
 
                 self._画hold(
                     屏幕,
-                    图集,
+                    手键图集,
                     int(判定轨道),
                     int(x中心),
                     float(y开始),
@@ -7114,6 +8231,7 @@ class 谱面渲染器:
                     是否绘制头=True,
                     方位码=str(绘制方位),
                     强制黑色透明=True,
+                    玩家序号=int(手键玩家序号),
                 )
 
         for i in range(5):
@@ -7142,6 +8260,7 @@ class 谱面渲染器:
         旋转角度: float = 0.0,
         方位码: Optional[str] = None,
         强制黑色透明: bool = False,
+        玩家序号: int = 1,
     ):
         方位 = self._方向到arrow方位码(
             方位码 if str(方位码 or "").strip() else self._轨道到arrow方位码(轨道)
@@ -7149,32 +8268,32 @@ class 谱面渲染器:
         名 = ""
         图 = None
         for 候选方位 in self._方向到arrow候选方位列表(方位):
-            候选名 = f"arrow_body_{候选方位}.png"
-            候选图 = 图集.取(候选名)
-            if 候选图 is not None:
-                名 = str(候选名)
-                图 = 候选图
+            for 候选名 in self._取箭头资源候选名列表(
+                "arrow_body", 候选方位, 玩家序号=int(玩家序号)
+            ):
+                候选图 = 图集.取(候选名)
+                if 候选图 is not None:
+                    名 = str(候选名)
+                    图 = 候选图
+                    break
+            if 图 is not None:
                 break
         if 图 is None:
             return
-        图2 = self._取缩放图(f"arrow:{名}:{箭头宽}", 图, 箭头宽)
-        if bool(强制黑色透明):
-            图2 = self._取去黑底图(图2) or 图2
-        if abs(float(旋转角度)) > 0.01:
-            try:
-                图3 = pygame.transform.rotate(图2, -float(旋转角度)).convert_alpha()
-                if bool(强制黑色透明):
-                    图3 = self._取去黑底图(图3) or 图3
-                屏幕.blit(
-                    图3,
-                    (
-                        int(x中心 - 图3.get_width() // 2),
-                        int(y - 图3.get_height() // 2),
-                    ),
-                )
-                return
-            except Exception:
-                pass
+        图 = self._取预处理图(
+            f"arrow_raw:{名}",
+            图,
+            水平翻转=False,
+            旋转角度=-float(旋转角度),
+            黑底透明=bool(强制黑色透明),
+        )
+        if 图 is None:
+            return
+        图2 = self._取缩放图(
+            f"arrow:{名}:r{int(round(float(旋转角度) * 10.0))}:{箭头宽}",
+            图,
+            箭头宽,
+        )
         屏幕.blit(
             图2, (int(x中心 - 图2.get_width() // 2), int(y - 图2.get_height() // 2))
         )
@@ -7197,6 +8316,7 @@ class 谱面渲染器:
         是否绘制头: bool,
         方位码: Optional[str] = None,
         强制黑色透明: bool = False,
+        玩家序号: int = 1,
     ):
         方位 = self._方向到arrow方位码(
             方位码 if str(方位码 or "").strip() else self._轨道到arrow方位码(轨道)
@@ -7205,9 +8325,21 @@ class 谱面渲染器:
 
         def _取首个可用文件名(前缀: str) -> str:
             for 候选方位 in 候选方位列表:
-                候选名 = f"{前缀}_{候选方位}.png"
-                if 图集.取(候选名) is not None:
-                    return str(候选名)
+                候选名列表 = self._取箭头资源候选名列表(
+                    str(前缀 or ""),
+                    候选方位,
+                    玩家序号=int(玩家序号),
+                )
+                for 候选名 in 候选名列表:
+                    if 图集.取(候选名) is not None:
+                        return str(候选名)
+            兜底候选 = self._取箭头资源候选名列表(
+                str(前缀 or ""),
+                方位,
+                玩家序号=int(玩家序号),
+            )
+            if 兜底候选:
+                return str(兜底候选[0])
             return f"{前缀}_{方位}.png"
 
         头名 = _取首个可用文件名("arrow_body")
@@ -7349,157 +8481,57 @@ class 谱面渲染器:
                 ),
             )
 
-    def _绘制击中特效(self, 屏幕: pygame.Surface, 输入: 渲染输入):
-        图集 = self._皮肤包.key_effect
-        if 图集 is None:
-            return
-        GPU接管击中特效绘制 = bool(getattr(输入, "GPU接管击中特效绘制", False))
-
-        if (not bool(GPU接管击中特效绘制)) and bool(
-            getattr(输入, "调试_循环击中特效", False)
-        ):
-            当前 = float(getattr(输入, "当前谱面秒", 0.0) or 0.0)
-            for i in range(int(max(5, self._击中特效轨道总数()))):
-                self._击中特效开始谱面秒[i] = 当前
-                self._击中特效循环到谱面秒[i] = 当前 + 99999.0
-                if self._击中特效进行秒[i] < 0.0:
-                    self._击中特效进行秒[i] = 0.0
-
-        参数 = self._取游戏区参数()
-        游戏缩放 = float(参数.get("缩放", 1.1))
-        y偏移 = float(参数.get("y偏移", 0.0))
-        偏移x = float(参数.get("击中特效偏移x", 0.0))
-        偏移y = float(参数.get("击中特效偏移y", 0.0))
-        宽度系数 = float(参数.get("击中特效宽度系数", 2.6))
-
-        当前谱面秒 = float(输入.当前谱面秒)
-        y判定 = int(float(输入.判定线y) + y偏移 + 偏移y)
-        目标宽 = int(max(90, int(float(输入.箭头目标宽) * 宽度系数 * 游戏缩放 * 1.25)))
-
-        帧数 = 18
-        fps = float(self._击中特效帧率)
-        if not bool(GPU接管击中特效绘制):
-            轨道总数 = int(max(5, self._击中特效轨道总数()))
-            特效帧名列表: List[str] = [""] * int(轨道总数)
-            特效翻转列表: List[bool] = [False] * int(轨道总数)
-            特效旋转角度列表: List[float] = [0.0] * int(轨道总数)
-
-            for i in range(int(轨道总数)):
-                开始谱面秒 = float(self._击中特效开始谱面秒[i])
-                循环到 = float(self._击中特效循环到谱面秒[i])
-
-                # seek / 重开后如果当前谱面秒回到了特效起点之前，直接清掉旧状态。
-                if 开始谱面秒 > -900.0 and 当前谱面秒 + 0.08 < 开始谱面秒:
-                    self._击中特效进行秒[i] = -1.0
-                    self._击中特效开始谱面秒[i] = -999.0
-                    self._击中特效循环到谱面秒[i] = -999.0
-                    continue
-
-                if 循环到 > 0.0:
-                    if 当前谱面秒 > 循环到 + 0.02:
-                        self._击中特效循环到谱面秒[i] = -999.0
-                        self._击中特效进行秒[i] = -1.0
-                        self._击中特效开始谱面秒[i] = -999.0
-                        continue
-                    进行秒 = float(self._击中特效进行秒[i])
-                    if 进行秒 < 0.0:
-                        进行秒 = 0.0
-                    帧号 = int(max(0, min(帧数 - 1, int(进行秒 * fps))))
-                else:
-                    进行秒 = float(self._击中特效进行秒[i])
-                    if 进行秒 < 0.0:
-                        continue
-                    帧号 = int(max(0, min(帧数 - 1, int(进行秒 * fps))))
-
-                序列前缀, 需要水平翻转, 旋转角度 = self._轨道到击中序列(i)
-                特效帧名列表[i] = f"{序列前缀}_{帧号:04d}.png"
-                特效翻转列表[i] = bool(需要水平翻转)
-                特效旋转角度列表[i] = float(旋转角度)
-
-            特效布局矩形表 = self._取击中特效布局矩形表(屏幕, 输入)
-
-            for i in range(int(轨道总数)):
-                文件名 = str(特效帧名列表[i] or "")
-                if not 文件名:
-                    continue
-
-                原图 = 图集.取(文件名)
-                if 原图 is None and str(文件名).startswith("image_083_"):
-                    原图 = 图集.取(str(文件名).replace("image_083_", "image_084_", 1))
-                if 原图 is None:
-                    continue
-
-                当前目标宽 = int(max(48, 目标宽))
-                布局矩形 = 特效布局矩形表.get(int(i))
-                if isinstance(布局矩形, pygame.Rect):
-                    当前目标宽 = int(max(48, 布局矩形.w))
-
-                需要翻转 = bool(特效翻转列表[i])
-                旋转角度 = float(特效旋转角度列表[i] if i < len(特效旋转角度列表) else 0.0)
-                变换标记 = f"fx{1 if 需要翻转 else 0}:r{int(round(旋转角度 * 10.0))}"
-                缓存键 = f"eff:{文件名}:{变换标记}:{当前目标宽}"
-                if 需要翻转:
-                    原图2 = pygame.transform.flip(原图, True, False)
-                else:
-                    原图2 = 原图
-                if abs(float(旋转角度)) > 0.01:
-                    try:
-                        原图2 = pygame.transform.rotate(原图2, float(旋转角度)).convert_alpha()
-                    except Exception:
-                        pass
-                # key_effect 资源常带不透明黑底，阈值略提高可去掉弱暗圈残留。
-                原图2 = self._取去黑底图(原图2, 黑阈值=24) or 原图2
-
-                图2 = self._取缩放图(缓存键, 原图2, 当前目标宽)
-
-                if isinstance(布局矩形, pygame.Rect):
-                    x = int(布局矩形.centerx - 图2.get_width() // 2)
-                    y = int(布局矩形.centery - 图2.get_height() // 2)
-                else:
-                    try:
-                        轨道中心 = list(getattr(输入, "轨道中心列表", []) or [])
-                    except Exception:
-                        轨道中心 = []
-                    中心x默认 = int(
-                        轨道中心[i]
-                        if 0 <= int(i) < len(轨道中心)
-                        else (轨道中心[2] if len(轨道中心) >= 3 else 0)
-                    )
-                    x = int(float(中心x默认) - 图2.get_width() // 2 + 偏移x)
-                    y = int(y判定 - 图2.get_height() // 2)
-
-                if float(self._击中特效循环到谱面秒[i]) > 0.0:
-                    屏幕.blit(图2, (x, y), special_flags=pygame.BLEND_RGBA_ADD)
-                    屏幕.blit(图2, (x, y), special_flags=pygame.BLEND_RGBA_ADD)
-                else:
-                    屏幕.blit(图2, (x, y), special_flags=pygame.BLEND_RGBA_ADD)
+    @staticmethod
+    def _取图集首个可用帧名(图集: Optional[_贴图集], 候选名列表: List[str]) -> str:
+        if 图集 is None or not hasattr(图集, "取"):
+            return ""
+        for 候选名 in list(候选名列表 or []):
+            名 = str(候选名 or "").strip()
+            if not 名:
+                continue
+            try:
+                if 图集.取(名) is not None:
+                    return 名
+            except Exception:
+                continue
+        return ""
 
     @staticmethod
-    def _轨道到击中序列(轨道: int) -> Tuple[str, bool, float]:
-        # 统一9轨特效序列：
-        # 0~4 原5轨；5~8 手键 ll/tt/bb/rr。
-        轨道 = int(轨道)
+    def _取判定提示候选帧名(判定: str) -> List[str]:
+        p = str(判定 or "").strip().lower()
+        if p == "perfect":
+            return ["text_pf1_perfect.png", "judge_perfect.png"]
+        if p == "cool":
+            return ["text_pf1_cool.png", "judge_cool.png"]
+        if p == "good":
+            return ["text_pf1_good.png", "judge_good.png"]
+        if p == "miss":
+            return ["text_pf1_miss.png", "judge_miss.png"]
+        return []
 
-        if 轨道 == 0:  # 左下
-            return ("image_084", False, 0.0)
-        if 轨道 == 1:  # 左上
-            return ("image_085", False, 0.0)
-        if 轨道 == 2:
-            return ("image_086", False, 0.0)
-        if 轨道 == 3:  # 右上
-            return ("image_085", True, 0.0)
-        if 轨道 == 4:  # 右下
-            return ("image_084", True, 0.0)
-        if 轨道 == 5:  # 手左
-            return ("image_083", False, 0.0)
-        if 轨道 == 6:  # 手上（中轨）
-            return ("image_083", False, 90.0)
-        if 轨道 == 7:  # 手下（中轨）
-            return ("image_083", False, -90.0)
-        if 轨道 == 8:  # 手右
-            return ("image_083", True, 0.0)
+    @staticmethod
+    def _取combo文字候选帧名() -> List[str]:
+        return ["text_pf1_combo.png", "judge_combo.png"]
 
-        return ("image_086", False, 0.0)
+    @staticmethod
+    def _取combo数字候选帧名(字符: str) -> List[str]:
+        ch = str(字符 or "").strip()
+        if not ch:
+            return []
+        return [f"text_pf1_{ch}.png", f"judge_number_{ch}.png"]
+
+    def _绘制击中特效(
+        self,
+        屏幕: pygame.Surface,
+        输入: 渲染输入,
+        使用加色混合: bool = True,
+    ):
+        绘制击中特效序列帧(
+            self,
+            屏幕,
+            输入,
+            使用加色混合=bool(使用加色混合),
+        )
 
     # ---------------- judge ----------------
     def _绘制判定提示(self, 屏幕: pygame.Surface, 输入: 渲染输入):
@@ -7510,12 +8542,8 @@ class 谱面渲染器:
             return
 
         判定 = str(self._判定提示 or "").lower()
-        名 = {
-            "perfect": "text_pf1_perfect.png",
-            "cool": "text_pf1_cool.png",
-            "good": "text_pf1_good.png",
-            "miss": "text_pf1_miss.png",
-        }.get(判定, "")
+        候选名列表 = self._取判定提示候选帧名(判定)
+        名 = self._取图集首个可用帧名(图集, 候选名列表)
         if not 名:
             return
 
@@ -7561,17 +8589,24 @@ class 谱面渲染器:
         if combo < 2:
             return
 
-        combo图 = judge图集.取("text_pf1_combo.png")
+        combo图名 = self._取图集首个可用帧名(
+            judge图集, self._取combo文字候选帧名()
+        )
+        combo图 = judge图集.取(combo图名) if combo图名 else None
         if combo图 is None:
             return
 
         数字字符串 = str(combo)
         数字图列表: List[pygame.Surface] = []
+        数字帧名列表: List[str] = []
         for ch in 数字字符串:
-            名 = f"text_pf1_{ch}.png"
-            图 = number图集.取(名)
+            名 = self._取图集首个可用帧名(
+                number图集, self._取combo数字候选帧名(ch)
+            )
+            图 = number图集.取(名) if 名 else None
             if 图 is not None:
                 数字图列表.append(图)
+                数字帧名列表.append(str(名))
 
         if not 数字图列表:
             return
@@ -7593,7 +8628,12 @@ class 谱面渲染器:
         总宽 = 0
         for idx, 原图 in enumerate(数字图列表):
             目标宽 = int(原图.get_width() * (数字高 / max(1, 原图.get_height())))
-            图2 = self._取缩放图(f"combo数字:{数字字符串}:{idx}", 原图, 目标宽)
+            帧名 = (
+                str(数字帧名列表[idx])
+                if 0 <= int(idx) < len(数字帧名列表)
+                else str(idx)
+            )
+            图2 = self._取缩放图(f"combo数字:{帧名}:{idx}", 原图, 目标宽)
             数字缩放后.append(图2)
             总宽 += 图2.get_width()
 
@@ -7632,27 +8672,56 @@ class 谱面渲染器:
 def _谱面渲染器_取GPU顶部HUD数据(
     self: 谱面渲染器, 屏幕: pygame.Surface, 输入: 渲染输入
 ) -> Dict[str, Any]:
+    侧名 = "right" if int(getattr(输入, "玩家序号", 1) or 1) == 2 else "left"
     if not bool(getattr(输入, "GPU接管Stage绘制", False)):
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} skipped stage_takeover=0 hidden={1 if bool(getattr(输入, '隐藏顶部HUD绘制', False)) else 0}",
+        )
         return {}
     if bool(getattr(输入, "隐藏顶部HUD绘制", False)):
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} skipped hidden=1",
+        )
         return {}
 
     布局 = self._确保布局管理器()
     if 布局 is None:
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} layout_none",
+        )
         return {}
     上下文 = self._构建顶部HUD上下文(屏幕, 输入)
     if not isinstance(上下文, dict) or not 上下文:
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} context_empty",
+        )
         return {}
     构建清单 = getattr(布局, "_构建渲染清单", None)
     if not callable(构建清单):
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} build_list_missing",
+        )
         return {}
     try:
         完整HUD渲染清单 = list(
             构建清单(屏幕.get_size(), 上下文, 仅绘制根id="顶部HUD") or []
         )
     except Exception:
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} build_list_exception",
+        )
         return {}
     if not 完整HUD渲染清单:
+        _GPU诊断记录(
+            f"producer-hud:{侧名}",
+            f"hud side={侧名} full_list_empty",
+        )
         return {}
 
     左侧底层动态控件ids = self._展开布局控件id列表(
@@ -7813,6 +8882,27 @@ def _谱面渲染器_取GPU顶部HUD数据(
     if (not 图层列表) and 完整HUD渲染清单:
         _追加逐项图层(完整HUD渲染清单)
     图层列表.sort(key=lambda 项: int(项.get("z", 0)))
+    图片数 = 0
+    频谱数 = 0
+    普通图层数 = 0
+    for 项 in 图层列表:
+        if not isinstance(项, dict):
+            continue
+        类型 = str(项.get("类型") or "图层").strip()
+        if 类型 == "图片":
+            图片数 += 1
+        elif 类型 == "频谱":
+            频谱数 += 1
+        else:
+            普通图层数 += 1
+    _GPU诊断记录(
+        f"producer-hud:{侧名}",
+        (
+            f"hud side={侧名} ok total={len(图层列表)} "
+            f"layer={int(普通图层数)} image={int(图片数)} spec={int(频谱数)} "
+            f"screen={tuple(int(v) for v in 屏幕.get_size())}"
+        ),
+    )
     return {"图层列表": 图层列表}
 
 
